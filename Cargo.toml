@@ -1,0 +1,8 @@
+[package]
+name = "sucredb"
+version = "0.1.0"
+authors = ["arthurprs"]
+
+[dependencies]
+ramp = "0.2.4"
+linear-map = "1.0.0"
