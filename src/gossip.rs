@@ -1,10 +1,10 @@
-use std::{cmp, thread, io, net, time};
+use std::{cmp, thread, io, net, time, mem};
 use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, VecDeque};
 use rand::{thread_rng, Rng};
 use inflightmap::InFlightMap;
 use serde::{Serialize, Deserialize};
-use rmp_serde;
+use serde_json;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 enum NodeStatus {
@@ -15,7 +15,7 @@ enum NodeStatus {
 
 type Seq = u32;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 enum Message {
     Ping {
         seq: Seq,
@@ -44,22 +44,37 @@ enum Message {
 }
 
 impl Message {
-    fn encode<'a>(&self, mut buffer: &'a mut [u8]) -> Result<&'a mut [u8], ()> {
-        self.serialize(&mut rmp_serde::Serializer::new(&mut buffer))
-            .map(|_| buffer)
-            .map_err(|_| ())
+    fn encode<'a>(&self, mut buffer: &'a mut [u8]) -> Result<usize, serde_json::Error> {
+        let buffer_len = buffer.len();
+        match serde_json::to_writer(&mut buffer, &self) {
+            Ok(_) => {
+                Ok(buffer_len - buffer.len())
+            },
+            Err(err) => {
+                debug!("{:?}", err);
+                Err(err)
+            }
+        }
     }
 
-    fn decode(buffer: &[u8]) -> Result<Message, ()> {
-        Deserialize::deserialize(&mut rmp_serde::Deserializer::new(buffer)).map_err(|_| ())
+    fn decode(buffer: &[u8]) -> Result<Message, serde_json::Error> {
+        match serde_json::from_slice(buffer) {
+            Ok(msg) => Ok(msg),
+            Err(err) => {
+                debug!("{:?}", err);
+                Err(err)
+            }
+        }
     }
 }
 
+#[derive(Debug)]
 struct Node {
     incarnation: Seq,
     status_change: time::Instant,
     status: NodeStatus,
 }
+
 struct Inner {
     addr: net::SocketAddr,
     nodes: HashMap<net::SocketAddr, Node>,
@@ -72,6 +87,7 @@ struct Inner {
     suspicious_inflight: InFlightMap<net::SocketAddr, (), time::Instant>,
     send_queue: VecDeque<(net::SocketAddr, Message)>,
     broadcast_queue: Vec<(u32, Message)>,
+    running: bool,
 }
 
 pub struct Gossiper(Arc<Mutex<Inner>>);
@@ -86,8 +102,9 @@ impl Node {
     }
 
     fn set_status(&mut self, status: NodeStatus, incarnation: Seq) {
+        debug!("{:?} set_status {:?} {:?}", self, status, incarnation);
         if self.status != status {
-            self.status = NodeStatus::Alive;
+            self.status = status;
             self.status_change = time::Instant::now();
         }
         self.incarnation = incarnation;
@@ -98,24 +115,42 @@ impl Inner {
     fn run(socket: net::UdpSocket, g: Arc<Mutex<Inner>>) {
         let mut stack_buffer = [0u8; 1500];
         let mut messages = Vec::new();
+        let addr = g.lock().unwrap().addr.clone();
         socket.set_read_timeout(Some(time::Duration::from_millis(5))).unwrap();
         socket.set_write_timeout(Some(time::Duration::from_millis(5))).unwrap();
-        loop {
+        while g.lock().unwrap().running {
             while let Ok((buffer_len, remote_addr)) = socket.recv_from(&mut stack_buffer) {
                 if let Ok(msg) = Message::decode(&stack_buffer[..buffer_len]) {
                     g.lock().unwrap().on_message(remote_addr, msg);
+                } else {
+                    info!("{} cant parse message", addr);
                 }
             }
 
             {
                 let mut g = g.lock().unwrap();
+                // drain send queue
+                messages.extend(g.send_queue.drain(..));
+                // drain broadcast queue
+                let node_count = g.nodes.len();
+                for cm in &g.broadcast_queue {
+                    for (n, _) in g.nodes.keys().zip(0..cm.0) {
+                        messages.push((n.clone(), cm.1.clone()));
+                    }
+                }
+                for cm in &mut g.broadcast_queue {
+                    cm.0 -= cmp::min(node_count as u32, cm.0);
+                }
+                g.broadcast_queue.retain(|&(c, _)| c > 0);
+                // gossip to alive nodes
                 if let Some(addr) = g.should_gossip_alive() {
                     messages.push((addr, g.generate_ping_msg()));
                 }
+                // gossip to dead nodes possibly resolving partitions
                 if let Some(addr) = g.should_gossip_dead() {
                     messages.push((addr, g.generate_ping_msg()));
                 }
-
+                // expire pings and mark suspicous
                 while let Some((_, node)) = g.ping_inflight.pop_expired(time::Instant::now()) {
                     {
                         let n = g.nodes.get_mut(&node).unwrap();
@@ -125,9 +160,9 @@ impl Inner {
                     let msg = g.generate_suspect_msg(node);
                     g.broadcast(msg);
                 }
-
+                // expire pingeqs
                 while let Some(_) = g.pingreq_inflight.pop_expired(time::Instant::now()) {}
-
+                // expire suspicous and mark dead
                 while let Some((node, _)) = g.suspicious_inflight.pop_expired(time::Instant::now()) {
                     {
                         let n = g.nodes.get_mut(&node).unwrap();
@@ -138,12 +173,15 @@ impl Inner {
                     g.broadcast(msg);
                 }
 
-                messages.extend(g.send_queue.drain(..));
+                if !messages.is_empty() {
+                    debug!("{} sending: {:?}", g.addr, messages);
+                }
             }
 
+            // send serialized messages
             for (remote_addr, msg) in messages.drain(..) {
-                if let Ok(buffer) = msg.encode(&mut stack_buffer) {
-                    let _ = socket.send_to(buffer, remote_addr);
+                if let Ok(buffer_len) = msg.encode(&mut stack_buffer) {
+                    let _ = socket.send_to(&stack_buffer[..buffer_len], remote_addr);
                 }
             }
         }
@@ -155,7 +193,7 @@ impl Inner {
 
     fn broadcast(&mut self, msg: Message) {
         let n = self.nodes.len();
-        self.broadcast_queue.push((n as Seq, msg));
+        self.broadcast_queue.push((n as u32, msg));
     }
 
     fn generate_suspect_msg(&mut self, node: net::SocketAddr) -> Message {
@@ -184,6 +222,13 @@ impl Inner {
 
     fn generate_ack_msg(&mut self, seq: Seq) -> Message {
         Message::Ack { seq: seq }
+    }
+
+    fn generate_alive_msg(&mut self) -> Message {
+        Message::Alive {
+            incarnation: self.incarnation,
+            node: self.addr.clone(),
+        }
     }
 
     fn generate_ping_msg(&mut self) -> Message {
@@ -219,6 +264,7 @@ impl Inner {
     }
 
     fn on_message(&mut self, sender: net::SocketAddr, msg: Message) {
+        debug!("{} on_message: {:?}", self.addr, msg);
         match msg {
             Message::Ping { seq } => {
                 let msg = self.generate_ack_msg(seq);
@@ -258,13 +304,19 @@ impl Inner {
                     self.incarnation = cmp::max(self.incarnation, incarnation) + 1;
                     incarnation = self.incarnation;
                 } else {
+                    let mut existing = true;
                     let n = self.nodes
                                 .entry(node)
-                                .or_insert_with(|| Node::new(NodeStatus::Alive, incarnation));
-                    if incarnation <= n.incarnation {
-                        return;
+                                .or_insert_with(|| {
+                                    existing = false;
+                                    Node::new(NodeStatus::Alive, incarnation)
+                                });
+                    if existing {
+                        if incarnation <= n.incarnation {
+                            return
+                        }
+                        n.set_status(NodeStatus::Alive, incarnation);
                     }
-                    n.set_status(NodeStatus::Alive, incarnation);
                 }
                 self.broadcast(Message::Alive {
                     incarnation: incarnation,
@@ -328,11 +380,23 @@ impl Inner {
             }
         }
     }
+
+    pub fn join(&mut self, seeds: &[&str]) {
+        for &seed in seeds {
+            if let Ok(addrs) = net::ToSocketAddrs::to_socket_addrs(seed) {
+                for addr in addrs {
+                    self.nodes.insert(addr.clone(), Node::new(NodeStatus::Dead, 0));
+                    let msg = self.generate_alive_msg();
+                    self.send(addr, msg);
+                }
+            }
+        }
+    }
 }
 
 impl Gossiper {
-    pub fn new() -> Result<Gossiper, io::Error> {
-        let socket = try!(net::UdpSocket::bind("0.0.0.0:9939"));
+    pub fn new(listen_addr: &str) -> Result<Gossiper, io::Error> {
+        let socket = try!(net::UdpSocket::bind(listen_addr));
         let inner = Arc::new(Mutex::new(Inner {
             addr: socket.local_addr().unwrap(),
             nodes: Default::default(),
@@ -345,6 +409,7 @@ impl Gossiper {
             suspicious_inflight: InFlightMap::new(),
             send_queue: Default::default(),
             broadcast_queue: Default::default(),
+            running: true,
         }));
         let inner2 = inner.clone();
         let _ = thread::Builder::new()
@@ -353,7 +418,29 @@ impl Gossiper {
         Ok(Gossiper(inner))
     }
 
-    pub fn join(&mut self) {
-        unimplemented!()
+    pub fn join(&mut self, seeds: &[&str]) {
+        self.0.lock().unwrap().join(seeds)
+    }
+}
+
+impl Drop for Gossiper {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().running = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simple() {
+        use env_logger;
+        use std::{time, thread};
+        env_logger::init().unwrap();
+        let mut g0 = Gossiper::new("0.0.0.0:8998").unwrap();
+        let mut g1 = Gossiper::new("0.0.0.0:8999").unwrap();
+        g1.join(&["0.0.0.0:8998"]);
+        thread::sleep(time::Duration::from_secs(5));
     }
 }

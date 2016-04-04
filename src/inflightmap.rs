@@ -6,7 +6,7 @@ use std::fmt;
 #[derive(Debug)]
 pub struct InFlightMap<K: Hash + Eq + Clone, V, T: Ord> {
     map: HashMap<K, V>,
-    heap: BinaryHeap<Rev<T, K>>,
+    heap: BinaryHeap<TValue<T, K>>,
 }
 
 impl<K: Hash + Eq + Clone, V, T: Ord> InFlightMap<K, V, T> {
@@ -22,7 +22,7 @@ impl<K: Hash + Eq + Clone, V, T: Ord> InFlightMap<K, V, T> {
     }
 
     pub fn insert(&mut self, key: K, value: V, timeout: T) -> Option<V> {
-        self.heap.push(Rev(timeout, key.clone()));
+        self.heap.push(TValue(timeout, key.clone()));
         self.map.insert(key, value)
     }
 
@@ -40,30 +40,30 @@ impl<K: Hash + Eq + Clone, V, T: Ord> InFlightMap<K, V, T> {
     }
 }
 
-struct Rev<T: Ord, V>(T, V);
+struct TValue<T: Ord, V>(T, V);
 
-impl<T: Ord, V> PartialEq<Rev<T, V>> for Rev<T, V> {
-    fn eq(&self, other: &Rev<T, V>) -> bool {
+impl<T: Ord, V> PartialEq<TValue<T, V>> for TValue<T, V> {
+    fn eq(&self, other: &TValue<T, V>) -> bool {
         other.0.eq(&self.0)
     }
 }
 
-impl<T: Ord, V> Eq for Rev<T, V> {}
+impl<T: Ord, V> Eq for TValue<T, V> {}
 
-impl<T: Ord, V> PartialOrd<Rev<T, V>> for Rev<T, V> {
-    fn partial_cmp(&self, other: &Rev<T, V>) -> Option<Ordering> {
+impl<T: Ord, V> PartialOrd<TValue<T, V>> for TValue<T, V> {
+    fn partial_cmp(&self, other: &TValue<T, V>) -> Option<Ordering> {
         other.0.partial_cmp(&self.0)
     }
 }
 
-impl<T: Ord, V> Ord for Rev<T, V> {
-    fn cmp(&self, other: &Rev<T, V>) -> Ordering {
+impl<T: Ord, V> Ord for TValue<T, V> {
+    fn cmp(&self, other: &TValue<T, V>) -> Ordering {
         other.0.cmp(&self.0)
     }
 }
 
-impl<T: Ord + fmt::Debug, V: fmt::Debug> fmt::Debug for Rev<T, V> {
+impl<T: Ord + fmt::Debug, V: fmt::Debug> fmt::Debug for TValue<T, V> {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        f.debug_tuple("Rev").field(&self.0).field(&self.1).finish()
+        f.debug_tuple("TValue").field(&self.0).field(&self.1).finish()
     }
 }
