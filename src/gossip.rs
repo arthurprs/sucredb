@@ -101,13 +101,19 @@ impl Node {
         }
     }
 
-    fn set_status(&mut self, status: NodeStatus, incarnation: Seq) {
+    fn set_status(&mut self, status: NodeStatus, incarnation: Seq) -> bool {
         debug!("{:?} set_status {:?} {:?}", self, status, incarnation);
         if self.status != status {
             self.status = status;
             self.status_change = time::Instant::now();
+            self.incarnation = incarnation;
+            true
+        } else if self.incarnation != incarnation {
+            self.incarnation = incarnation;
+            true
+        } else {
+            false
         }
-        self.incarnation = incarnation;
     }
 }
 
@@ -279,22 +285,28 @@ impl Inner {
                 self.send(to, msg);
             }
             Message::Ack { seq } => {
-                let on_time = if let Some(from) = self.pingreq_inflight.remove(&seq) {
+                if let Some(from) = self.pingreq_inflight.remove(&seq) {
                     self.send(from, msg);
-                    true
                 } else if let Some(_) = self.ping_inflight.remove(&seq) {
-                    true
+                    //
                 } else {
-                    false
+                    return
                 };
 
-                if on_time {
+                {
                     let n = self.nodes
-                                .entry(sender)
-                                .or_insert_with(|| Node::new(NodeStatus::Alive, 0));
+                            .entry(sender)
+                            .or_insert_with(|| Node::new(NodeStatus::Dead, 0));
                     let incarnation = n.incarnation;
-                    n.set_status(NodeStatus::Alive, incarnation);
-                }
+                    if n.set_status(NodeStatus::Alive, incarnation) {
+                        Some(Message::Alive {
+                            incarnation: incarnation,
+                            node: sender,
+                        })
+                    } else {
+                        None
+                    }
+                }.map(|msg| self.broadcast(msg));
             }
             Message::Alive { mut incarnation, node } => {
                 if node == self.addr {
@@ -309,14 +321,12 @@ impl Inner {
                                 .entry(node)
                                 .or_insert_with(|| {
                                     existing = false;
-                                    Node::new(NodeStatus::Alive, incarnation)
+                                    Node::new(NodeStatus::Dead, 0)
                                 });
-                    if existing {
-                        if incarnation <= n.incarnation {
-                            return
-                        }
-                        n.set_status(NodeStatus::Alive, incarnation);
+                    if existing && incarnation <= n.incarnation {
+                        return
                     }
+                    n.set_status(NodeStatus::Alive, incarnation);
                 }
                 self.broadcast(Message::Alive {
                     incarnation: incarnation,
