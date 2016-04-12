@@ -2,7 +2,8 @@
 #![feature(question_mark)]
 #![allow(dead_code)]
 #![plugin(serde_macros)]
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 extern crate env_logger;
 extern crate rand;
 extern crate ramp;

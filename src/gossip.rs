@@ -6,7 +6,7 @@ use inflightmap::InFlightMap;
 use serde::{Serialize, Deserialize};
 use serde_json;
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
 enum NodeStatus {
     Alive,
     Suspect,
@@ -15,31 +15,39 @@ enum NodeStatus {
 
 type Seq = u32;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+type StateTriple = (net::SocketAddr, Seq, NodeStatus);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum Message {
     Ping {
         seq: Seq,
     },
     PingReq {
         seq: Seq,
-        to: net::SocketAddr,
+        node: net::SocketAddr,
     },
-    Ack {
+    PingAck {
         seq: Seq,
     },
     Suspect {
-        incarnation: Seq,
         from: net::SocketAddr,
         node: net::SocketAddr,
+        incarnation: Seq,
     },
     Dead {
-        incarnation: Seq,
         from: net::SocketAddr,
         node: net::SocketAddr,
+        incarnation: Seq,
     },
     Alive {
         incarnation: Seq,
         node: net::SocketAddr,
+    },
+    Sync {
+        state: Vec<StateTriple>,
+    },
+    SyncAck {
+        state: Vec<StateTriple>,
     },
 }
 
@@ -47,9 +55,7 @@ impl Message {
     fn encode<'a>(&self, mut buffer: &'a mut [u8]) -> Result<usize, serde_json::Error> {
         let buffer_len = buffer.len();
         match serde_json::to_writer(&mut buffer, &self) {
-            Ok(_) => {
-                Ok(buffer_len - buffer.len())
-            },
+            Ok(_) => Ok(buffer_len - buffer.len()),
             Err(err) => {
                 debug!("{:?}", err);
                 Err(err)
@@ -82,9 +88,9 @@ struct Inner {
     next_dead_probe: time::Instant,
     seq: Seq,
     incarnation: Seq,
-    pingreq_inflight: InFlightMap<Seq, net::SocketAddr, time::Instant>,
+    pingreq_inflight: InFlightMap<Seq, (net::SocketAddr, net::SocketAddr), time::Instant>,
     ping_inflight: InFlightMap<Seq, net::SocketAddr, time::Instant>,
-    suspicious_inflight: InFlightMap<net::SocketAddr, (), time::Instant>,
+    suspicious_inflight: InFlightMap<net::SocketAddr, time::Instant, time::Instant>,
     send_queue: VecDeque<(net::SocketAddr, Message)>,
     broadcast_queue: Vec<(u32, Message)>,
     running: bool,
@@ -129,19 +135,20 @@ impl Inner {
                 if let Ok(msg) = Message::decode(&stack_buffer[..buffer_len]) {
                     g.lock().unwrap().on_message(remote_addr, msg);
                 } else {
-                    info!("{} cant parse message", addr);
+                    warn!("{} cant parse message", addr);
                 }
             }
 
+            let now = time::Instant::now();
             {
                 let mut g = g.lock().unwrap();
                 // drain send queue
                 messages.extend(g.send_queue.drain(..));
                 // drain broadcast queue
                 let node_count = g.nodes.len();
-                for cm in &g.broadcast_queue {
-                    for (n, _) in g.nodes.keys().zip(0..cm.0) {
-                        messages.push((n.clone(), cm.1.clone()));
+                for &(counter, ref msg) in &g.broadcast_queue {
+                    for (&addr, _) in g.nodes.keys().zip(0..counter) {
+                        messages.push((addr, msg.clone()));
                     }
                 }
                 for cm in &mut g.broadcast_queue {
@@ -149,34 +156,42 @@ impl Inner {
                 }
                 g.broadcast_queue.retain(|&(c, _)| c > 0);
                 // gossip to alive nodes
-                if let Some(addr) = g.should_gossip_alive() {
-                    messages.push((addr, g.generate_ping_msg()));
-                }
-                // gossip to dead nodes possibly resolving partitions
-                if let Some(addr) = g.should_gossip_dead() {
-                    messages.push((addr, g.generate_ping_msg()));
-                }
-                // expire pings and mark suspicous
-                while let Some((_, node)) = g.ping_inflight.pop_expired(time::Instant::now()) {
-                    {
-                        let n = g.nodes.get_mut(&node).unwrap();
-                        let incarnation = n.incarnation;
-                        n.set_status(NodeStatus::Suspect, incarnation);
+                g.maybe_gossip_alive(now);
+                // gossip to dead nodes possibly resolving partitions, etc
+                g.maybe_gossip_dead(now);
+                // expire pings and fire indirect pings
+                while let Some((seq, node)) = g.ping_inflight.pop_expired(now) {
+                    if g.send_ping_reqs(seq, node) == 0 {
+                        g.pingreq_inflight.insert(seq, (addr, node), now);
                     }
-                    let msg = g.generate_suspect_msg(node);
-                    g.broadcast(msg);
                 }
-                // expire pingeqs
-                while let Some(_) = g.pingreq_inflight.pop_expired(time::Instant::now()) {}
-                // expire suspicous and mark dead
-                while let Some((node, _)) = g.suspicious_inflight.pop_expired(time::Instant::now()) {
-                    {
-                        let n = g.nodes.get_mut(&node).unwrap();
-                        let incarnation = n.incarnation;
-                        n.set_status(NodeStatus::Dead, incarnation);
-                    }
-                    let msg = g.generate_dead_msg(node);
-                    g.broadcast(msg);
+                // expire pingreqs and mark as suspect if we are the originating node
+                while let Some((_, (from, node))) = g.pingreq_inflight.pop_expired(now) {
+                    let msg = match g.nodes.get(&node) {
+                        Some(n) if from == addr => {
+                            Message::Suspect {
+                                node: node,
+                                incarnation: n.incarnation,
+                                from: addr,
+                            }
+                        }
+                        _ => continue,
+                    };
+                    g.on_message(addr, msg);
+                }
+                // expire suspicious and mark dead if status didnt change
+                while let Some((node, status_change)) = g.suspicious_inflight.pop_expired(now) {
+                    let msg = match g.nodes.get(&node) {
+                        Some(n) if n.status_change == status_change => {
+                            Message::Dead {
+                                node: node,
+                                incarnation: n.incarnation,
+                                from: addr,
+                            }
+                        }
+                        _ => continue,
+                    };
+                    g.on_message(addr, msg);
                 }
 
                 if !messages.is_empty() {
@@ -198,105 +213,108 @@ impl Inner {
     }
 
     fn broadcast(&mut self, msg: Message) {
-        let n = self.nodes.len();
-        self.broadcast_queue.push((n as u32, msg));
+        // self.nodes dont include self, so + 2
+        let n = ((self.nodes.len() + 2) as f32).log10().ceil() as u32 * 4;
+        self.broadcast_queue.push((n, msg));
     }
 
-    fn generate_suspect_msg(&mut self, node: net::SocketAddr) -> Message {
-        Message::Suspect {
-            incarnation: self.nodes.get(&node).unwrap().incarnation,
-            from: self.addr.clone(),
-            node: node,
-        }
-    }
-
-    fn generate_dead_msg(&mut self, node: net::SocketAddr) -> Message {
-        Message::Suspect {
-            incarnation: self.nodes.get(&node).unwrap().incarnation,
-            from: self.addr.clone(),
-            node: node,
-        }
-    }
-
-    fn generate_pingreq_msg(&mut self, seq: Seq, to: net::SocketAddr) -> Message {
-        Message::PingReq { seq: seq, to: to }
-    }
-
-    fn generate_ping_msg_raw(&mut self, seq: Seq) -> Message {
-        Message::Ping { seq: seq }
-    }
-
-    fn generate_ack_msg(&mut self, seq: Seq) -> Message {
-        Message::Ack { seq: seq }
-    }
-
-    fn generate_alive_msg(&mut self) -> Message {
-        Message::Alive {
-            incarnation: self.incarnation,
-            node: self.addr.clone(),
-        }
-    }
-
-    fn generate_ping_msg(&mut self) -> Message {
+    fn generate_ping_msg(&mut self) -> (Seq, Message) {
         let seq = self.seq;
         self.seq += 1;
-        Message::Ping { seq: seq }
+        (seq, Message::Ping { seq: seq })
     }
 
-    fn should_gossip_alive(&mut self) -> Option<net::SocketAddr> {
+    fn get_candidates(&self, alive: bool, limit: usize) -> Vec<net::SocketAddr> {
+        let mut candidates: Vec<_> = self.nodes
+                                         .iter()
+                                         .filter_map(|(&k, v)| {
+                                             if (alive && v.status != NodeStatus::Dead) ||
+                                                (!alive && v.status == NodeStatus::Alive) {
+                                                 Some(k)
+                                             } else {
+                                                 None
+                                             }
+                                         })
+                                         .collect();
+        if candidates.len() > limit {
+            thread_rng().shuffle(&mut candidates);
+            candidates.truncate(limit);
+        }
+        candidates
+    }
+
+    fn send_ping_reqs(&mut self, seq: Seq, node: net::SocketAddr) -> usize {
         let now = time::Instant::now();
+        let candidates = self.get_candidates(true, 3);
+        for &k in &candidates {
+            self.pingreq_inflight
+                .insert(seq, (self.addr, k), now + time::Duration::from_millis(500));
+            self.send(k,
+                      Message::PingReq {
+                          seq: seq,
+                          node: node,
+                      });
+        }
+
+        candidates.len()
+    }
+
+    fn maybe_gossip_alive(&mut self, now: time::Instant) -> usize {
         if now < self.next_alive_probe {
-            return None;
+            return 0;
         }
         self.next_alive_probe = now + time::Duration::from_secs(1);
-        let alive = self.nodes
-                        .iter()
-                        .filter(|&(_, v)| v.status != NodeStatus::Dead)
-                        .collect::<Vec<_>>();
-        thread_rng().choose(&alive).map(|kv| kv.0.clone())
+        self.get_candidates(true, 3)
+            .iter()
+            .map(|&k| {
+                let (seq, msg) = self.generate_ping_msg();
+                self.ping_inflight.insert(seq, k, now + time::Duration::from_millis(500));
+                self.send(k, msg)
+            })
+            .len()
     }
 
-    fn should_gossip_dead(&mut self) -> Option<net::SocketAddr> {
-        let now = time::Instant::now();
+    fn maybe_gossip_dead(&mut self, now: time::Instant) -> usize {
         if now < self.next_dead_probe {
-            return None;
+            return 0;
         }
         self.next_dead_probe = now + time::Duration::from_secs(1);
-        let dead = self.nodes
-                       .iter()
-                       .filter(|&(_, v)| v.status == NodeStatus::Dead)
-                       .collect::<Vec<_>>();
-        thread_rng().choose(&dead).map(|kv| kv.0.clone())
+        self.get_candidates(false, 3)
+            .iter()
+            .map(|&k| {
+                let (seq, msg) = self.generate_ping_msg();
+                self.ping_inflight.insert(seq, k, now + time::Duration::from_millis(500));
+                self.send(k, msg)
+            })
+            .len()
     }
 
     fn on_message(&mut self, sender: net::SocketAddr, msg: Message) {
         debug!("{} on_message: {:?}", self.addr, msg);
         match msg {
             Message::Ping { seq } => {
-                let msg = self.generate_ack_msg(seq);
-                self.send(sender, msg);
+                self.send(sender, Message::PingAck { seq: seq });
             }
-            Message::PingReq { seq, to } => {
+            Message::PingReq { seq, node } => {
                 self.pingreq_inflight.insert(seq,
-                                             sender,
+                                             (sender, node),
                                              time::Instant::now() +
                                              time::Duration::from_millis(500));
-                let msg = self.generate_ping_msg_raw(seq);
-                self.send(to, msg);
+                self.send(node, Message::Ping { seq: seq });
             }
-            Message::Ack { seq } => {
-                if let Some(from) = self.pingreq_inflight.remove(&seq) {
+            Message::PingAck { seq } => {
+                if let Some((from, _)) = self.pingreq_inflight.remove(&seq) {
                     self.send(from, msg);
                 } else if let Some(_) = self.ping_inflight.remove(&seq) {
                     //
                 } else {
-                    return
+                    return;
                 };
 
                 {
                     let n = self.nodes
-                            .entry(sender)
-                            .or_insert_with(|| Node::new(NodeStatus::Dead, 0));
+                                .entry(sender)
+                                .or_insert_with(|| Node::new(NodeStatus::Dead, 0));
                     let incarnation = n.incarnation;
                     if n.set_status(NodeStatus::Alive, incarnation) {
                         Some(Message::Alive {
@@ -306,7 +324,8 @@ impl Inner {
                     } else {
                         None
                     }
-                }.map(|msg| self.broadcast(msg));
+                }
+                .map(|msg| self.broadcast(msg));
             }
             Message::Alive { mut incarnation, node } => {
                 if node == self.addr {
@@ -324,7 +343,7 @@ impl Inner {
                                     Node::new(NodeStatus::Dead, 0)
                                 });
                     if existing && incarnation <= n.incarnation {
-                        return
+                        return;
                     }
                     n.set_status(NodeStatus::Alive, incarnation);
                 }
@@ -351,6 +370,10 @@ impl Inner {
                         return;
                     }
                     n.set_status(NodeStatus::Suspect, incarnation);
+                    self.suspicious_inflight.insert(node,
+                                                    n.status_change,
+                                                    time::Instant::now() +
+                                                    time::Duration::from_secs(1));
                 } else {
                     return;
                 }
@@ -388,16 +411,52 @@ impl Inner {
                     node: node,
                 });
             }
+            Message::Sync { state } => {
+                self.do_sync(state);
+                let ack_state = self.generate_sync_state();
+                self.send(sender, Message::SyncAck { state: ack_state });
+            }
+            Message::SyncAck { state } => {
+                self.do_sync(state);
+            }
+        }
+    }
+
+    fn generate_sync_state(&mut self) -> Vec<StateTriple> {
+        let mut state: Vec<_> = self.nodes
+                                    .iter()
+                                    .map(|(k, n)| (k.clone(), n.incarnation, n.status))
+                                    .collect();
+        state.push((self.addr, self.incarnation, NodeStatus::Alive));
+        state
+    }
+
+    fn do_sync(&mut self, state: Vec<StateTriple>) {
+        let sender = self.addr;
+        for (addr, incarnation, status) in state {
+            self.on_message(sender,
+                            if status == NodeStatus::Alive {
+                                Message::Alive {
+                                    node: addr,
+                                    incarnation: incarnation,
+                                }
+                            } else {
+                                Message::Suspect {
+                                    from: sender,
+                                    node: addr,
+                                    incarnation: incarnation,
+                                }
+                            });
         }
     }
 
     pub fn join(&mut self, seeds: &[&str]) {
+        let state = self.generate_sync_state();
         for &seed in seeds {
             if let Ok(addrs) = net::ToSocketAddrs::to_socket_addrs(seed) {
                 for addr in addrs {
-                    self.nodes.insert(addr.clone(), Node::new(NodeStatus::Dead, 0));
-                    let msg = self.generate_alive_msg();
-                    self.send(addr, msg);
+                    self.nodes.insert(addr, Node::new(NodeStatus::Dead, 0));
+                    self.send(addr, Message::Sync { state: state.clone() });
                 }
             }
         }
