@@ -90,7 +90,7 @@ struct Inner {
     incarnation: Seq,
     pingreq_inflight: InFlightMap<Seq, (net::SocketAddr, net::SocketAddr), time::Instant>,
     ping_inflight: InFlightMap<Seq, net::SocketAddr, time::Instant>,
-    suspicious_inflight: InFlightMap<net::SocketAddr, time::Instant, time::Instant>,
+    suspect_inflight: InFlightMap<net::SocketAddr, time::Instant, time::Instant>,
     send_queue: VecDeque<(net::SocketAddr, Message)>,
     broadcast_queue: Vec<(u32, Message)>,
     running: bool,
@@ -180,7 +180,7 @@ impl Inner {
                     g.on_message(addr, msg);
                 }
                 // expire suspicious and mark dead if status didnt change
-                while let Some((node, status_change)) = g.suspicious_inflight.pop_expired(now) {
+                while let Some((node, status_change)) = g.suspect_inflight.pop_expired(now) {
                     let msg = match g.nodes.get(&node) {
                         Some(n) if n.status_change == status_change => {
                             Message::Dead {
@@ -229,7 +229,7 @@ impl Inner {
                                          .iter()
                                          .filter_map(|(&k, v)| {
                                              if (alive && v.status != NodeStatus::Dead) ||
-                                                (!alive && v.status == NodeStatus::Alive) {
+                                                (!alive && v.status == NodeStatus::Dead) {
                                                  Some(k)
                                              } else {
                                                  None
@@ -240,6 +240,10 @@ impl Inner {
             thread_rng().shuffle(&mut candidates);
             candidates.truncate(limit);
         }
+        info!("{:?} nodes are {:?}, returning {} candidates",
+              self.addr,
+              self.nodes,
+              candidates.len());
         candidates
     }
 
@@ -263,15 +267,17 @@ impl Inner {
         if now < self.next_alive_probe {
             return 0;
         }
+        info!("pass");
         self.next_alive_probe = now + time::Duration::from_secs(1);
         self.get_candidates(true, 3)
             .iter()
             .map(|&k| {
+                info!("sending ping");
                 let (seq, msg) = self.generate_ping_msg();
                 self.ping_inflight.insert(seq, k, now + time::Duration::from_millis(500));
                 self.send(k, msg)
             })
-            .len()
+            .count()
     }
 
     fn maybe_gossip_dead(&mut self, now: time::Instant) -> usize {
@@ -286,7 +292,7 @@ impl Inner {
                 self.ping_inflight.insert(seq, k, now + time::Duration::from_millis(500));
                 self.send(k, msg)
             })
-            .len()
+            .count()
     }
 
     fn on_message(&mut self, sender: net::SocketAddr, msg: Message) {
@@ -311,21 +317,20 @@ impl Inner {
                     return;
                 };
 
-                {
-                    let n = self.nodes
-                                .entry(sender)
-                                .or_insert_with(|| Node::new(NodeStatus::Dead, 0));
-                    let incarnation = n.incarnation;
-                    if n.set_status(NodeStatus::Alive, incarnation) {
-                        Some(Message::Alive {
-                            incarnation: incarnation,
-                            node: sender,
-                        })
-                    } else {
-                        None
-                    }
-                }
-                .map(|msg| self.broadcast(msg));
+                self.nodes
+                    .get_mut(&sender)
+                    .and_then(|n| {
+                        let incarnation = n.incarnation;
+                        if n.set_status(NodeStatus::Alive, incarnation) {
+                            Some(Message::Alive {
+                                incarnation: incarnation,
+                                node: sender,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .map(|msg| self.broadcast(msg));
             }
             Message::Alive { mut incarnation, node } => {
                 if node == self.addr {
@@ -370,10 +375,10 @@ impl Inner {
                         return;
                     }
                     n.set_status(NodeStatus::Suspect, incarnation);
-                    self.suspicious_inflight.insert(node,
-                                                    n.status_change,
-                                                    time::Instant::now() +
-                                                    time::Duration::from_secs(1));
+                    self.suspect_inflight.insert(node,
+                                                 n.status_change,
+                                                 time::Instant::now() +
+                                                 time::Duration::from_secs(1));
                 } else {
                     return;
                 }
@@ -455,7 +460,6 @@ impl Inner {
         for &seed in seeds {
             if let Ok(addrs) = net::ToSocketAddrs::to_socket_addrs(seed) {
                 for addr in addrs {
-                    self.nodes.insert(addr, Node::new(NodeStatus::Dead, 0));
                     self.send(addr, Message::Sync { state: state.clone() });
                 }
             }
@@ -475,7 +479,7 @@ impl Gossiper {
             next_dead_probe: time::Instant::now(),
             ping_inflight: InFlightMap::new(),
             pingreq_inflight: InFlightMap::new(),
-            suspicious_inflight: InFlightMap::new(),
+            suspect_inflight: InFlightMap::new(),
             send_queue: Default::default(),
             broadcast_queue: Default::default(),
             running: true,
