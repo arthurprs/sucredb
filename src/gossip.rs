@@ -13,6 +13,8 @@ enum NodeStatus {
     Dead,
 }
 
+const PACKET_SIZE: usize = 1400;
+
 pub trait Metadata: Serialize + Deserialize + Clone + Send + fmt::Debug {}
 
 impl<T: Serialize + Deserialize + Clone + Send + fmt::Debug> Metadata for T {}
@@ -57,12 +59,12 @@ enum Message<T: Metadata> {
 }
 
 impl<T: Metadata> Message<T> {
-    fn encode<'a>(&self, mut buffer: &'a mut [u8]) -> Result<usize, serde_json::Error> {
+    fn encode(&self, mut buffer: &mut [u8]) -> Result<usize, serde_json::Error> {
         let buffer_len = buffer.len();
         match serde_json::to_writer(&mut buffer, &self) {
             Ok(_) => Ok(buffer_len - buffer.len()),
             Err(err) => {
-                debug!("{:?}", err);
+                debug!("json encode err: {:?}", err);
                 Err(err)
             }
         }
@@ -72,7 +74,7 @@ impl<T: Metadata> Message<T> {
         match serde_json::from_slice(buffer) {
             Ok(msg) => Ok(msg),
             Err(err) => {
-                debug!("{:?}", err);
+                debug!("json decode err: {:?}", err);
                 Err(err)
             }
         }
@@ -89,18 +91,18 @@ struct Node<T: Metadata> {
 
 struct Inner<T: Metadata> {
     addr: net::SocketAddr,
-    nodes: HashMap<net::SocketAddr, Node<T>>,
-    next_alive_probe: time::Instant,
-    next_dead_probe: time::Instant,
     seq: Seq,
     incarnation: Seq,
     meta: T,
+    nodes: HashMap<net::SocketAddr, Node<T>>,
+    next_alive_probe: time::Instant,
+    next_dead_probe: time::Instant,
     pingreq_inflight: InFlightMap<Seq, (net::SocketAddr, net::SocketAddr), time::Instant>,
     ping_inflight: InFlightMap<Seq, net::SocketAddr, time::Instant>,
     suspect_inflight: InFlightMap<net::SocketAddr, time::Instant, time::Instant>,
     send_queue: VecDeque<(net::SocketAddr, Message<T>)>,
     broadcast_queue: Vec<(u32, Message<T>)>,
-    running: bool,
+    running: isize,
 }
 
 pub struct Gossiper<T: Metadata>(Arc<Mutex<Inner<T>>>);
@@ -133,12 +135,13 @@ impl<T: Metadata> Node<T> {
 
 impl<T: Metadata> Inner<T> {
     fn run(socket: net::UdpSocket, g: Arc<Mutex<Inner<T>>>) {
-        let mut stack_buffer = [0u8; 1500];
+        let mut stack_buffer = [0u8; PACKET_SIZE];
         let mut messages = Vec::new();
         let addr = g.lock().unwrap().addr.clone();
+        let mut broadcast_counter = 0usize;
         socket.set_read_timeout(Some(time::Duration::from_millis(5))).unwrap();
         socket.set_write_timeout(Some(time::Duration::from_millis(5))).unwrap();
-        while g.lock().unwrap().running {
+        while g.lock().unwrap().running > 0 {
             while let Ok((buffer_len, remote_addr)) = socket.recv_from(&mut stack_buffer) {
                 if let Ok(msg) = Message::decode(&stack_buffer[..buffer_len]) {
                     g.lock().unwrap().on_message(remote_addr, msg);
@@ -153,14 +156,14 @@ impl<T: Metadata> Inner<T> {
                 // drain send queue
                 messages.extend(g.send_queue.drain(..));
                 // drain broadcast queue
-                let node_count = g.nodes.len();
-                for &(counter, ref msg) in &g.broadcast_queue {
-                    for (&addr, _) in g.nodes.keys().zip(0..counter) {
-                        messages.push((addr, msg.clone()));
+                let mut candidates = g.get_candidates(true, !0 as usize);
+                for &mut (ref mut counter, ref msg) in &mut g.broadcast_queue {
+                    thread_rng().shuffle(&mut candidates);
+                    for _ in 0..cmp::min(candidates.len(), *counter as usize) {
+                        messages.push((candidates[broadcast_counter % candidates.len()], msg.clone()));
+                        *counter -= 1;
+                        broadcast_counter += 1;
                     }
-                }
-                for cm in &mut g.broadcast_queue {
-                    cm.0 -= cmp::min(node_count as u32, cm.0);
                 }
                 g.broadcast_queue.retain(|&(c, _)| c > 0);
                 // gossip to alive nodes
@@ -201,9 +204,6 @@ impl<T: Metadata> Inner<T> {
                     };
                     g.on_message(addr, msg);
                 }
-
-                if !messages.is_empty() {
-                }
             }
 
             // send serialized messages
@@ -214,6 +214,9 @@ impl<T: Metadata> Inner<T> {
                 }
             }
         }
+
+        drop(socket);
+        g.lock().unwrap().running = -1;
     }
 
     fn send(&mut self, to: net::SocketAddr, msg: Message<T>) {
@@ -249,21 +252,20 @@ impl<T: Metadata> Inner<T> {
             candidates.truncate(limit);
         }
         trace!("{:?} nodes are {:?}, returning {} candidates",
-              self.addr,
-              self.nodes,
-              candidates.len());
+               self.addr,
+               self.nodes,
+               candidates.len());
         candidates
     }
 
     fn send_ping_reqs(&mut self, seq: Seq, node: net::SocketAddr) -> usize {
         let now = time::Instant::now();
-        let candidates = self.get_candidates(true, 4);
-        info!("{} sending indirect pings to {} through {} other nodes",
-            self.addr, node, candidates.len() - 1);
+        let candidates = self.get_candidates(true, 3);
+        debug!("{} sending indirect pings to {} through {} other nodes",
+              self.addr,
+              node,
+              candidates.len());
         for &k in &candidates {
-            if k == node {
-                continue
-            }
             self.pingreq_inflight
                 .insert(seq, (self.addr, k), now + time::Duration::from_millis(500));
             self.send(k,
@@ -281,14 +283,20 @@ impl<T: Metadata> Inner<T> {
         }
         self.next_alive_probe = now + time::Duration::from_secs(1);
         let candidates = self.get_candidates(true, 3);
-        if candidates.len() == 0 {
-            return 0;
-        }
-        debug!("{} gossiping to {} alive nodes", self.addr, candidates.len());
-        for &k in &candidates {
-            let (seq, msg) = self.generate_ping_msg();
-            self.ping_inflight.insert(seq, k, now + time::Duration::from_millis(500));
-            self.send(k, msg)
+        if candidates.len() != 0 {
+            debug!("{} gossiping to {} alive nodes",
+                   self.addr,
+                   candidates.len());
+            for &k in &candidates {
+                let (seq, msg) = self.generate_ping_msg();
+                self.ping_inflight.insert(seq, k, now + time::Duration::from_millis(500));
+                self.send(k, msg);
+                // chance to fire a sync message as well
+                if thread_rng().gen::<f32>() < 0.33f32 {
+                    let sync_state = self.generate_sync_state();
+                    self.send(k, Message::Sync { state: sync_state });
+                }
+            }
         }
         candidates.len()
     }
@@ -300,14 +308,13 @@ impl<T: Metadata> Inner<T> {
         self.next_dead_probe = now + time::Duration::from_secs(1);
 
         let candidates = self.get_candidates(false, 3);
-        if candidates.len() == 0 {
-            return 0;
-        }
-        debug!("{} gossiping to {} dead nodes", self.addr, candidates.len());
-        for &k in &candidates {
-            let (seq, msg) = self.generate_ping_msg();
-            self.ping_inflight.insert(seq, k, now + time::Duration::from_millis(500));
-            self.send(k, msg)
+        if candidates.len() != 0 {
+            debug!("{} gossiping to {} dead nodes", self.addr, candidates.len());
+            for &k in &candidates {
+                let (seq, msg) = self.generate_ping_msg();
+                self.ping_inflight.insert(seq, k, now + time::Duration::from_millis(500));
+                self.send(k, msg)
+            }
         }
         candidates.len()
     }
@@ -331,6 +338,7 @@ impl<T: Metadata> Inner<T> {
                 } else if let Some(_) = self.ping_inflight.remove(&seq) {
                     //
                 } else {
+                    // do nothing if we dont have it in state
                     return;
                 };
 
@@ -453,30 +461,35 @@ impl<T: Metadata> Inner<T> {
         let mut state: Vec<_> = self.nodes
                                     .iter()
                                     .map(|(k, n)| {
-                                    (k.clone(), n.incarnation, n.status, n.meta.clone())
+                                        (k.clone(), n.incarnation, n.status, n.meta.clone())
                                     })
                                     .collect();
         state.push((self.addr, self.incarnation, NodeStatus::Alive, self.meta.clone()));
+        state.truncate(25);
         state
     }
 
     fn do_sync(&mut self, state: Vec<StateTriple<T>>) {
         let sender = self.addr;
         for (addr, incarnation, status, meta) in state {
-            self.on_message(sender,
-                            if status == NodeStatus::Alive {
-                                Message::Alive {
-                                    node: addr,
-                                    incarnation: incarnation,
-                                    meta: meta,
-                                }
-                            } else {
-                                Message::Suspect {
-                                    from: sender,
-                                    node: addr,
-                                    incarnation: incarnation,
-                                }
-                            });
+            let msg = match status {
+                NodeStatus::Alive => {
+                    Message::Alive {
+                        node: addr,
+                        incarnation: incarnation,
+                        meta: meta,
+                    }
+                }
+                // threat suspect and dead the same
+                NodeStatus::Suspect | NodeStatus::Dead => {
+                    Message::Suspect {
+                        from: sender,
+                        node: addr,
+                        incarnation: incarnation,
+                    }
+                }
+            };
+            self.on_message(sender, msg);
         }
     }
 
@@ -508,23 +521,34 @@ impl<T: Metadata + 'static> Gossiper<T> {
             suspect_inflight: InFlightMap::new(),
             send_queue: Default::default(),
             broadcast_queue: Default::default(),
-            running: true,
+            running: 1,
         }));
         let inner2 = inner.clone();
         let _ = thread::Builder::new()
-                    .name("Gossiper".into())
+                    .name(format!("Gossiper {}", listen_addr))
                     .spawn(move || Inner::run(socket, inner2));
         Ok(Gossiper(inner))
     }
 
-    pub fn join(&mut self, seeds: &[&str]) {
+    pub fn join(&self, seeds: &[&str]) {
         self.0.lock().unwrap().join(seeds)
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.0.lock().unwrap().nodes.len() + 1
+    }
+
+    pub fn alive_count(&self) -> usize {
+        self.0.lock().unwrap().nodes.values().filter(|n| n.status != NodeStatus::Dead).count() + 1
     }
 }
 
 impl<T: Metadata> Drop for Gossiper<T> {
     fn drop(&mut self) {
-        self.0.lock().unwrap().running = false;
+        self.0.lock().unwrap().running = 0;
+        while self.0.lock().unwrap().running >= 0 {
+            thread::sleep(time::Duration::from_millis(100));
+        }
     }
 }
 
@@ -532,14 +556,44 @@ impl<T: Metadata> Drop for Gossiper<T> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn simple() {
+    fn test_converge(n: usize) {
         use env_logger;
         use std::{time, thread};
-        env_logger::init().unwrap();
-        let mut g0 = Gossiper::new("0.0.0.0:8998", ()).unwrap();
-        let mut g1 = Gossiper::new("0.0.0.0:8999", ()).unwrap();
-        g1.join(&["0.0.0.0:8998"]);
-        thread::sleep(time::Duration::from_secs(5));
+        let _ = env_logger::init();
+        let g: Vec<_> = (0..n)
+                            .map(|i| Gossiper::new(&format!("0.0.0.0:{}", 9000 + i), ()).unwrap())
+                            .collect();
+        let start = time::Instant::now();
+        for (i, g0) in (&g[1..]).iter().enumerate() {
+            g0.join(&[&format!("0.0.0.0:{}", 9000 + i)]);
+        }
+        for _ in 0..(n * 1000) {
+            if g.iter().all(|g| g.alive_count() == n) {
+                break;
+            }
+            thread::sleep(time::Duration::from_millis(1));
+        }
+        warn!("{:?} has passed", time::Instant::now() - start);
+        assert!(g.iter().all(|g| g.alive_count() == n),
+                "{:?}",
+                g.iter().map(|g| g.alive_count()).collect::<Vec<_>>());
     }
+
+    macro_rules! test_converge_n {
+        ($fn_name: ident, $n: expr) => (
+            #[test]
+            fn $fn_name() {
+                test_converge($n);
+            }
+        );
+    }
+
+    test_converge_n!(test_converge_1, 1);
+    test_converge_n!(test_converge_2, 2);
+    test_converge_n!(test_converge_3, 3);
+    test_converge_n!(test_converge_5, 5);
+    test_converge_n!(test_converge_10, 10);
+    test_converge_n!(test_converge_20, 20);
+    test_converge_n!(test_converge_30, 30);
+    test_converge_n!(test_converge_50, 50);
 }
