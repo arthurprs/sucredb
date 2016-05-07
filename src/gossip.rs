@@ -6,14 +6,19 @@ use inflightmap::InFlightMap;
 use serde::{Serialize, Deserialize};
 use serde_json;
 
+const PACKET_SIZE: usize = 1400;
+const SUSPECT_TIMEOUT_MS: u64 = 1000;
+const PING_TIMEOUT_MS: u64 = 500;
+const PING_PERIOD_MS: u64 = 1000;
+const PING_CANDIDATES: usize = 3;
+const PINGREQ_CANDIDATES: usize = 3;
+
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
 enum NodeStatus {
     Alive,
     Suspect,
     Dead,
 }
-
-const PACKET_SIZE: usize = 1400;
 
 pub trait Metadata: Serialize + Deserialize + Clone + Send + fmt::Debug {}
 
@@ -118,7 +123,6 @@ impl<T: Metadata> Node<T> {
     }
 
     fn set_status(&mut self, status: NodeStatus, incarnation: Seq) -> bool {
-        debug!("{:?} set_status {:?} {:?}", self, status, incarnation);
         if self.status != status {
             self.status = status;
             self.status_change = time::Instant::now();
@@ -139,8 +143,8 @@ impl<T: Metadata> Inner<T> {
         let mut messages = Vec::new();
         let addr = g.lock().unwrap().addr.clone();
         let mut broadcast_counter = 0usize;
-        socket.set_read_timeout(Some(time::Duration::from_millis(5))).unwrap();
-        socket.set_write_timeout(Some(time::Duration::from_millis(5))).unwrap();
+        socket.set_read_timeout(Some(time::Duration::from_millis(1))).unwrap();
+        socket.set_write_timeout(Some(time::Duration::from_millis(1))).unwrap();
         while g.lock().unwrap().running > 0 {
             while let Ok((buffer_len, remote_addr)) = socket.recv_from(&mut stack_buffer) {
                 if let Ok(msg) = Message::decode(&stack_buffer[..buffer_len]) {
@@ -160,7 +164,8 @@ impl<T: Metadata> Inner<T> {
                 for &mut (ref mut counter, ref msg) in &mut g.broadcast_queue {
                     thread_rng().shuffle(&mut candidates);
                     for _ in 0..cmp::min(candidates.len(), *counter as usize) {
-                        messages.push((candidates[broadcast_counter % candidates.len()], msg.clone()));
+                        messages.push((candidates[broadcast_counter % candidates.len()],
+                                       msg.clone()));
                         *counter -= 1;
                         broadcast_counter += 1;
                     }
@@ -172,12 +177,14 @@ impl<T: Metadata> Inner<T> {
                 g.maybe_gossip_dead(now);
                 // expire pings and fire indirect pings
                 while let Some((seq, node)) = g.ping_inflight.pop_expired(now) {
+                    debug!("{:?} pingreq to {:?}", addr, node);
                     if g.send_ping_reqs(seq, node) == 0 {
                         g.pingreq_inflight.insert(seq, (addr, node), now);
                     }
                 }
                 // expire pingreqs and mark as suspect if we are the originating node
                 while let Some((_, (from, node))) = g.pingreq_inflight.pop_expired(now) {
+                    debug!("pingreq expired {:?} {:?} - {:?}", from, node, addr);
                     let msg = match g.nodes.get(&node) {
                         Some(n) if from == addr => {
                             Message::Suspect {
@@ -209,7 +216,7 @@ impl<T: Metadata> Inner<T> {
             // send serialized messages
             for (remote_addr, msg) in messages.drain(..) {
                 if let Ok(buffer_len) = msg.encode(&mut stack_buffer) {
-                    debug!("{} sending to {} {:?}", addr, remote_addr, msg);
+                    trace!("{} sending to {} {:?}", addr, remote_addr, msg);
                     let _ = socket.send_to(&stack_buffer[..buffer_len], remote_addr);
                 }
             }
@@ -260,11 +267,11 @@ impl<T: Metadata> Inner<T> {
 
     fn send_ping_reqs(&mut self, seq: Seq, node: net::SocketAddr) -> usize {
         let now = time::Instant::now();
-        let candidates = self.get_candidates(true, 3);
+        let candidates = self.get_candidates(true, PINGREQ_CANDIDATES);
         debug!("{} sending indirect pings to {} through {} other nodes",
-              self.addr,
-              node,
-              candidates.len());
+               self.addr,
+               node,
+               candidates.len());
         for &k in &candidates {
             self.pingreq_inflight
                 .insert(seq, (self.addr, k), now + time::Duration::from_millis(500));
@@ -281,15 +288,16 @@ impl<T: Metadata> Inner<T> {
         if now < self.next_alive_probe {
             return 0;
         }
-        self.next_alive_probe = now + time::Duration::from_secs(1);
-        let candidates = self.get_candidates(true, 3);
+        self.next_alive_probe = now + time::Duration::from_millis(PING_PERIOD_MS);
+        let candidates = self.get_candidates(true, PING_CANDIDATES);
         if candidates.len() != 0 {
             debug!("{} gossiping to {} alive nodes",
                    self.addr,
                    candidates.len());
             for &k in &candidates {
                 let (seq, msg) = self.generate_ping_msg();
-                self.ping_inflight.insert(seq, k, now + time::Duration::from_millis(500));
+                self.ping_inflight
+                    .insert(seq, k, now + time::Duration::from_millis(PING_TIMEOUT_MS));
                 self.send(k, msg);
                 // chance to fire a sync message as well
                 if thread_rng().gen::<f32>() < 0.33f32 {
@@ -305,14 +313,15 @@ impl<T: Metadata> Inner<T> {
         if now < self.next_dead_probe {
             return 0;
         }
-        self.next_dead_probe = now + time::Duration::from_secs(1);
+        self.next_dead_probe = now + time::Duration::from_secs(PING_PERIOD_MS);
 
-        let candidates = self.get_candidates(false, 3);
+        let candidates = self.get_candidates(false, PING_CANDIDATES);
         if candidates.len() != 0 {
             debug!("{} gossiping to {} dead nodes", self.addr, candidates.len());
             for &k in &candidates {
                 let (seq, msg) = self.generate_ping_msg();
-                self.ping_inflight.insert(seq, k, now + time::Duration::from_millis(500));
+                self.ping_inflight
+                    .insert(seq, k, now + time::Duration::from_millis(PING_TIMEOUT_MS));
                 self.send(k, msg)
             }
         }
@@ -320,7 +329,7 @@ impl<T: Metadata> Inner<T> {
     }
 
     fn on_message(&mut self, sender: net::SocketAddr, msg: Message<T>) {
-        debug!("{} on_message: {:?}", self.addr, msg);
+        trace!("{} on_message: {:?}", self.addr, msg);
         match msg {
             Message::Ping { seq } => {
                 self.send(sender, Message::PingAck { seq: seq });
@@ -329,7 +338,7 @@ impl<T: Metadata> Inner<T> {
                 self.pingreq_inflight.insert(seq,
                                              (sender, node),
                                              time::Instant::now() +
-                                             time::Duration::from_millis(500));
+                                             time::Duration::from_millis(PING_TIMEOUT_MS));
                 self.send(node, Message::Ping { seq: seq });
             }
             Message::PingAck { seq } => {
@@ -363,6 +372,8 @@ impl<T: Metadata> Inner<T> {
                     if incarnation <= self.incarnation {
                         return;
                     }
+                    // refute
+                    debug!("node {:?} REFUTE ALIVE", node);
                     self.incarnation = cmp::max(self.incarnation, incarnation) + 1;
                     incarnation = self.incarnation;
                     meta = self.meta.clone();
@@ -377,6 +388,7 @@ impl<T: Metadata> Inner<T> {
                     if existing && incarnation <= n.incarnation {
                         return;
                     }
+                    debug!("{:?} node {:?} IS ALIVE", self.addr, node);
                     n.set_status(NodeStatus::Alive, incarnation);
                 }
                 self.broadcast(Message::Alive {
@@ -391,6 +403,7 @@ impl<T: Metadata> Inner<T> {
                         return;
                     }
                     // refute
+                    debug!("node {:?} REFUTE SUSPECT", node);
                     self.incarnation = cmp::max(self.incarnation, incarnation) + 1;
                     let msg = Message::Alive {
                         incarnation: self.incarnation,
@@ -399,15 +412,16 @@ impl<T: Metadata> Inner<T> {
                     };
                     self.broadcast(msg);
                     return;
-                } else if let Some(n) = self.nodes.get_mut(&sender) {
+                } else if let Some(n) = self.nodes.get_mut(&node) {
                     if incarnation < n.incarnation || n.status != NodeStatus::Alive {
                         return;
                     }
+                    debug!("{:?} node {:?} IS SUSPECT", self.addr, node);
                     n.set_status(NodeStatus::Suspect, incarnation);
                     self.suspect_inflight.insert(node,
                                                  n.status_change,
                                                  time::Instant::now() +
-                                                 time::Duration::from_secs(1));
+                                                 time::Duration::from_millis(SUSPECT_TIMEOUT_MS));
                 } else {
                     return;
                 }
@@ -424,6 +438,7 @@ impl<T: Metadata> Inner<T> {
                         return;
                     }
                     // refute
+                    debug!("node {:?} REFUTE DEAD", node);
                     self.incarnation = cmp::max(self.incarnation, incarnation) + 1;
                     let msg = Message::Alive {
                         incarnation: self.incarnation,
@@ -432,10 +447,11 @@ impl<T: Metadata> Inner<T> {
                     };
                     self.broadcast(msg);
                     return;
-                } else if let Some(n) = self.nodes.get_mut(&sender) {
+                } else if let Some(n) = self.nodes.get_mut(&node) {
                     if incarnation < n.incarnation || n.status == NodeStatus::Dead {
                         return;
                     }
+                    debug!("{:?} node {:?} IS DEAD", self.addr, node);
                     n.set_status(NodeStatus::Dead, incarnation);
                 } else {
                     return;
@@ -555,10 +571,10 @@ impl<T: Metadata> Drop for Gossiper<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use env_logger;
+    use std::{time, thread};
 
-    fn test_converge(n: usize) {
-        use env_logger;
-        use std::{time, thread};
+    fn test_converge(n: usize) -> Vec<Gossiper<()>> {
         let _ = env_logger::init();
         let g: Vec<_> = (0..n)
                             .map(|i| Gossiper::new(&format!("0.0.0.0:{}", 9000 + i), ()).unwrap())
@@ -575,8 +591,10 @@ mod tests {
         }
         warn!("{:?} has passed", time::Instant::now() - start);
         assert!(g.iter().all(|g| g.alive_count() == n),
-                "{:?}",
+                "{} {:?}",
+                n,
                 g.iter().map(|g| g.alive_count()).collect::<Vec<_>>());
+        g
     }
 
     macro_rules! test_converge_n {
@@ -596,4 +614,24 @@ mod tests {
     test_converge_n!(test_converge_20, 20);
     test_converge_n!(test_converge_30, 30);
     test_converge_n!(test_converge_50, 50);
+
+    #[test]
+    fn test_dead() {
+        let n = 8;
+        let _ = env_logger::init();
+        let mut g = test_converge(n);
+        g.pop();
+        let start = time::Instant::now();
+        for _ in 0..(n * 5000) {
+            if g.iter().all(|g| g.alive_count() == n - 1) {
+                break;
+            }
+            thread::sleep(time::Duration::from_millis(1));
+        }
+        warn!("{:?} has passed", time::Instant::now() - start);
+        assert!(g.iter().all(|g| g.alive_count() == n - 1),
+                "{} {:?}",
+                n - 1,
+                g.iter().map(|g| g.alive_count()).collect::<Vec<_>>());
+    }
 }
