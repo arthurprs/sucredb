@@ -9,7 +9,8 @@ use serde_json;
 const PACKET_SIZE: usize = 1400;
 const SUSPECT_TIMEOUT_MS: u64 = 1000;
 const PING_TIMEOUT_MS: u64 = 500;
-const PING_PERIOD_MS: u64 = 1000;
+const PING_PERIOD_MS: u64 = 250;
+const SYNC_CHANCE: f32 = 0.15f32;
 const PING_CANDIDATES: usize = 3;
 const PINGREQ_CANDIDATES: usize = 3;
 
@@ -142,9 +143,7 @@ impl<T: Metadata> Inner<T> {
         let mut stack_buffer = [0u8; PACKET_SIZE];
         let mut messages = Vec::new();
         let addr = g.lock().unwrap().addr.clone();
-        let mut broadcast_counter = 0usize;
-        socket.set_read_timeout(Some(time::Duration::from_millis(1))).unwrap();
-        socket.set_write_timeout(Some(time::Duration::from_millis(1))).unwrap();
+        let mut broadcast_counter: usize = thread_rng().gen();
         while g.lock().unwrap().running > 0 {
             while let Ok((buffer_len, remote_addr)) = socket.recv_from(&mut stack_buffer) {
                 if let Ok(msg) = Message::decode(&stack_buffer[..buffer_len]) {
@@ -160,15 +159,15 @@ impl<T: Metadata> Inner<T> {
                 // drain send queue
                 messages.extend(g.send_queue.drain(..));
                 // drain broadcast queue
-                let mut candidates = g.get_candidates(true, !0 as usize);
+                let candidates = g.get_candidates(true, !0 as usize);
                 for &mut (ref mut counter, ref msg) in &mut g.broadcast_queue {
-                    thread_rng().shuffle(&mut candidates);
-                    for _ in 0..cmp::min(candidates.len(), *counter as usize) {
+                    let n = cmp::min(candidates.len(), *counter as usize);
+                    for _ in 0..n {
                         messages.push((candidates[broadcast_counter % candidates.len()],
                                        msg.clone()));
-                        *counter -= 1;
-                        broadcast_counter += 1;
                     }
+                    broadcast_counter = broadcast_counter.wrapping_add(n);
+                    *counter -= n as u32;
                 }
                 g.broadcast_queue.retain(|&(c, _)| c > 0);
                 // gossip to alive nodes
@@ -300,7 +299,7 @@ impl<T: Metadata> Inner<T> {
                     .insert(seq, k, now + time::Duration::from_millis(PING_TIMEOUT_MS));
                 self.send(k, msg);
                 // chance to fire a sync message as well
-                if thread_rng().gen::<f32>() < 0.33f32 {
+                if thread_rng().gen::<f32>() < SYNC_CHANCE {
                     let sync_state = self.generate_sync_state();
                     self.send(k, Message::Sync { state: sync_state });
                 }
@@ -524,6 +523,7 @@ impl<T: Metadata> Inner<T> {
 impl<T: Metadata + 'static> Gossiper<T> {
     pub fn new(listen_addr: &str, meta: T) -> Result<Gossiper<T>, io::Error> {
         let socket = try!(net::UdpSocket::bind(listen_addr));
+        try!(socket.set_nonblocking(true));
         let inner = Arc::new(Mutex::new(Inner {
             addr: socket.local_addr().unwrap(),
             nodes: Default::default(),
@@ -615,14 +615,12 @@ mod tests {
     test_converge_n!(test_converge_30, 30);
     test_converge_n!(test_converge_50, 50);
 
-    #[test]
-    fn test_dead() {
-        let n = 8;
+    fn test_dead(n: usize) {
         let _ = env_logger::init();
         let mut g = test_converge(n);
         g.pop();
         let start = time::Instant::now();
-        for _ in 0..(n * 5000) {
+        for _ in 0..(n * 2000) {
             if g.iter().all(|g| g.alive_count() == n - 1) {
                 break;
             }
@@ -634,4 +632,22 @@ mod tests {
                 n - 1,
                 g.iter().map(|g| g.alive_count()).collect::<Vec<_>>());
     }
+
+    macro_rules! test_dead_n {
+        ($fn_name: ident, $n: expr) => (
+            #[test]
+            fn $fn_name() {
+                test_dead($n);
+            }
+        );
+    }
+
+    test_dead_n!(test_dead_1, 1);
+    test_dead_n!(test_dead_2, 2);
+    test_dead_n!(test_dead_3, 3);
+    test_dead_n!(test_dead_5, 5);
+    test_dead_n!(test_dead_10, 10);
+    test_dead_n!(test_dead_20, 20);
+    test_dead_n!(test_dead_30, 30);
+    test_dead_n!(test_dead_50, 50);
 }
