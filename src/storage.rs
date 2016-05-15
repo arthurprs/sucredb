@@ -1,17 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::fs;
 use lmdb_rs;
-use std::error::Error;
 use std::collections::HashMap;
-
-pub type GenericError = Box<Error + Send + Sync>;
+use utils::*;
 
 pub struct Storage {
     path: PathBuf,
     env: lmdb_rs::Environment,
     db: lmdb_rs::DbHandle,
-    // meta_db: lmdb_rs::DbHandle,
-    // data_db: lmdb_rs::DbHandle,
 }
 
 impl Storage {
@@ -26,8 +22,11 @@ impl Storage {
     }
 
     pub fn open(path: &Path, create: bool) -> Result<Storage, GenericError> {
-        let env = try!(lmdb_rs::Environment::new().map_size(10 * 1024 * 1024).autocreate_dir(create).open(path, 0o777));
-        let db  = try!(env.get_default_db(lmdb_rs::DbFlags::empty()));
+        let env = try!(lmdb_rs::Environment::new()
+                           .map_size(10 * 1024 * 1024)
+                           .autocreate_dir(create)
+                           .open(path, 0o777));
+        let db = try!(env.get_default_db(lmdb_rs::DbFlags::empty()));
         Ok(Storage {
             path: path.into(),
             env: env,
@@ -59,7 +58,7 @@ impl Storage {
 
     pub fn purge(self) {
         self.env.new_transaction().unwrap().bind(&self.db).del_db().unwrap();
-        let Storage{path, ..} = self;
+        let Storage { path, .. } = self;
         let _ = fs::remove_dir_all(path);
     }
 }
@@ -89,7 +88,8 @@ mod tests {
         Storage::open(Path::new("t/test_open_all/1"), true).unwrap();
         Storage::open(Path::new("t/test_open_all/2"), true).unwrap();
         Storage::open(Path::new("t/test_open_all/3"), true).unwrap();
-        assert_eq!(Storage::open_all(Path::new("t/test_open_all")).unwrap().len(), 3);
+        assert_eq!(Storage::open_all(Path::new("t/test_open_all")).unwrap().len(),
+                   3);
     }
 
 }

@@ -11,14 +11,15 @@ extern crate linear_map;
 extern crate serde;
 extern crate serde_json;
 extern crate lmdb_rs;
-// extern crate rmp;
-// extern crate rmp_serde;
 
 mod version_vector;
 mod gossip;
 mod inflightmap;
 mod dht;
 mod storage;
+mod utils;
+mod hash;
+mod database;
 
 fn main() {
     env_logger::init().unwrap();

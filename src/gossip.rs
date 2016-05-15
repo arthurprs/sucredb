@@ -10,7 +10,7 @@ const PACKET_SIZE: usize = 1400;
 const SUSPECT_TIMEOUT_MS: u64 = 1000;
 const PING_TIMEOUT_MS: u64 = 500;
 const PING_PERIOD_MS: u64 = 250;
-const SYNC_CHANCE: f32 = 0.15f32;
+const PING_SYNC_CHANCE: f32 = 0.15f32;
 const PING_CANDIDATES: usize = 3;
 const PINGREQ_CANDIDATES: usize = 3;
 
@@ -70,17 +70,18 @@ impl<T: Metadata> Message<T> {
         match serde_json::to_writer(&mut buffer, &self) {
             Ok(_) => Ok(buffer_len - buffer.len()),
             Err(err) => {
-                debug!("json encode err: {:?}", err);
+                warn!("json encode err: {:?}", err);
                 Err(err)
             }
         }
     }
 
     fn decode(buffer: &[u8]) -> Result<Message<T>, serde_json::Error> {
+        warn!("decoding {:?}", buffer);
         match serde_json::from_slice(buffer) {
             Ok(msg) => Ok(msg),
             Err(err) => {
-                debug!("json decode err: {:?}", err);
+                warn!("json decode err: {:?}", err);
                 Err(err)
             }
         }
@@ -215,6 +216,7 @@ impl<T: Metadata> Inner<T> {
             // send serialized messages
             for (remote_addr, msg) in messages.drain(..) {
                 if let Ok(buffer_len) = msg.encode(&mut stack_buffer) {
+                    warn!("buffer is {:?}", &stack_buffer[..buffer_len]);
                     trace!("{} sending to {} {:?}", addr, remote_addr, msg);
                     let _ = socket.send_to(&stack_buffer[..buffer_len], remote_addr);
                 }
@@ -299,7 +301,7 @@ impl<T: Metadata> Inner<T> {
                     .insert(seq, k, now + time::Duration::from_millis(PING_TIMEOUT_MS));
                 self.send(k, msg);
                 // chance to fire a sync message as well
-                if thread_rng().gen::<f32>() < SYNC_CHANCE {
+                if thread_rng().gen::<f32>() < PING_SYNC_CHANCE {
                     let sync_state = self.generate_sync_state();
                     self.send(k, Message::Sync { state: sync_state });
                 }
