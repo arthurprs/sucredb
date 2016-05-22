@@ -240,6 +240,13 @@ mod tests {
         assert!(db.inflight(1).unwrap().container.values().next().is_none());
 
         db.get(1, b"test");
-        assert!(db.inflight(1).unwrap().container.values().eq(vec![b"value1", b"value2"]));
+        let state = db.inflight(1).unwrap();
+        assert!(state.container.values().eq(vec![b"value1", b"value2"]));
+
+        db.set(1, b"test", Some(b"value12"), state.container.version_vector().clone());
+        assert!(db.inflight(1).unwrap().container.values().next().is_none());
+
+        db.get(1, b"test");
+        assert!(db.inflight(1).unwrap().container.values().eq(vec![b"value12"]));
     }
 }
