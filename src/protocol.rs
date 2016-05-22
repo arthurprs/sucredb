@@ -32,24 +32,24 @@ pub enum Value {
 impl Value {
     fn serialize_to(self, f: &mut Vec<u8>) {
         match self {
-            Value::Nil => write!(f, "$-1\r\n"),
-            Value::Int(v) => write!(f, ":{}\r\n", v),
-            Value::Data(v) => {
-                write!(f, "${}\r\n", v.len32()).unwrap();
-                f.write_all(v.as_ref()).unwrap();
-                write!(f, "\r\n")
-            }
-            Value::Array(a) => {
-                write!(f, "*{}\r\n", a.len()).unwrap();
-                for v in a {
-                    v.serialize_to(f);
+                Value::Nil => write!(f, "$-1\r\n"),
+                Value::Int(v) => write!(f, ":{}\r\n", v),
+                Value::Data(v) => {
+                    write!(f, "${}\r\n", v.len32()).unwrap();
+                    f.write_all(v.as_ref()).unwrap();
+                    write!(f, "\r\n")
                 }
-                Ok(())
+                Value::Array(a) => {
+                    write!(f, "*{}\r\n", a.len()).unwrap();
+                    for v in a {
+                        v.serialize_to(f);
+                    }
+                    Ok(())
+                }
+                Value::Status(v) => write!(f, "+{}\r\n", v.as_ref()),
+                Value::Error(v) => write!(f, "-{}\r\n", v.as_ref()),
             }
-            Value::Status(v) => write!(f, "+{}\r\n", v.as_ref()),
-            Value::Error(v) => write!(f, "-{}\r\n", v.as_ref()),
-        }
-        .unwrap()
+            .unwrap()
     }
 }
 
@@ -323,7 +323,7 @@ mod tests {
     fn parser_multiple2() {
         let mut parser =
             Parser::new(b"*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n"
-                            .as_ref());
+                .as_ref());
         for _ in 0..2 {
             let r = parser.parse();
             assert!(r.is_ok(), "{:?} not ok", r.unwrap_err());

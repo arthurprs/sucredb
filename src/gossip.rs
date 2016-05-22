@@ -245,16 +245,16 @@ impl<T: Metadata> Inner<T> {
 
     fn get_candidates(&self, alive: bool, limit: usize) -> Vec<net::SocketAddr> {
         let mut candidates: Vec<_> = self.nodes
-                                         .iter()
-                                         .filter_map(|(&k, v)| {
-                                             if (alive && v.status != NodeStatus::Dead) ||
-                                                (!alive && v.status == NodeStatus::Dead) {
-                                                 Some(k)
-                                             } else {
-                                                 None
-                                             }
-                                         })
-                                         .collect();
+            .iter()
+            .filter_map(|(&k, v)| {
+                if (alive && v.status != NodeStatus::Dead) ||
+                   (!alive && v.status == NodeStatus::Dead) {
+                    Some(k)
+                } else {
+                    None
+                }
+            })
+            .collect();
         if candidates.len() > limit {
             thread_rng().shuffle(&mut candidates);
             candidates.truncate(limit);
@@ -381,11 +381,11 @@ impl<T: Metadata> Inner<T> {
                 } else {
                     let mut existing = true;
                     let n = self.nodes
-                                .entry(node)
-                                .or_insert_with(|| {
-                                    existing = false;
-                                    Node::new(NodeStatus::Dead, 0, meta.clone())
-                                });
+                        .entry(node)
+                        .or_insert_with(|| {
+                            existing = false;
+                            Node::new(NodeStatus::Dead, 0, meta.clone())
+                        });
                     if existing && incarnation <= n.incarnation {
                         return;
                     }
@@ -476,11 +476,9 @@ impl<T: Metadata> Inner<T> {
 
     fn generate_sync_state(&mut self) -> Vec<StateTriple<T>> {
         let mut state: Vec<_> = self.nodes
-                                    .iter()
-                                    .map(|(k, n)| {
-                                        (k.clone(), n.incarnation, n.status, n.meta.clone())
-                                    })
-                                    .collect();
+            .iter()
+            .map(|(k, n)| (k.clone(), n.incarnation, n.status, n.meta.clone()))
+            .collect();
         state.push((self.addr, self.incarnation, NodeStatus::Alive, self.meta.clone()));
         state.truncate(25);
         state
@@ -543,8 +541,8 @@ impl<T: Metadata + 'static> Gossiper<T> {
         }));
         let inner2 = inner.clone();
         let _ = thread::Builder::new()
-                    .name(format!("Gossiper {}", listen_addr))
-                    .spawn(move || Inner::run(socket, inner2));
+            .name(format!("Gossiper {}", listen_addr))
+            .spawn(move || Inner::run(socket, inner2));
         Ok(Gossiper(inner))
     }
 
@@ -579,8 +577,8 @@ mod tests {
     fn test_converge(n: usize) -> Vec<Gossiper<()>> {
         let _ = env_logger::init();
         let g: Vec<_> = (0..n)
-                            .map(|i| Gossiper::new(&format!("0.0.0.0:{}", 9000 + i), ()).unwrap())
-                            .collect();
+            .map(|i| Gossiper::new(&format!("0.0.0.0:{}", 9000 + i), ()).unwrap())
+            .collect();
         let start = time::Instant::now();
         for (i, g0) in (&g[1..]).iter().enumerate() {
             g0.join(&[&format!("0.0.0.0:{}", 9000 + i)]);

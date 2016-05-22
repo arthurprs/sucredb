@@ -6,7 +6,6 @@ authors = ["arthurprs"]
 [dependencies]
 rand = "*"
 ramp = "0.2.4"
-linear-map = "1.0.0"
 serde = "*"
 serde_json = "*"
 serde_macros = "*"
@@ -14,3 +13,14 @@ log = "0.3.6"
 env_logger = "*"
 lmdb-rs = "0.7.0"
 tendril="*"
+
+[dependencies.linear-map]
+git = "https://github.com/contain-rs/linear-map.git"
+features = ["serde_impl"]
+
+[dependencies.bincode]
+version = "*"
+features = ["serde"]
+
+[profile.dev]
+codegen-units = 4

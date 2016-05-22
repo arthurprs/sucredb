@@ -1,7 +1,7 @@
-use std::hash::{Hasher, SipHasher};
+use std::hash::{Hasher, Hash, SipHasher};
 
-pub fn hash(key: &[u8]) -> u64 {
+pub fn hash<T: Hash>(key: T) -> u64 {
     let mut hasher = SipHasher::new();
-    hasher.write(key);
+    key.hash(&mut hasher);
     hasher.finish()
 }

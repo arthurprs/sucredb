@@ -3,6 +3,7 @@ use std::fs;
 use lmdb_rs;
 use std::collections::HashMap;
 use utils::*;
+use std::str;
 
 pub struct Storage {
     path: PathBuf,
@@ -11,7 +12,7 @@ pub struct Storage {
 }
 
 impl Storage {
-    pub fn open_all(dir_path: &Path) -> Result<HashMap<u32, Storage>, GenericError> {
+    pub fn open_all<P: AsRef<Path>>(dir_path: P) -> Result<HashMap<u32, Storage>, GenericError> {
         let mut result = HashMap::new();
         for maybe_entry in try!(fs::read_dir(dir_path)) {
             let path = try!(maybe_entry).path();
@@ -21,24 +22,26 @@ impl Storage {
         Ok(result)
     }
 
-    pub fn open(path: &Path, create: bool) -> Result<Storage, GenericError> {
+    pub fn open<P: AsRef<Path>>(path: P, create: bool) -> Result<Storage, GenericError> {
         let env = try!(lmdb_rs::Environment::new()
-                           .map_size(10 * 1024 * 1024)
-                           .autocreate_dir(create)
-                           .open(path, 0o777));
+            .map_size(10 * 1024 * 1024)
+            .autocreate_dir(create)
+            .open(path.as_ref(), 0o777));
         let db = try!(env.get_default_db(lmdb_rs::DbFlags::empty()));
         Ok(Storage {
-            path: path.into(),
+            path: path.as_ref().into(),
             env: env,
             db: db,
         })
     }
 
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        debug!("get {:?}", str::from_utf8(key));
         self.env.get_reader().unwrap().bind(&self.db).get(&key).ok()
     }
 
     pub fn set(&self, key: &[u8], value: &[u8]) {
+        debug!("set {:?} {:?}", str::from_utf8(key), value);
         let txn = self.env.new_transaction().unwrap();
         txn.bind(&self.db).set(&key, &value).unwrap();
         txn.commit().unwrap();

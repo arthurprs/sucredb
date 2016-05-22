@@ -1,11 +1,11 @@
 use std::cmp;
-use linear_map::{LinearMap, Entry};
+use linear_map::{self, LinearMap, Entry};
 use ramp;
 
 pub type Version = u64;
 pub type Id = u64;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VersionVector(LinearMap<Id, Version>);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -17,10 +17,10 @@ pub struct BitmappedVersion {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BitmappedVersionVector(LinearMap<Id, BitmappedVersion>);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dots<T>(LinearMap<(Id, Version), T>);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DottedCausalContainer<T> {
     dots: Dots<T>,
     vv: VersionVector,
@@ -83,7 +83,7 @@ impl BitmappedVersion {
 
 impl BitmappedVersionVector {
     pub fn new() -> Self {
-        BitmappedVersionVector(Default::default())
+        BitmappedVersionVector(LinearMap::new())
     }
 
     pub fn add(&mut self, id: Id, version: Version) {
@@ -210,7 +210,7 @@ impl<T> Dots<T> {
         // add back to self filtering out outdated versions
         for ((id, version), value) in other.0.drain() {
             if dups.contains_key(&(id, version)) ||
-               version == cmp::max(vv1.get(id).unwrap_or(0), vv2.get(id).unwrap_or(0)) {
+               version > cmp::min(vv1.get(id).unwrap_or(0), vv2.get(id).unwrap_or(0)) {
                 self.0.insert((id, version), value);
             }
         }
@@ -249,10 +249,10 @@ impl<T> DottedCausalContainer<T> {
     pub fn discard(&mut self, vv: &VersionVector) {
         // FIXME: can use the underlining vec to be allocless
         let new = self.dots
-                      .0
-                      .drain()
-                      .filter(|&((id, version), _)| version > vv.get(id).unwrap_or(0))
-                      .collect();
+            .0
+            .drain()
+            .filter(|&((id, version), _)| version > vv.get(id).unwrap_or(0))
+            .collect();
         self.dots = Dots(new);
         self.vv.merge(vv);
     }
@@ -260,10 +260,10 @@ impl<T> DottedCausalContainer<T> {
     pub fn strip(&mut self, bvv: &BitmappedVersionVector) {
         // FIXME:can use the underlining vec to be allocless
         let new = self.vv
-                      .0
-                      .drain()
-                      .filter(|&(id, version)| version > bvv.get(id).map(|b| b.base).unwrap_or(0))
-                      .collect();
+            .0
+            .drain()
+            .filter(|&(id, version)| version > bvv.get(id).map(|b| b.base).unwrap_or(0))
+            .collect();
         self.vv = VersionVector(new);
     }
 
@@ -271,6 +271,18 @@ impl<T> DottedCausalContainer<T> {
         for (&id, bitmap_version) in &bvv.0 {
             self.vv.add(id, bitmap_version.base);
         }
+    }
+
+    pub fn values(&self) -> linear_map::Values<(Id, Version), T> {
+        self.dots.0.values()
+    }
+
+    pub fn versions(&self) -> linear_map::Iter<(Id, Version), T> {
+        self.dots.0.iter()
+    }
+
+    pub fn version_vector(&self) -> &VersionVector {
+        &self.vv
     }
 }
 
