@@ -10,7 +10,7 @@ use storage::Storage;
 
 const PEER_LOG_SIZE: usize = 1000;
 
-struct ReqState {
+pub struct ReqState {
     replies: usize,
     required: usize,
     total: usize,
@@ -33,7 +33,7 @@ struct VNodePeer {
 struct VNode {
     clock: BitmappedVersionVector,
     log: BTreeMap<u64, Vec<u8>>,
-    peers: LinearMap<net::SocketAddr, VNodePeer>,
+    peers: LinearMap<u64, VNodePeer>,
     storage: Storage,
 }
 
@@ -73,7 +73,7 @@ impl Database {
             if node == self.dht.node() {
                 self.get_local(token, key);
             } else {
-                self.get_remote(token, key);
+                // self.get_remote(token, key);
             }
         }
     }
@@ -100,8 +100,12 @@ impl Database {
         self.process_get(token, container);
     }
 
-    fn get_remote(&self, token: usize, key: &[u8]) {
+    fn get_remote(&self, from: net::SocketAddr, key: &[u8]) {
         unimplemented!();
+    }
+
+    pub fn get_remote_callback(&self) {
+        unimplemented!()
     }
 
     pub fn set(&self, token: usize, key: &[u8], value_opt: Option<&[u8]>, vv: VersionVector) {
@@ -122,12 +126,12 @@ impl Database {
             if node == self.dht.node() {
                 self.set_local(token, key, value_opt, &vv);
             } else {
-                self.set_remote(token, key, value_opt, &vv);
+                // self.set_remote(token, key, value_opt, &vv);
             }
         }
     }
 
-    fn process_set(&self, token: usize) {
+    fn set_callback(&self, token: usize) {
         let mut inflight = self.inflight.lock().unwrap();
         let state = inflight.get_mut(&token).unwrap();
         state.replies += 1;
@@ -145,12 +149,24 @@ impl Database {
             .read()
             .unwrap()
             .get(&vnode_n)
-            .map(|vn| vn.lock().unwrap().set(hash(self.dht.node()), key, value_opt, vv));
-        self.process_set(token);
+            .map(|vn| vn.lock().unwrap().set_local(hash(self.dht.node()), key, value_opt, vv));
+        self.set_callback(token);
     }
 
-    fn set_remote(&self, token: usize, key: &[u8], value_opt: Option<&[u8]>, vv: &VersionVector) {
-        unimplemented!();
+    pub fn set_remote(&self,
+                      from: net::SocketAddr,
+                      key: &[u8],
+                      dcc: DottedCausalContainer<Vec<u8>>) {
+        let vnode_n = self.dht.key_vnode(key);
+        self.vnodes
+            .read()
+            .unwrap()
+            .get(&vnode_n)
+            .map(move |vn| vn.lock().unwrap().set_remote(hash(from), key, dcc));
+    }
+
+    pub fn set_remote_callback(&self, from: net::SocketAddr) {
+        unimplemented!()
     }
 
     pub fn inflight(&self, token: usize) -> Option<ReqState> {
@@ -159,6 +175,13 @@ impl Database {
 }
 
 impl VNodePeer {
+    fn new() -> VNodePeer {
+        VNodePeer {
+            knowledge: 0,
+            log: Default::default(),
+        }
+    }
+
     fn advance_knowledge(&mut self, until: u64) {
         debug_assert!(until > self.knowledge);
         self.knowledge = until;
@@ -188,29 +211,50 @@ impl VNode {
     }
 
     fn get(&self, key: &[u8]) -> DottedCausalContainer<Vec<u8>> {
-        if let Some(bytes) = self.storage.get(key) {
+        let mut dcc = if let Some(bytes) = self.storage.get(key) {
             bincode_serde::deserialize(&bytes).unwrap()
         } else {
             DottedCausalContainer::new()
-        }
+        };
+        dcc.fill(&self.clock);
+        dcc
     }
 
-    fn set(&mut self,
-           id: u64,
-           key: &[u8],
-           value_opt: Option<&[u8]>,
-           vv: &VersionVector)
-           -> DottedCausalContainer<Vec<u8>> {
+    fn set_local(&mut self,
+                 id: u64,
+                 key: &[u8],
+                 value_opt: Option<&[u8]>,
+                 vv: &VersionVector)
+                 -> DottedCausalContainer<Vec<u8>> {
         let mut dcc = self.get(key);
-        dcc.fill(&self.clock);
         dcc.discard(vv);
+        let dot = self.clock.event(id);
         if let Some(value) = value_opt {
-            dcc.add(id, self.clock.event(id), value.into());
+            dcc.add(id, dot, value.into());
         }
+        dcc.strip(&self.clock);
         let mut bytes = Vec::new();
         bincode_serde::serialize_into(&mut bytes, &dcc, bincode::SizeLimit::Infinite).unwrap();
         self.storage.set(key, &bytes);
+        self.log.insert(dot, key.into());
         dcc
+    }
+
+    fn set_remote(&mut self,
+                  peer_id: u64,
+                  key: &[u8],
+                  mut new_dcc: DottedCausalContainer<Vec<u8>>) {
+        let old_dcc = self.get(key);
+        new_dcc.add_to_bvv(&mut self.clock);
+        new_dcc.sync(old_dcc);
+        new_dcc.strip(&self.clock);
+        let mut bytes = Vec::new();
+        bincode_serde::serialize_into(&mut bytes, &new_dcc, bincode::SizeLimit::Infinite).unwrap();
+        self.storage.set(key, &bytes);
+        self.peers
+            .entry(peer_id)
+            .or_insert_with(|| VNodePeer::new())
+            .log(self.clock.get(peer_id).unwrap().base(), key.into());
     }
 }
 
@@ -243,7 +287,10 @@ mod tests {
         let state = db.inflight(1).unwrap();
         assert!(state.container.values().eq(vec![b"value1", b"value2"]));
 
-        db.set(1, b"test", Some(b"value12"), state.container.version_vector().clone());
+        db.set(1,
+               b"test",
+               Some(b"value12"),
+               state.container.version_vector().clone());
         assert!(db.inflight(1).unwrap().container.values().next().is_none());
 
         db.get(1, b"test");

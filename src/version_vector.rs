@@ -34,6 +34,9 @@ impl BitmappedVersion {
         }
     }
 
+
+
+
     fn join(&mut self, other: &Self) {
         if self.base >= other.base {
             self.bitmap |= other.bitmap.clone() >> (self.base - other.base) as usize;
@@ -65,6 +68,10 @@ impl BitmappedVersion {
             self.base += trailing_ones as Version;
             self.bitmap >>= trailing_ones as usize;
         }
+    }
+
+    pub fn base(&self) -> Version {
+        self.base
     }
 
     // pub fn values(&self) -> Vec<Version> {
