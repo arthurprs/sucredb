@@ -1,4 +1,5 @@
-
+use rotor;
+use rotor_stream;
 
 enum FabricMsgType {
     Get,
@@ -9,4 +10,18 @@ enum FabricMsgType {
     SyncStream,
     SyncAck,
     SyncFin,
+}
+
+pub struct Fabric {
+}
+
+enum Connection {
+    Sender,
+    Receiver,
+}
+
+impl Fabric {
+    fn new() {
+        unimplemented!()
+    }
 }

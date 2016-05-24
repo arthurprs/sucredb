@@ -35,9 +35,13 @@ impl Storage {
         })
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    pub fn get<R, F: Fn(Option<&[u8]>) -> R>(&self, key: &[u8], callback: F) -> R {
         debug!("get {:?}", str::from_utf8(key));
-        self.env.get_reader().unwrap().bind(&self.db).get(&key).ok()
+        callback(self.env.get_reader().unwrap().bind(&self.db).get(&key).ok())
+    }
+
+    pub fn get_vec(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.get(key, |v| v.map(|v| v.to_owned()))
     }
 
     pub fn set(&self, key: &[u8], value: &[u8]) {
@@ -76,11 +80,11 @@ mod tests {
     fn test_simple() {
         let _ = fs::remove_dir_all("t/test_simple");
         let storage = Storage::open(Path::new("t/test_simple"), true).unwrap();
-        assert_eq!(storage.get(b"sample"), None);
+        assert_eq!(storage.get_vec(b"sample"), None);
         storage.set(b"sample", b"sample_value");
-        assert_eq!(storage.get(b"sample").unwrap(), b"sample_value");
+        assert_eq!(storage.get_vec(b"sample").unwrap(), b"sample_value");
         storage.del(b"sample");
-        assert_eq!(storage.get(b"sample"), None);
+        assert_eq!(storage.get_vec(b"sample"), None);
         storage.purge();
     }
 

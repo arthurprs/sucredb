@@ -211,7 +211,7 @@ impl VNode {
     }
 
     fn get(&self, key: &[u8]) -> DottedCausalContainer<Vec<u8>> {
-        let mut dcc = if let Some(bytes) = self.storage.get(key) {
+        let mut dcc = if let Some(bytes) = self.storage.get_vec(key) {
             bincode_serde::deserialize(&bytes).unwrap()
         } else {
             DottedCausalContainer::new()

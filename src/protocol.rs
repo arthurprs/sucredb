@@ -157,18 +157,22 @@ impl RequestBuffer {
 }
 
 /// The internal redis response parser.
-struct Parser {
+pub struct Parser {
     body: ByteTendril,
 }
 
 impl Parser {
-    fn new<T: Into<ByteTendril>>(body: T) -> Parser {
+    pub fn new<T: Into<ByteTendril>>(body: T) -> Parser {
         Parser { body: body.into() }
+    }
+
+    pub fn bytes_left(&self) -> usize {
+        self.body.len()
     }
 
     /// parses a single value out of the stream.  If there are multiple
     /// values you can call this multiple times.
-    fn parse(&mut self) -> ProtocolResult<Value> {
+    pub fn parse(&mut self) -> ProtocolResult<Value> {
         match try!(self.read_byte()) {
             b'+' => self.parse_status(),
             b':' => self.parse_int(),
@@ -210,11 +214,11 @@ impl Parser {
     }
 
     fn read_line(&mut self) -> ProtocolResult<ByteTendril> {
-        let nl_pos = match self.body.iter().position(|&b| b == b'\r') {
+        let nl_pos = match self.body.iter().position(|&b| b == b'\n') {
             Some(nl_pos) => nl_pos,
-            None => return Err("Missing line separator".into()),
+            None => return Err(ProtocolError::Incomplete),
         };
-        let (first_part, second_part) = Self::split_at(try!(self.read(nl_pos + 2)), nl_pos);
+        let (first_part, second_part) = Self::split_at(try!(self.read(nl_pos + 1)), nl_pos - 1);
         if second_part.as_ref() != b"\r\n" {
             return Err("Invalid line separator".into());
         }

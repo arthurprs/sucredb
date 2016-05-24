@@ -13,6 +13,8 @@ log = "0.3.6"
 env_logger = "*"
 lmdb-rs = "0.7.0"
 tendril="*"
+rotor="*"
+rotor-stream="*"
 
 [dependencies.linear-map]
 git = "https://github.com/contain-rs/linear-map.git"

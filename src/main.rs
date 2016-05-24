@@ -14,6 +14,8 @@ extern crate serde_json;
 extern crate lmdb_rs;
 extern crate tendril;
 extern crate bincode;
+extern crate rotor;
+extern crate rotor_stream;
 
 #[macro_use]
 mod utils;
@@ -26,6 +28,7 @@ mod hash;
 mod protocol;
 mod database;
 mod server;
+mod fabric;
 
 fn main() {
     env_logger::init().unwrap();
