@@ -14,8 +14,10 @@ extern crate serde_json;
 extern crate lmdb_rs;
 extern crate tendril;
 extern crate bincode;
+#[macro_use]
 extern crate rotor;
 extern crate rotor_stream;
+extern crate rotor_tools;
 
 #[macro_use]
 mod utils;

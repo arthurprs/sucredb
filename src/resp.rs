@@ -30,7 +30,7 @@ pub enum RespValue {
 }
 
 impl RespValue {
-    fn serialize_to(self, f: &mut Vec<u8>) {
+    fn serialize_to<W: Write>(self, f: &mut W) {
         match self {
                 RespValue::Nil => write!(f, "$-1\r\n"),
                 RespValue::Int(v) => write!(f, ":{}\r\n", v),
@@ -58,12 +58,7 @@ impl fmt::Debug for RespValue {
         match *self {
             RespValue::Nil => write!(f, "Nil"),
             RespValue::Int(v) => write!(f, "Int({:?})", v),
-            RespValue::Data(ref v) => {
-                match str::from_utf8(v) {
-                    Ok(s) => write!(f, "Data({:?})", s),
-                    Err(_) => write!(f, "Data({:?})", v.as_ref()),
-                }
-            }
+            RespValue::Data(ref v) => write!(f, "Data({:?})", String::from_utf8_lossy(v)),
             RespValue::Array(ref b) => {
                 try!(write!(f, "Array("));
                 try!(f.debug_list().entries(b).finish());
@@ -84,7 +79,10 @@ pub struct Parser {
 impl Parser {
     pub fn new<T: Into<ByteTendril>>(body: T) -> Parser {
         let body = body.into();
-        Parser { original_len: body.len(), body: body }
+        Parser {
+            original_len: body.len(),
+            body: body,
+        }
     }
 
     pub fn bytes_consumed(&self) -> usize {
@@ -241,7 +239,7 @@ mod tests {
         assert!(r.is_ok(), "{:?} not ok", r.unwrap_err());
         assert_eq_repr!(r.unwrap(),
                         RespValue::Array(vec![RespValue::Data(b"foo".as_ref().into()),
-                                          RespValue::Data(b"barz".as_ref().into())]));
+                                              RespValue::Data(b"barz".as_ref().into())]));
     }
 
     #[test]
@@ -254,7 +252,7 @@ mod tests {
             assert!(r.is_ok(), "{:?} not ok", r.unwrap_err());
             assert_eq_repr!(r.unwrap(),
                             RespValue::Array(vec![RespValue::Data(b"foo".as_ref().into()),
-                                              RespValue::Data(b"barz".as_ref().into())]));
+                                                  RespValue::Data(b"barz".as_ref().into())]));
         }
         let r = parser.parse();
         assert_eq_repr!(r.unwrap_err(), ProtocolError::Incomplete);

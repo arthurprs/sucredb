@@ -15,6 +15,7 @@ lmdb-rs = "0.7.0"
 tendril="*"
 rotor="*"
 rotor-stream="*"
+rotor-tools="*"
 
 [dependencies.linear-map]
 git = "https://github.com/contain-rs/linear-map.git"

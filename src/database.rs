@@ -153,10 +153,7 @@ impl Database {
         self.set_callback(token);
     }
 
-    pub fn set_remote(&self,
-                      from: net::SocketAddr,
-                      key: &[u8],
-                      dcc: DottedCausalContainer<Vec<u8>>) {
+    pub fn set_remote(&self, from: net::SocketAddr, key: &[u8], dcc: DottedCausalContainer<Vec<u8>>) {
         let vnode_n = self.dht.key_vnode(key);
         self.vnodes
             .read()
@@ -220,11 +217,7 @@ impl VNode {
         dcc
     }
 
-    fn set_local(&mut self,
-                 id: u64,
-                 key: &[u8],
-                 value_opt: Option<&[u8]>,
-                 vv: &VersionVector)
+    fn set_local(&mut self, id: u64, key: &[u8], value_opt: Option<&[u8]>, vv: &VersionVector)
                  -> DottedCausalContainer<Vec<u8>> {
         let mut dcc = self.get(key);
         dcc.discard(vv);
@@ -240,10 +233,7 @@ impl VNode {
         dcc
     }
 
-    fn set_remote(&mut self,
-                  peer_id: u64,
-                  key: &[u8],
-                  mut new_dcc: DottedCausalContainer<Vec<u8>>) {
+    fn set_remote(&mut self, peer_id: u64, key: &[u8], mut new_dcc: DottedCausalContainer<Vec<u8>>) {
         let old_dcc = self.get(key);
         new_dcc.add_to_bvv(&mut self.clock);
         new_dcc.sync(old_dcc);

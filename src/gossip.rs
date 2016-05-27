@@ -164,8 +164,7 @@ impl<T: Metadata> Inner<T> {
                 for &mut (ref mut counter, ref msg) in &mut g.broadcast_queue {
                     let n = cmp::min(candidates.len(), *counter as usize);
                     for _ in 0..n {
-                        messages.push((candidates[broadcast_counter % candidates.len()],
-                                       msg.clone()));
+                        messages.push((candidates[broadcast_counter % candidates.len()], msg.clone()));
                     }
                     broadcast_counter = broadcast_counter.wrapping_add(n);
                     *counter -= n as u32;
