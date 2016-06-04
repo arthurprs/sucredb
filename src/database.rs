@@ -42,8 +42,7 @@ struct VNode {
 }
 
 impl Database {
-    pub fn new() -> Arc<Database> {
-        let node = "127.0.0.1:9000".parse().unwrap();
+    pub fn new(node: net::SocketAddr) -> Arc<Database> {
         let db = Arc::new(Database {
             replication_factor: 3,
             fabric: Fabric::new(node).unwrap(),
@@ -308,7 +307,7 @@ impl VNode {
         }
         dcc.strip(&self.clock);
 
-        if dcc.values().size_hint().0 == 0 {
+        if dcc.is_empty() {
             self.storage.del(key);
         } else {
             let mut bytes = Vec::new();
@@ -327,7 +326,7 @@ impl VNode {
         new_dcc.sync(old_dcc);
         new_dcc.strip(&self.clock);
 
-        if new_dcc.values().size_hint().0 == 0 {
+        if new_dcc.is_empty() {
             self.storage.del(key);
         } else {
             let mut bytes = Vec::new();
@@ -389,21 +388,21 @@ mod tests {
     fn test() {
         let _ = fs::remove_dir_all("./vnode_t");
         let _ = env_logger::init();
-        let db = Database::new();
+        let db = Database::new("127.0.0.1:9000".parse().unwrap());
         for i in 0u16..64 {
             db.init_vnode(i);
         }
         db.get(1, b"test");
-        assert!(db.inflight(1).unwrap().container.values().next().is_none());
+        assert!(db.inflight(1).unwrap().container.is_empty());
 
         db.set(1, b"test", Some(b"value1"), VersionVector::new());
-        assert!(db.inflight(1).unwrap().container.values().next().is_none());
+        assert!(db.inflight(1).unwrap().container.is_empty());
 
         db.get(1, b"test");
         assert!(db.inflight(1).unwrap().container.values().eq(vec![b"value1"]));
 
         db.set(1, b"test", Some(b"value2"), VersionVector::new());
-        assert!(db.inflight(1).unwrap().container.values().next().is_none());
+        assert!(db.inflight(1).unwrap().container.is_empty());
 
         db.get(1, b"test");
         let state = db.inflight(1).unwrap();
@@ -413,7 +412,7 @@ mod tests {
                b"test",
                Some(b"value12"),
                state.container.version_vector().clone());
-        assert!(db.inflight(1).unwrap().container.values().next().is_none());
+        assert!(db.inflight(1).unwrap().container.is_empty());
 
         db.get(1, b"test");
         let state = db.inflight(1).unwrap();
@@ -423,9 +422,9 @@ mod tests {
                b"test",
                None,
                state.container.version_vector().clone());
-        assert!(db.inflight(1).unwrap().container.values().next().is_none());
+        assert!(db.inflight(1).unwrap().container.is_empty());
 
         db.get(1, b"test");
-        assert!(db.inflight(1).unwrap().container.values().size_hint().0 == 0);
+        assert!(db.inflight(1).unwrap().container.is_empty());
     }
 }

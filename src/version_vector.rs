@@ -233,6 +233,10 @@ impl<T> DottedCausalContainer<T> {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.dots.0.is_empty()
+    }
+
     pub fn sync(&mut self, mut other: Self) {
         self.dots.merge(&mut other.dots, &self.vv, &other.vv);
         self.vv.merge(&other.vv);
