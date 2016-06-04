@@ -281,7 +281,7 @@ impl VNode {
             num: num,
             clock: BitmappedVersionVector::new(),
             peers: Default::default(),
-            storage: Storage::open(Path::new("./vnode_t"), true).unwrap(),
+            storage: Storage::open(Path::new("./vnode_t"), num as i32, true).unwrap(),
             log: Default::default(),
         }
     }
@@ -418,10 +418,7 @@ mod tests {
         let state = db.inflight(1).unwrap();
         assert!(state.container.values().eq(vec![b"value12"]));
 
-        db.set(1,
-               b"test",
-               None,
-               state.container.version_vector().clone());
+        db.set(1, b"test", None, state.container.version_vector().clone());
         assert!(db.inflight(1).unwrap().container.is_empty());
 
         db.get(1, b"test");

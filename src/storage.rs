@@ -12,21 +12,22 @@ pub struct Storage {
 }
 
 impl Storage {
-    pub fn open_all<P: AsRef<Path>>(dir_path: P) -> Result<HashMap<u32, Storage>, GenericError> {
+    pub fn open_all<P: AsRef<Path>>(dir_path: P) -> Result<HashMap<i32, Storage>, GenericError> {
         let mut result = HashMap::new();
-        for maybe_entry in try!(fs::read_dir(dir_path)) {
+        for maybe_entry in try!(fs::read_dir(&dir_path)) {
             let path = try!(maybe_entry).path();
-            let vnode = try!(path.file_name().unwrap().to_string_lossy().parse::<u32>());
-            result.insert(vnode, try!(Self::open(&path, false)));
+            let db_num = try!(path.file_name().unwrap().to_string_lossy().parse::<i32>());
+            result.insert(db_num, try!(Self::open(&dir_path, db_num, false)));
         }
         Ok(result)
     }
 
-    pub fn open<P: AsRef<Path>>(path: P, create: bool) -> Result<Storage, GenericError> {
+    pub fn open<P: AsRef<Path>>(path: P, db_num: i32, create: bool) -> Result<Storage, GenericError> {
+        let db_path = path.as_ref().to_owned().join(db_num.to_string());
         let env = try!(lmdb_rs::Environment::new()
             .map_size(10 * 1024 * 1024)
             .autocreate_dir(create)
-            .open(path.as_ref(), 0o777));
+            .open(&db_path, 0o777));
         let db = try!(env.get_default_db(lmdb_rs::DbFlags::empty()));
         Ok(Storage {
             path: path.as_ref().into(),
@@ -79,7 +80,7 @@ mod tests {
     #[test]
     fn test_simple() {
         let _ = fs::remove_dir_all("t/test_simple");
-        let storage = Storage::open(Path::new("t/test_simple"), true).unwrap();
+        let storage = Storage::open(Path::new("t/test_simple"), 1, true).unwrap();
         assert_eq!(storage.get_vec(b"sample"), None);
         storage.set(b"sample", b"sample_value");
         assert_eq!(storage.get_vec(b"sample").unwrap(), b"sample_value");
@@ -92,9 +93,9 @@ mod tests {
     #[test]
     fn test_open_all() {
         let _ = fs::remove_dir_all("t/test_open_all");
-        Storage::open(Path::new("t/test_open_all/1"), true).unwrap();
-        Storage::open(Path::new("t/test_open_all/2"), true).unwrap();
-        Storage::open(Path::new("t/test_open_all/3"), true).unwrap();
+        Storage::open(Path::new("t/test_open_all"), 1, true).unwrap();
+        Storage::open(Path::new("t/test_open_all"), 2, true).unwrap();
+        Storage::open(Path::new("t/test_open_all"), 3, true).unwrap();
         assert_eq!(Storage::open_all(Path::new("t/test_open_all")).unwrap().len(),
                    3);
     }

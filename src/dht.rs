@@ -33,10 +33,11 @@ impl<T: Clone + Serialize + Deserialize> DHT<T> {
         let ring_len = self.ring.len();
         let mut result = HashSet::new();
         for i in 0..replication_factor {
-            if let Some(p) = self.ring.get((vnode as usize + i) % ring_len) {
+            let vnode_i = (vnode as usize + i) % ring_len;
+            if let Some(p) = self.ring.get(vnode_i) {
                 result.insert(p.0);
             }
-            if let Some(p) = self.pending.get(&vnode) {
+            if let Some(p) = self.pending.get(&(vnode_i as u16)) {
                 result.insert(p.0);
             }
         }
