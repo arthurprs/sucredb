@@ -207,7 +207,7 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
-    use super::{RespResult, ProtocolError, Parser, RespValue};
+    use super::{RespResult, RespError, Parser, RespValue};
     use std::io::Write;
 
     fn parse(slice: &[u8]) -> RespResult<RespValue> {
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn parse_incomplete() {
         let r = parse(b"*2\r\n$3\r\nfoo");
-        assert_eq_repr!(r.unwrap_err(), ProtocolError::Incomplete);
+        assert_eq_repr!(r.unwrap_err(), RespError::Incomplete);
     }
 
     #[test]
@@ -226,7 +226,7 @@ mod tests {
         assert_eq_repr!(r.unwrap(), RespValue::Error("foo".into()));
 
         let r = parse(b"-invalid line sep\r\r");
-        assert!(if let ProtocolError::Invalid(_) = r.unwrap_err() {
+        assert!(if let RespError::Invalid(_) = r.unwrap_err() {
             true
         } else {
             false
@@ -255,7 +255,7 @@ mod tests {
                                                   RespValue::Data(b"barz".as_ref().into())]));
         }
         let r = parser.parse();
-        assert_eq_repr!(r.unwrap_err(), ProtocolError::Incomplete);
+        assert_eq_repr!(r.unwrap_err(), RespError::Incomplete);
     }
 
     #[test]

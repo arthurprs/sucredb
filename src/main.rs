@@ -2,7 +2,6 @@
 #![feature(question_mark)]
 #![allow(dead_code)]
 #![plugin(serde_macros)]
-#![feature(lookup_host)]
 #[macro_use]
 extern crate log;
 extern crate env_logger;
@@ -18,6 +17,7 @@ extern crate bincode;
 extern crate rotor;
 extern crate rotor_stream;
 extern crate rotor_tools;
+extern crate byteorder;
 
 #[macro_use]
 mod utils;
@@ -25,15 +25,17 @@ mod version_vector;
 mod gossip;
 mod inflightmap;
 mod dht;
+#[macro_use]
+mod fabric_msg;
+mod fabric;
 mod storage;
 mod hash;
 mod resp;
 mod database;
 mod server;
-mod fabric;
 
 fn main() {
     env_logger::init().unwrap();
-    let mut server = server::Server::new();
+    let server = server::Server::new();
     server.run();
 }

@@ -1,8 +1,6 @@
 use std::io::{Write, stderr};
-use std::net;
 use std::str;
 use std::error::Error;
-use std::time::Duration;
 use database::Database;
 use rotor::{self, Scope};
 use rotor::mio::tcp::{TcpListener, TcpStream};
@@ -19,6 +17,7 @@ struct Context {
 }
 
 pub struct Server {
+
 }
 
 impl Protocol for RespConnection {

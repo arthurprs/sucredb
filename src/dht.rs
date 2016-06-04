@@ -8,7 +8,7 @@ use serde::{Serialize, Deserialize};
 pub struct DHT<T: Clone + Serialize + Deserialize> {
     node: net::SocketAddr,
     ring: Vec<(net::SocketAddr, T)>,
-    pending: HashMap<usize, (net::SocketAddr, T)>,
+    pending: HashMap<u16, (net::SocketAddr, T)>,
 }
 
 impl<T: Clone + Serialize + Deserialize> DHT<T> {
@@ -24,8 +24,8 @@ impl<T: Clone + Serialize + Deserialize> DHT<T> {
         self.node
     }
 
-    pub fn key_vnode(&self, key: &[u8]) -> usize {
-        (hash(key) % self.ring.len() as u64) as usize
+    pub fn key_vnode(&self, key: &[u8]) -> u16 {
+        (hash(key) % self.ring.len() as u64) as u16
     }
 
     pub fn nodes_for_key(&self, key: &[u8], replication_factor: usize) -> Vec<net::SocketAddr> {
@@ -33,7 +33,7 @@ impl<T: Clone + Serialize + Deserialize> DHT<T> {
         let ring_len = self.ring.len();
         let mut result = HashSet::new();
         for i in 0..replication_factor {
-            if let Some(p) = self.ring.get((vnode + i) % ring_len) {
+            if let Some(p) = self.ring.get((vnode as usize + i) % ring_len) {
                 result.insert(p.0);
             }
             if let Some(p) = self.pending.get(&vnode) {
@@ -57,26 +57,26 @@ impl<T: Clone + Serialize + Deserialize> DHT<T> {
         let partitions = self.ring.len();
         for _ in 0..members / partitions {
             let r = rand::thread_rng().gen::<usize>() % partitions;
-            self.pending.insert(r, (node, meta.clone()));
+            self.pending.insert(r as u16, (node, meta.clone()));
         }
     }
 
-    pub fn add_pending_node(&mut self, vnode: usize, node: net::SocketAddr, meta: T) {
+    pub fn add_pending_node(&mut self, vnode: u16, node: net::SocketAddr, meta: T) {
         assert!(self.pending.insert(vnode, (node, meta)).is_none());
     }
 
-    pub fn remove_pending_node(&mut self, vnode: usize, node: net::SocketAddr) {
+    pub fn remove_pending_node(&mut self, vnode: u16, node: net::SocketAddr) {
         assert!(self.pending.remove(&vnode).unwrap().0 == node);
     }
 
-    pub fn promote_pending_node(&mut self, vnode: usize, node: net::SocketAddr) {
+    pub fn promote_pending_node(&mut self, vnode: u16, node: net::SocketAddr) {
         let p = self.pending.remove(&vnode).unwrap();
         debug_assert!(p.0 == node);
-        self.ring[vnode] = p;
+        self.ring[vnode as usize] = p;
     }
 
-    pub fn get_vnode(&self, vnode: usize) -> (net::SocketAddr, Option<net::SocketAddr>) {
-        (self.ring.get(vnode).map(|a| a.0).unwrap(), self.pending.get(&vnode).map(|a| a.0))
+    pub fn get_vnode(&self, vnode: u16) -> (net::SocketAddr, Option<net::SocketAddr>) {
+        (self.ring.get(vnode as usize).map(|a| a.0).unwrap(), self.pending.get(&vnode).map(|a| a.0))
     }
 }
 
@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let node = net::lookup_host("127.0.0.1").unwrap().next().unwrap().unwrap();
+        let node = "127.0.0.1".parse().unwrap();
         let dht = DHT::new(node, (), 256);
         assert_eq!(dht.nodes_for_key(b"abc", 1), &[node]);
         assert_eq!(dht.nodes_for_key(b"abc", 3), &[node]);

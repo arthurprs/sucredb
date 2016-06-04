@@ -1,12 +1,14 @@
 use std::net;
 use std::collections::{HashMap, BTreeMap};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use bincode::{self, serde as bincode_serde};
 use linear_map::LinearMap;
 use dht::DHT;
 use hash::hash;
 use version_vector::*;
 use storage::Storage;
+use fabric::Fabric;
+use fabric_msg::*;
 
 const PEER_LOG_SIZE: usize = 1000;
 
@@ -20,9 +22,10 @@ pub struct ReqState {
 
 pub struct Database {
     dht: DHT<()>,
-    vnodes: RwLock<HashMap<usize, Mutex<VNode>>>,
+    fabric: Fabric,
+    vnodes: RwLock<HashMap<u16, Mutex<VNode>>>,
     replication_factor: usize,
-    inflight: Mutex<HashMap<usize, ReqState>>,
+    inflight: Mutex<HashMap<u64, ReqState>>,
 }
 
 struct VNodePeer {
@@ -31,6 +34,7 @@ struct VNodePeer {
 }
 
 struct VNode {
+    num: u16,
     clock: BitmappedVersionVector,
     log: BTreeMap<u64, Vec<u8>>,
     peers: LinearMap<u64, VNodePeer>,
@@ -38,30 +42,39 @@ struct VNode {
 }
 
 impl Database {
-    pub fn new() -> Database {
-        let node = net::lookup_host("127.0.0.1").unwrap().next().unwrap().unwrap();
-        Database {
-            replication_factor: 1,
+    pub fn new() -> Arc<Database> {
+        let node = "127.0.0.1:9000".parse().unwrap();
+        let db = Arc::new(Database {
+            replication_factor: 3,
+            fabric: Fabric::new(node).unwrap(),
             dht: DHT::new(node, (), 64),
             inflight: Mutex::new(Default::default()),
             vnodes: RwLock::new(Default::default()),
-        }
+        });
+        register_handlers(db.clone());
+        db
     }
 
-    pub fn init_vnode(&self, vnode_n: usize) {
-        self.vnodes.write().unwrap().entry(vnode_n).or_insert_with(|| Mutex::new(VNode::new()));
+    pub fn init_vnode(&self, vnode_n: u16) {
+        self.vnodes
+            .write()
+            .unwrap()
+            .entry(vnode_n)
+            .or_insert_with(|| Mutex::new(VNode::new(vnode_n)));
     }
 
-    pub fn remove_vnode(vnode_n: usize) {
-        unimplemented!()
+    pub fn remove_vnode(&self, vnode_n: u16) {
+        self.vnodes.write().unwrap().remove(&vnode_n);
     }
 
     pub fn get(&self, token: usize, key: &[u8]) {
+        let vnode_n = self.dht.key_vnode(key);
         let nodes = self.dht.nodes_for_key(key, self.replication_factor);
+        let cookie = token as u64;
         let _a = self.inflight
             .lock()
             .unwrap()
-            .insert(token,
+            .insert(cookie,
                     ReqState {
                         required: self.replication_factor / 2 + 1,
                         total: self.replication_factor,
@@ -71,49 +84,82 @@ impl Database {
         debug_assert!(_a.is_none());
         for node in nodes {
             if node == self.dht.node() {
-                self.get_local(token, key);
+                self.get_local(cookie, key);
             } else {
-                // self.get_remote(token, key);
+                self.get_remote(&node, vnode_n, cookie, key);
             }
         }
     }
 
-    fn process_get(&self, token: usize, container: Option<DottedCausalContainer<Vec<u8>>>) {
+    fn get_callback(&self, cookie: u64, container: Option<DottedCausalContainer<Vec<u8>>>) {
         let mut inflight = self.inflight.lock().unwrap();
-        let state = inflight.get_mut(&token).unwrap();
-        container.map(|dcc| state.container.sync(dcc));
-        state.replies += 1;
-        if state.replies == state.required {
-            // return to client
-        } else if state.replies == state.total {
-            // remove state
+        if {
+            let state = inflight.get_mut(&cookie).unwrap();
+            container.map(|dcc| state.container.sync(dcc));
+            state.replies += 1;
+            if state.replies == state.required {
+                // return to client
+            }
+            if state.replies == state.total {
+                // remove state
+                true
+            } else {
+                false
+            }
+        } {
+            inflight.remove(&cookie).unwrap();
         }
     }
 
-    fn get_local(&self, token: usize, key: &[u8]) {
+    fn get_local(&self, cookie: u64, key: &[u8]) {
         let vnode_n = self.dht.key_vnode(key);
         let container = self.vnodes
             .read()
             .unwrap()
             .get(&vnode_n)
-            .map(|vn| vn.lock().unwrap().get(key));
-        self.process_get(token, container);
+            .map(|vn| vn.lock().unwrap().get(self, key));
+        self.get_callback(cookie, container);
     }
 
-    fn get_remote(&self, from: net::SocketAddr, key: &[u8]) {
-        unimplemented!();
+    fn get_remote(&self, addr: &net::SocketAddr, vnode: u16, cookie: u64, key: &[u8]) {
+        self.fabric
+            .send_message(addr,
+                          FabricMsg::Get(FabricMsgGet {
+                              cookie: cookie,
+                              vnode: vnode,
+                              key: key.into(),
+                          }))
+            .unwrap();
     }
 
-    pub fn get_remote_callback(&self) {
-        unimplemented!()
+    pub fn get_remote_handler(&self, from: &net::SocketAddr, msg: FabricMsgGet) {
+        let container = self.vnodes
+            .read()
+            .unwrap()
+            .get(&msg.vnode)
+            .map(|vn| vn.lock().unwrap().get(self, &msg.key));
+        self.fabric
+            .send_message(&from,
+                          FabricMsg::GetAck(FabricMsgGetAck {
+                              cookie: msg.cookie,
+                              vnode: msg.vnode,
+                              container: container.unwrap(),
+                          }))
+            .unwrap();
+    }
+
+    pub fn get_remote_ack_handler(&self, _from: &net::SocketAddr, msg: FabricMsgGetAck) {
+        self.get_callback(msg.cookie, Some(msg.container));
     }
 
     pub fn set(&self, token: usize, key: &[u8], value_opt: Option<&[u8]>, vv: VersionVector) {
+        let vnode_n = self.dht.key_vnode(key);
         let nodes = self.dht.nodes_for_key(key, self.replication_factor);
+        let cookie = token as u64;
         let _a = self.inflight
             .lock()
             .unwrap()
-            .insert(token,
+            .insert(cookie,
                     ReqState {
                         required: self.replication_factor / 2 + 1,
                         total: self.replication_factor,
@@ -122,52 +168,87 @@ impl Database {
                     });
         debug_assert!(_a.is_none());
 
+        let dcc = self.set_local(cookie, key, value_opt, &vv);
         for node in nodes {
             if node == self.dht.node() {
-                self.set_local(token, key, value_opt, &vv);
+
             } else {
-                // self.set_remote(token, key, value_opt, &vv);
+                self.set_remote(&node, vnode_n, cookie, key, dcc.clone());
             }
         }
     }
 
-    fn set_callback(&self, token: usize) {
+    fn set_callback(&self, cookie: u64) {
         let mut inflight = self.inflight.lock().unwrap();
-        let state = inflight.get_mut(&token).unwrap();
-        state.replies += 1;
-        if state.replies == state.required {
-            // return to client
-        } else if state.replies == state.total {
-            // remove state
+        if {
+            let state = inflight.get_mut(&cookie).unwrap();
+            state.replies += 1;
+            if state.replies == state.required {
+                // return to client
+            }
+            if state.replies == state.total {
+                // remove state
+                true
+            } else {
+                false
+            }
+        } {
+            inflight.remove(&cookie).unwrap();
         }
     }
 
-    fn set_local(&self, token: usize, key: &[u8], value_opt: Option<&[u8]>, vv: &VersionVector) {
+    fn set_local(&self, cookie: u64, key: &[u8], value_opt: Option<&[u8]>, vv: &VersionVector)
+                 -> DottedCausalContainer<Vec<u8>> {
         let vnode_n = self.dht.key_vnode(key);
         debug!("set_local {:?}", vnode_n);
-        self.vnodes
+        let dcc = self.vnodes
             .read()
             .unwrap()
             .get(&vnode_n)
-            .map(|vn| vn.lock().unwrap().set_local(hash(self.dht.node()), key, value_opt, vv));
-        self.set_callback(token);
+            .map(|vn| {
+                vn.lock().unwrap().set_local(self, hash(self.dht.node()), key, value_opt, vv)
+            });
+        self.set_callback(cookie);
+        dcc.unwrap()
     }
 
-    pub fn set_remote(&self, from: net::SocketAddr, key: &[u8], dcc: DottedCausalContainer<Vec<u8>>) {
-        let vnode_n = self.dht.key_vnode(key);
-        self.vnodes
-            .read()
-            .unwrap()
-            .get(&vnode_n)
-            .map(move |vn| vn.lock().unwrap().set_remote(hash(from), key, dcc));
+    pub fn set_remote(&self, addr: &net::SocketAddr, vnode: u16, cookie: u64, key: &[u8],
+                      dcc: DottedCausalContainer<Vec<u8>>) {
+        self.fabric
+            .send_message(addr,
+                          FabricMsg::Set(FabricMsgSet {
+                              cookie: cookie,
+                              vnode: vnode,
+                              key: key.into(),
+                              container: dcc.clone(),
+                          }))
+            .unwrap();
     }
 
-    pub fn set_remote_callback(&self, from: net::SocketAddr) {
+    pub fn set_handler(&self, from: &net::SocketAddr, msg: FabricMsgSet) {
         unimplemented!()
     }
 
-    pub fn inflight(&self, token: usize) -> Option<ReqState> {
-        self.inflight.lock().unwrap().remove(&token)
+    pub fn set_ack_handler(&self, from: &net::SocketAddr, msg: FabricMsgSetAck) {
+        unimplemented!()
+    }
+
+    pub fn set_remote_handler(&self, from: &net::SocketAddr, msg: FabricMsgSet) {
+        self.vnodes
+            .read()
+            .unwrap()
+            .get(&msg.vnode)
+            .map(move |vn| {
+                vn.lock().unwrap().set_remote(self, hash(from), &msg.key, msg.container)
+            });
+    }
+
+    pub fn set_remote_ack_handler(&self, _from: &net::SocketAddr, msg: FabricMsgSetAck) {
+        self.set_callback(msg.cookie);
+    }
+
+    fn inflight(&self, cookie: u64) -> Option<ReqState> {
+        self.inflight.lock().unwrap().remove(&cookie)
     }
 }
 
@@ -195,11 +276,10 @@ impl VNodePeer {
 }
 
 impl VNode {
-    fn new() -> VNode {
+    fn new(num: u16) -> VNode {
         use std::path::Path;
-        use std::fs;
-        let _ = fs::remove_dir_all("./vnode_t");
         VNode {
+            num: num,
             clock: BitmappedVersionVector::new(),
             peers: Default::default(),
             storage: Storage::open(Path::new("./vnode_t"), true).unwrap(),
@@ -207,7 +287,7 @@ impl VNode {
         }
     }
 
-    fn get(&self, key: &[u8]) -> DottedCausalContainer<Vec<u8>> {
+    fn get(&self, _db: &Database, key: &[u8]) -> DottedCausalContainer<Vec<u8>> {
         let mut dcc = if let Some(bytes) = self.storage.get_vec(key) {
             bincode_serde::deserialize(&bytes).unwrap()
         } else {
@@ -217,30 +297,45 @@ impl VNode {
         dcc
     }
 
-    fn set_local(&mut self, id: u64, key: &[u8], value_opt: Option<&[u8]>, vv: &VersionVector)
+    fn set_local(&mut self, db: &Database, id: u64, key: &[u8], value_opt: Option<&[u8]>,
+                 vv: &VersionVector)
                  -> DottedCausalContainer<Vec<u8>> {
-        let mut dcc = self.get(key);
+        let mut dcc = self.get(db, key);
         dcc.discard(vv);
         let dot = self.clock.event(id);
         if let Some(value) = value_opt {
             dcc.add(id, dot, value.into());
         }
         dcc.strip(&self.clock);
-        let mut bytes = Vec::new();
-        bincode_serde::serialize_into(&mut bytes, &dcc, bincode::SizeLimit::Infinite).unwrap();
-        self.storage.set(key, &bytes);
+
+        if dcc.values().size_hint().0 == 0 {
+            self.storage.del(key);
+        } else {
+            let mut bytes = Vec::new();
+            bincode_serde::serialize_into(&mut bytes, &dcc, bincode::SizeLimit::Infinite).unwrap();
+            self.storage.set(key, &bytes);
+        }
+
         self.log.insert(dot, key.into());
         dcc
     }
 
-    fn set_remote(&mut self, peer_id: u64, key: &[u8], mut new_dcc: DottedCausalContainer<Vec<u8>>) {
-        let old_dcc = self.get(key);
+    fn set_remote(&mut self, db: &Database, peer_id: u64, key: &[u8],
+                  mut new_dcc: DottedCausalContainer<Vec<u8>>) {
+        let old_dcc = self.get(db, key);
         new_dcc.add_to_bvv(&mut self.clock);
         new_dcc.sync(old_dcc);
         new_dcc.strip(&self.clock);
-        let mut bytes = Vec::new();
-        bincode_serde::serialize_into(&mut bytes, &new_dcc, bincode::SizeLimit::Infinite).unwrap();
-        self.storage.set(key, &bytes);
+
+        if new_dcc.values().size_hint().0 == 0 {
+            self.storage.del(key);
+        } else {
+            let mut bytes = Vec::new();
+            bincode_serde::serialize_into(&mut bytes, &new_dcc, bincode::SizeLimit::Infinite)
+                .unwrap();
+            self.storage.set(key, &bytes);
+        }
+
         self.peers
             .entry(peer_id)
             .or_insert_with(|| VNodePeer::new())
@@ -248,17 +343,54 @@ impl VNode {
     }
 }
 
+// boilerplate
+fn register_handlers(db: Arc<Database>) {
+    // FIXME: these create a circular ref :/
+    let cdb = db.clone();
+    db.fabric.register_msg_handler(FabricMsgType::Get,
+                                   Box::new(move |f, m| {
+                                       cdb.get_remote_handler(&f, fmsg!(m, FabricMsg::Get))
+                                   }));
+    let cdb = db.clone();
+    db.fabric.register_msg_handler(FabricMsgType::GetAck,
+                                   Box::new(move |f, m| {
+                                       cdb.get_remote_ack_handler(&f, fmsg!(m, FabricMsg::GetAck))
+                                   }));
+    let cdb = db.clone();
+    db.fabric.register_msg_handler(FabricMsgType::Set,
+                                   Box::new(move |f, m| {
+                                       cdb.set_handler(&f, fmsg!(m, FabricMsg::Set))
+                                   }));
+    let cdb = db.clone();
+    db.fabric.register_msg_handler(FabricMsgType::SetAck,
+                                   Box::new(move |f, m| {
+                                       cdb.set_ack_handler(&f, fmsg!(m, FabricMsg::SetAck))
+                                   }));
+    let cdb = db.clone();
+    db.fabric.register_msg_handler(FabricMsgType::SetRemote,
+                                   Box::new(move |f, m| {
+                                       cdb.set_remote_handler(&f, fmsg!(m, FabricMsg::Set))
+                                   }));
+    let cdb = db.clone();
+    db.fabric.register_msg_handler(FabricMsgType::SetRemoteAck,
+                                   Box::new(move |f, m| {
+                                       cdb.set_remote_ack_handler(&f, fmsg!(m, FabricMsg::SetAck))
+                                   }));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use env_logger;
     use version_vector::VersionVector;
 
     #[test]
     fn test() {
+        let _ = fs::remove_dir_all("./vnode_t");
         let _ = env_logger::init();
         let db = Database::new();
-        for i in 0usize..64 {
+        for i in 0u16..64 {
             db.init_vnode(i);
         }
         db.get(1, b"test");
@@ -284,6 +416,16 @@ mod tests {
         assert!(db.inflight(1).unwrap().container.values().next().is_none());
 
         db.get(1, b"test");
-        assert!(db.inflight(1).unwrap().container.values().eq(vec![b"value12"]));
+        let state = db.inflight(1).unwrap();
+        assert!(state.container.values().eq(vec![b"value12"]));
+
+        db.set(1,
+               b"test",
+               None,
+               state.container.version_vector().clone());
+        assert!(db.inflight(1).unwrap().container.values().next().is_none());
+
+        db.get(1, b"test");
+        assert!(db.inflight(1).unwrap().container.values().size_hint().0 == 0);
     }
 }

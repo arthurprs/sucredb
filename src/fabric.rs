@@ -1,87 +1,213 @@
-use rotor::{self, Scope, Response, Void};
+use rotor::{self, Machine, Scope, Response, Void};
 use rotor::mio::{EventSet, PollOpt};
+use rotor::mio::util::BoundedQueue;
 use rotor::mio::tcp::{TcpListener, TcpStream};
-use rotor_tools::uniform::{Uniform, Action};
 use rotor_tools::loop_ext::LoopExt;
 use rotor_stream::{Accept, Stream, Protocol, Intent, Transport, Exception};
-use std::thread;
-use std::net;
-use std::fmt;
+use std::{thread, net};
 use std::error::Error;
-use std::sync::{Arc, RwLock, mpsc};
+use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
+use rand::{thread_rng, Rng};
+use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
+use bincode::{self, serde as bincode_serde};
+pub use fabric_msg::*;
 
-pub enum FabricMsgType {
-    Get,
-    GetAck,
-    Put,
-    PutAck,
-    PutRemote,
-    PutRemoteAck,
-    Bootstrap,
-    BootstrapStream,
-    BootstrapFin,
-    SyncStart,
-    SyncStream,
-    SyncAck,
-    SyncFin,
-}
+pub type HandlerFn = Box<Fn(net::SocketAddr, FabricMsg) + Send + Sync>;
 
-pub type CallbackFn = Box<Fn()>;
+pub type FabricResult<T> = Result<T, Box<Error>>;
 
 pub struct Fabric {
     loop_thread: thread::JoinHandle<()>,
-    shared: Arc<SharedContext>,
+    shared_context: Arc<SharedContext>,
 }
 
 struct SharedContext {
-    nodes: RwLock<HashMap<net::SocketAddr, (mpsc::Sender<()>, rotor::Notifier)>>,
-    msg_callbacks: RwLock<HashMap<u8, CallbackFn>>,
+    nodes: RwLock<HashMap<net::SocketAddr, (BoundedQueue<FabricMsg>, Vec<rotor::Notifier>)>>,
+    msg_handlers: RwLock<HashMap<u8, HandlerFn>>,
+    connector_notifier: rotor::Notifier,
+    connector_queue: BoundedQueue<net::SocketAddr>,
 }
 
 struct Context {
     shared: Arc<SharedContext>,
-    nodes: HashMap<net::SocketAddr, mpsc::Receiver<()>>,
 }
 
-struct OutConnector;
+enum OutMachine {
+    Connector(BoundedQueue<net::SocketAddr>),
+    Connection(Stream<OutConnection>),
+}
 
-struct OutConnection;
+struct OutConnection {
+    addr: net::SocketAddr,
+    notifier: rotor::Notifier,
+}
 
-struct InConnection;
+struct InConnection {
+    addr: net::SocketAddr,
+}
 
 rotor_compose! {
     enum Fsm/Seed<Context> {
-        Out(Stream<OutConnection>),
-        In(Stream<InConnection>),
-        OutConnector(Uniform<OutConnector>),
-        InAcceptor(Accept<Stream<InConnection>, TcpListener>),
+        Out(OutMachine),
+        In(Accept<Stream<InConnection>, TcpListener>),
     }
-}
-
-type FabricResult<T> = Result<T, ()>;
-
-enum Message {
-
 }
 
 impl Context {
-    fn new() -> Self {
-        unimplemented!()
+    fn new(connector_notifier: rotor::Notifier, connector_queue: BoundedQueue<net::SocketAddr>)
+           -> Self {
+        Context { shared: Arc::new(SharedContext::new(connector_notifier, connector_queue)) }
     }
 }
 
-impl Action for OutConnector {
-    type Context = Context;
-    type Seed = ();
+impl SharedContext {
+    fn new(connector_notifier: rotor::Notifier, connector_queue: BoundedQueue<net::SocketAddr>)
+           -> Self {
+        SharedContext {
+            nodes: RwLock::new(Default::default()),
+            msg_handlers: RwLock::new(Default::default()),
+            connector_notifier: connector_notifier,
+            connector_queue: connector_queue,
+        }
+    }
+}
 
-    fn create(_seed: Self::Seed, _scope: &mut Scope<Self::Context>) -> Response<Self, Void> {
-        unreachable!()
+impl Machine for OutMachine {
+    type Context = Context;
+    type Seed = net::SocketAddr;
+
+    fn create(addr: Self::Seed, scope: &mut Scope<Self::Context>) -> Response<Self, Void> {
+        let stream = TcpStream::connect(&addr).unwrap();
+        Stream::new(stream, addr, scope).wrap(OutMachine::Connection)
     }
 
-    fn action(self, _scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
-        unreachable!()
-        // Response::spawn(Fsm::OutConnection)
+    fn ready(self, events: EventSet, scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
+        match self {
+            OutMachine::Connector(_) => unreachable!(),
+            OutMachine::Connection(m) => {
+                m.ready(events, scope)
+                    .map(OutMachine::Connection, |_| unreachable!())
+            }
+        }
+    }
+
+    fn spawned(self, _scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
+        match self {
+            OutMachine::Connector(..) => Response::ok(self),
+            OutMachine::Connection(..) => unreachable!(),
+        }
+    }
+
+    fn timeout(self, scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
+        match self {
+            OutMachine::Connector(..) => unreachable!(),
+            OutMachine::Connection(m) => {
+                m.timeout(scope).map(OutMachine::Connection, |_| unreachable!())
+            }
+        }
+    }
+
+    fn wakeup(self, scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
+        match self {
+            OutMachine::Connector(q) => {
+                let addr = q.pop().unwrap();
+                debug!("connector wake up with: {:?}", addr);
+                Response::spawn(OutMachine::Connector(q), addr)
+            }
+            OutMachine::Connection(m) => {
+                m.wakeup(scope).map(OutMachine::Connection, |_| unreachable!())
+            }
+        }
+    }
+}
+
+impl OutConnection {
+    fn pull_msgs(self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
+                 -> Intent<Self> {
+        let nodes = scope.shared.nodes.read().unwrap();
+        let node = nodes.get(&self.addr).unwrap();
+        if let Some(msg) = node.0.pop() {
+            debug!("pull message from queue {:?}", msg);
+            let msg_size = bincode_serde::serialized_size(&msg);
+            transport.output().write_u32::<LittleEndian>(msg_size as u32).unwrap();
+            bincode_serde::serialize_into(&mut transport.output(),
+                                          &msg,
+                                          bincode::SizeLimit::Infinite)
+                .unwrap();
+            Intent::of(self).expect_flush()
+        } else {
+            debug!("no message, will sleep");
+            Intent::of(self).sleep()
+        }
+    }
+
+    fn cleanup(&self, scope: &mut Scope<Context>) {
+        debug!("cleaning up");
+        // TODO create another connection if queue still has items
+        scope.shared.nodes.write().unwrap().get_mut(&self.addr).map(|n| {
+            n.1.retain(|a| unsafe {
+                use std::mem;
+                mem::transmute_copy::<_, (usize, usize)>(a) !=
+                mem::transmute_copy::<_, (usize, usize)>(&self.notifier)
+            });
+        });
+    }
+}
+
+impl Protocol for OutConnection {
+    type Context = Context;
+    type Socket = TcpStream;
+    type Seed = net::SocketAddr;
+
+    fn create(addr: Self::Seed, sock: &mut TcpStream, scope: &mut Scope<Context>) -> Intent<Self> {
+        debug!("outgoing connection to {:?}", addr);
+        let _ = sock.set_nodelay(true);
+        let _ = sock.set_keepalive(Some(1));
+        let notifier = scope.notifier();
+        let mut nodes = scope.shared.nodes.write().unwrap();
+        nodes.get_mut(&addr).unwrap().1.push(notifier.clone());
+        Intent::of(OutConnection {
+                addr: addr,
+                notifier: notifier,
+            })
+            .expect_flush()
+    }
+
+    fn bytes_read(self, _transport: &mut Transport<TcpStream>, _end: usize,
+                  _scope: &mut Scope<Context>)
+                  -> Intent<Self> {
+        unreachable!();
+    }
+
+    fn bytes_flushed(self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
+                     -> Intent<Self> {
+        self.pull_msgs(transport, scope)
+    }
+
+    fn timeout(self, _transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
+               -> Intent<Self> {
+        debug!("Out: Timeout happened");
+        self.cleanup(scope);
+        Intent::done()
+    }
+
+    fn wakeup(self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>) -> Intent<Self> {
+        self.pull_msgs(transport, scope)
+    }
+
+    fn exception(self, _transport: &mut Transport<Self::Socket>, reason: Exception,
+                 scope: &mut Scope<Self::Context>)
+                 -> Intent<Self> {
+        debug!("Out: Error: {}", reason);
+        self.cleanup(scope);
+        Intent::done()
+    }
+
+    fn fatal(self, reason: Exception, scope: &mut Scope<Self::Context>) -> Option<Box<Error>> {
+        debug!("Out: Error: {}", reason);
+        self.cleanup(scope);
+        None
     }
 }
 
@@ -90,28 +216,62 @@ impl Protocol for InConnection {
     type Socket = TcpStream;
     type Seed = ();
 
-    fn create(_seed: (), _sock: &mut TcpStream, _scope: &mut Scope<Context>) -> Intent<Self> {
-        debug!("incomming connection from {:?}",
-               _sock.local_addr().unwrap());
-        Intent::of(InConnection {}).expect_delimiter(b"\r\n", 1024)
+    fn create(_seed: (), sock: &mut TcpStream, _scope: &mut Scope<Context>) -> Intent<Self> {
+        debug!("incomming connection from {:?}", sock.peer_addr().unwrap());
+        let _ = sock.set_nodelay(true);
+        let _ = sock.set_keepalive(Some(1));
+        Intent::of(InConnection { addr: sock.peer_addr().unwrap() }).expect_bytes(4)
     }
 
     fn bytes_read(self, transport: &mut Transport<TcpStream>, _end: usize,
-                  _scope: &mut Scope<Context>)
+                  scope: &mut Scope<Context>)
                   -> Intent<Self> {
-        let buf_len = transport.input().len();
-
-        Intent::done()
+        let mut consumed = 0;
+        let mut needed = 4;
+        {
+            let mut buf = &transport.input()[..];
+            while let Ok(msg_len) = buf.read_u32::<LittleEndian>().map(|l| l as usize) {
+                if buf.len() >= msg_len {
+                    let mut msg_buf = &buf[..msg_len];
+                    buf = &buf[msg_len..];
+                    let de_result =
+                        bincode_serde::deserialize_from::<_,
+                                                          FabricMsg>(&mut msg_buf,
+                                                                     bincode::SizeLimit::Infinite);
+                    match de_result {
+                        Ok(msg) => {
+                            let msg_type = msg.get_type();
+                            if let Some(handler) = scope.shared
+                                .msg_handlers
+                                .read()
+                                .unwrap()
+                                .get(&(msg_type as u8)) {
+                                handler(self.addr, msg);
+                            } else {
+                                warn!("No handler for msg type {:?}", msg_type);
+                            }
+                        }
+                        Err(e) => error!("Error deserializing msg: {:?}", e),
+                    }
+                    consumed += 4 + msg_len;
+                } else {
+                    needed += msg_len;
+                    break;
+                }
+            }
+        }
+        transport.input().consume(consumed);
+        Intent::of(self).expect_bytes(needed)
     }
 
     fn bytes_flushed(self, _transport: &mut Transport<TcpStream>, _scope: &mut Scope<Context>)
                      -> Intent<Self> {
-        debug!("bytes_flushed");
-        Intent::done()
+        unreachable!();
     }
+
     fn timeout(self, _transport: &mut Transport<TcpStream>, _scope: &mut Scope<Context>)
                -> Intent<Self> {
-        debug!("Timeout happened");
+        debug!("In: Timeout happened");
         Intent::done()
     }
 
@@ -119,29 +279,28 @@ impl Protocol for InConnection {
               -> Intent<Self> {
         unreachable!();
     }
+
     fn exception(self, _transport: &mut Transport<Self::Socket>, reason: Exception,
                  _scope: &mut Scope<Self::Context>)
                  -> Intent<Self> {
-        debug!("Error: {}", reason);
+        debug!("In: Error: {}", reason);
         Intent::done()
     }
+
     fn fatal(self, reason: Exception, _scope: &mut Scope<Self::Context>) -> Option<Box<Error>> {
-        debug!("Error: {}", reason);
+        debug!("In: Fatal: {}", reason);
         None
     }
 }
 
 impl Fabric {
-    fn new() -> Fabric {
-        unimplemented!()
-    }
-
-    fn run() {
-        let mut event_loop = rotor::Loop::new(&rotor::Config::new()).unwrap();
-        let lst = TcpListener::bind(&"127.0.0.1:6479".parse().unwrap()).unwrap();
-        let oc_notifier = event_loop.add_and_fetch(Fsm::OutConnector, |scope| {
-                let oc = Uniform(OutConnector);
-                Response::ok((oc, scope.notifier()))
+    pub fn new(bind_addr: net::SocketAddr) -> FabricResult<Self> {
+        let mut event_loop = try!(rotor::Loop::new(&rotor::Config::new()));
+        let lst = try!(TcpListener::bind(&bind_addr));
+        let connector_queue = BoundedQueue::with_capacity(128);
+        let connector_notifier = event_loop.add_and_fetch(Fsm::Out, |scope| {
+                let connector = OutMachine::Connector(connector_queue.clone());
+                Response::ok((connector, scope.notifier()))
             })
             .unwrap();
         event_loop.add_machine_with(|scope| {
@@ -149,21 +308,65 @@ impl Fabric {
                     Ok(()) => {}
                     Err(e) => return Response::error(Box::new(e)),
                 }
-                Response::ok(Fsm::InAcceptor(Accept::Server(lst, ())))
+                Response::ok(Fsm::In(Accept::Server(lst, ())))
             })
             .unwrap();
-        event_loop.run(Context::new()).unwrap();
+        let context = Context::new(connector_notifier, connector_queue);
+        let shared_context = context.shared.clone();
+        let thread = thread::spawn(move || event_loop.run(context).unwrap());
+        Ok(Fabric {
+            loop_thread: thread,
+            shared_context: shared_context,
+        })
     }
 
-    fn send_message(&self, recipient: net::SocketAddr, msg: Message) -> FabricResult<()> {
-        unimplemented!()
+    pub fn send_message(&self, recipient: &net::SocketAddr, msg: FabricMsg) -> FabricResult<()> {
+        // fast path if connection already available
+        if let Some(node) = self.shared_context.nodes.read().unwrap().get(recipient) {
+            if let Some(n) = thread_rng().choose(&node.1) {
+                node.0.push(msg).unwrap();
+                n.wakeup().unwrap();
+                return Ok(());
+            };
+        }
+        let mut nodes = self.shared_context.nodes.write().unwrap();
+        let node = nodes.entry(*recipient)
+            .or_insert_with(|| (BoundedQueue::with_capacity(1024), Vec::new()));
+        // push the message
+        node.0.push(msg).unwrap();
+        // we might have raced, so only create new conn if necessary
+        if let Some(n) = thread_rng().choose(&node.1) {
+            n.wakeup().unwrap()
+        } else {
+            self.shared_context.connector_queue.push(*recipient).unwrap();
+            self.shared_context.connector_notifier.wakeup().unwrap();
+        }
+
+        Ok(())
     }
 
-    fn register_msg_handler(&self, msg_type: FabricMsgType, callback: CallbackFn) {
-        unimplemented!()
+    pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: HandlerFn) {
+        self.shared_context.msg_handlers.write().unwrap().insert(msg_type as u8, handler);
     }
+}
 
-    fn function_name(&self) {
-        unimplemented!()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{thread, net};
+    use env_logger;
+
+    #[test]
+    fn test() {
+        let _ = env_logger::init();
+        let fabric = Fabric::new("127.0.0.1:6479".parse().unwrap()).unwrap();
+        fabric.send_message(&"127.0.0.1:6479".parse().unwrap(), FabricMsg::Bootstrap).unwrap();
+        thread::sleep_ms(3000);
+        fabric.register_msg_handler(FabricMsgType::Bootstrap,
+                                    Box::new(move |_, m| {
+                                        info!("yay, handler received {:?}", m);
+                                    }));
+        fabric.send_message(&"127.0.0.1:6479".parse().unwrap(), FabricMsg::Bootstrap).unwrap();
+        thread::sleep_ms(3000);
     }
 }

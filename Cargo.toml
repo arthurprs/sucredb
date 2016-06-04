@@ -14,8 +14,8 @@ env_logger = "*"
 lmdb-rs = "0.7.0"
 tendril="*"
 rotor="*"
-rotor-stream="*"
 rotor-tools="*"
+byteorder="*"
 
 [dependencies.linear-map]
 git = "https://github.com/contain-rs/linear-map.git"
@@ -24,6 +24,9 @@ features = ["serde_impl"]
 [dependencies.bincode]
 version = "*"
 features = ["serde"]
+
+[dependencies.rotor-stream]
+path= "../rotor-stream"
 
 [profile.dev]
 codegen-units = 4
