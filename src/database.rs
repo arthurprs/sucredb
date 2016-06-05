@@ -28,9 +28,10 @@ pub struct Database {
     fabric: Fabric,
     vnodes: RwLock<HashMap<u16, Mutex<VNode>>>,
     replication_factor: usize,
-    //TODO: move this inside vnode?
-    //TODO: create a thread to walk inflight and handle timeouts
+    // TODO: move this inside vnode?
+    // TODO: create a thread to walk inflight and handle timeouts
     inflight: Mutex<HashMap<u64, ReqState>>,
+    responses: Mutex<HashMap<u64, DottedCausalContainer<Vec<u8>>>>,
 }
 
 struct VNodePeer {
@@ -53,6 +54,7 @@ impl Database {
             fabric: Fabric::new(node).unwrap(),
             dht: DHT::new(node, (), 64),
             inflight: Mutex::new(Default::default()),
+            responses: Mutex::new(Default::default()),
             vnodes: RwLock::new(Default::default()),
         });
         register_handlers(db.clone());
@@ -88,7 +90,6 @@ impl Database {
         cookie
     }
 
-
     fn new_state(&self, token: usize) -> u64 {
         self.new_state_from(token, self.dht.node())
     }
@@ -100,7 +101,7 @@ impl Database {
 
         for node in nodes {
             if node == self.dht.node() {
-                self.get_local(cookie, key);
+                self.get_local(vnode_n, cookie, key);
             } else {
                 self.send_get_remote(&node, vnode_n, cookie, key);
             }
@@ -113,26 +114,26 @@ impl Database {
             let state = inflight.get_mut(&cookie).unwrap();
             container.map(|dcc| state.container.sync(dcc));
             state.replies += 1;
-            if state.replies == state.required {
-                // return to client
-            }
-            if state.replies == state.total {
+            if state.replies >= state.required {
+                // return to client & remove state
+                true
+            } else if state.replies == state.total {
                 // remove state
                 true
             } else {
                 false
             }
         } {
-            inflight.remove(&cookie).unwrap();
+            let state = inflight.remove(&cookie).unwrap();
+            self.responses.lock().unwrap().insert(cookie, state.container);
         }
     }
 
-    fn get_local(&self, cookie: u64, key: &[u8]) {
-        let vnode_n = self.dht.key_vnode(key);
+    fn get_local(&self, vnode: u16, cookie: u64, key: &[u8]) {
         let container = self.vnodes
             .read()
             .unwrap()
-            .get(&vnode_n)
+            .get(&vnode)
             .map(|vn| vn.lock().unwrap().get(self, key));
         self.get_callback(cookie, container);
     }
@@ -203,20 +204,21 @@ impl Database {
             let state = inflight.get_mut(&cookie).unwrap();
             state.replies += 1;
             if state.replies == state.required {
-                if state.from == self.dht.node() {
-                    // return to proxy
-                } else {
-                    // return to client
-                }
-            }
-            if state.replies == state.total {
+                //     if state.from == self.dht.node() {
+                //         // return to proxy
+                //     } else {
+                //         // return to client
+                //     }
+                // }
+                // if state.replies == state.total {
                 // remove state
                 true
             } else {
                 false
             }
         } {
-            inflight.remove(&cookie).unwrap();
+            let state = inflight.remove(&cookie).unwrap();
+            self.responses.lock().unwrap().insert(cookie, state.container);
         }
     }
 
@@ -271,12 +273,20 @@ impl Database {
     }
 
     pub fn set_remote_handler(&self, from: &net::SocketAddr, msg: FabricMsgSetRemote) {
+        let FabricMsgSetRemote { key, container, vnode, cookie } = msg;
         self.vnodes
             .read()
             .unwrap()
             .get(&msg.vnode)
-            .map(move |vn| {
-                vn.lock().unwrap().set_remote(self, hash(from), &msg.key, msg.container)
+            .map(|vn| vn.lock().unwrap().set_remote(self, hash(from), &key, container))
+            .map(|_| {
+                self.fabric
+                    .send_message(from,
+                                  FabricMsg::SetRemoteAck(FabricMsgSetRemoteAck {
+                                      vnode: vnode,
+                                      cookie: cookie,
+                                  }))
+                    .unwrap();
             });
     }
 
@@ -286,6 +296,9 @@ impl Database {
 
     fn inflight(&self, cookie: u64) -> Option<ReqState> {
         self.inflight.lock().unwrap().remove(&cookie)
+    }
+    fn response(&self, cookie: u64) -> Option<DottedCausalContainer<Vec<u8>>> {
+        self.responses.lock().unwrap().remove(&cookie)
     }
 }
 
@@ -419,6 +432,7 @@ fn register_handlers(db: Arc<Database>) {
 mod tests {
     use super::*;
     use std::fs;
+    use std::thread;
     use env_logger;
     use version_vector::VersionVector;
 
@@ -461,5 +475,40 @@ mod tests {
 
         db.get(1, b"test");
         assert!(db.inflight(1).unwrap().container.is_empty());
+    }
+
+    #[test]
+    fn test_two() {
+        let _ = fs::remove_dir_all("./vnode_t");
+        let _ = env_logger::init();
+        let db1 = Database::new("127.0.0.1:9000".parse().unwrap());
+        let db2 = Database::new("127.0.0.1:9001".parse().unwrap());
+        for i in 0u16..64 {
+            db1.init_vnode(i);
+            db2.init_vnode(i);
+        }
+        for i in 0u16..32 {
+            db1.dht.add_pending_node(i * 2 + 1, db2.dht.node(), ());
+            db1.dht.promote_pending_node(i * 2 + 1, db2.dht.node());
+            db2.dht.add_pending_node(i * 2 + 1, db1.dht.node(), ());
+            db2.dht.promote_pending_node(i * 2 + 1, db1.dht.node());
+        }
+
+        db1.get(1, b"test");
+        thread::sleep_ms(1000);
+        assert!(db1.response(1).unwrap().is_empty());
+
+        db1.set(1, b"test", Some(b"value1"), VersionVector::new());
+        thread::sleep_ms(1000);
+        assert!(db1.response(1).unwrap().is_empty());
+
+        for &db in &[&db1, &db2] {
+            db.get(1, b"test");
+            thread::sleep_ms(1000);
+            assert!(db.response(1).unwrap().values().eq(vec![b"value1"]));
+        }
+
+        thread::sleep_ms(1000);
+
     }
 }

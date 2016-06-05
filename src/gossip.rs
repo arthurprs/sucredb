@@ -18,7 +18,7 @@ const PINGREQ_CANDIDATES: usize = 3;
 enum NodeStatus {
     Alive,
     Suspect,
-    Dead,
+    Dead, // TODO: Leaving
 }
 
 pub trait Metadata: Serialize + Deserialize + Clone + Send + fmt::Debug {}
@@ -145,6 +145,7 @@ impl<T: Metadata> Inner<T> {
         let mut messages = Vec::new();
         let addr = g.lock().unwrap().addr.clone();
         let mut broadcast_counter: usize = thread_rng().gen();
+
         while g.lock().unwrap().running > 0 {
             while let Ok((buffer_len, remote_addr)) = socket.recv_from(&mut stack_buffer) {
                 if let Ok(msg) = Message::decode(&stack_buffer[..buffer_len]) {
@@ -215,7 +216,6 @@ impl<T: Metadata> Inner<T> {
             // send serialized messages
             for (remote_addr, msg) in messages.drain(..) {
                 if let Ok(buffer_len) = msg.encode(&mut stack_buffer) {
-                    warn!("buffer is {:?}", &stack_buffer[..buffer_len]);
                     trace!("{} sending to {} {:?}", addr, remote_addr, msg);
                     let _ = socket.send_to(&stack_buffer[..buffer_len], remote_addr);
                 }

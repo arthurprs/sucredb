@@ -3,10 +3,14 @@ use hash::hash;
 use std::collections::{HashMap, HashSet};
 use rand::{self, Rng};
 use serde::{Serialize, Deserialize};
+use std::sync::RwLock;
 
-#[derive(Clone, Serialize, Deserialize)]
 pub struct DHT<T: Clone + Serialize + Deserialize> {
     node: net::SocketAddr,
+    inner: RwLock<Inner<T>>,
+}
+
+struct Inner<T: Clone + Serialize + Deserialize> {
     ring: Vec<(net::SocketAddr, T)>,
     pending: HashMap<u16, (net::SocketAddr, T)>,
 }
@@ -15,8 +19,10 @@ impl<T: Clone + Serialize + Deserialize> DHT<T> {
     pub fn new(node: net::SocketAddr, meta: T, partitions: usize) -> DHT<T> {
         DHT {
             node: node,
-            ring: vec![(node, meta); partitions],
-            pending: Default::default(),
+            inner: RwLock::new(Inner {
+                ring: vec![(node, meta); partitions],
+                pending: Default::default(),
+            }),
         }
     }
 
@@ -25,19 +31,21 @@ impl<T: Clone + Serialize + Deserialize> DHT<T> {
     }
 
     pub fn key_vnode(&self, key: &[u8]) -> u16 {
-        (hash(key) % self.ring.len() as u64) as u16
+        let inner = self.inner.read().unwrap();
+        (hash(key) % inner.ring.len() as u64) as u16
     }
 
     pub fn nodes_for_key(&self, key: &[u8], replication_factor: usize) -> Vec<net::SocketAddr> {
+        let inner = self.inner.read().unwrap();
         let vnode = self.key_vnode(key);
-        let ring_len = self.ring.len();
+        let ring_len = inner.ring.len();
         let mut result = HashSet::new();
         for i in 0..replication_factor {
             let vnode_i = (vnode as usize + i) % ring_len;
-            if let Some(p) = self.ring.get(vnode_i) {
+            if let Some(p) = inner.ring.get(vnode_i) {
                 result.insert(p.0);
             }
-            if let Some(p) = self.pending.get(&(vnode_i as u16)) {
+            if let Some(p) = inner.pending.get(&(vnode_i as u16)) {
                 result.insert(p.0);
             }
         }
@@ -45,39 +53,49 @@ impl<T: Clone + Serialize + Deserialize> DHT<T> {
     }
 
     pub fn members(&self) -> Vec<net::SocketAddr> {
-        let members_set: HashSet<_> = self.ring.iter().map(|&(n, _)| n).collect();
+        let inner = self.inner.read().unwrap();
+        let members_set: HashSet<_> = inner.ring.iter().map(|&(n, _)| n).collect();
         members_set.iter().cloned().collect()
     }
 
-    pub fn add_node(&mut self) {
+    pub fn add_node(&self) {
         unimplemented!()
     }
 
-    pub fn claim(&mut self, node: net::SocketAddr, meta: T) {
+    pub fn claim(&self, node: net::SocketAddr, meta: T) -> Vec<u16> {
+        let mut moves = Vec::new();
         let members = self.members().len() + 1;
-        let partitions = self.ring.len();
+        let mut inner = self.inner.write().unwrap();
+        let partitions = inner.ring.len();
         for _ in 0..members / partitions {
-            let r = rand::thread_rng().gen::<usize>() % partitions;
-            self.pending.insert(r as u16, (node, meta.clone()));
+            let r = (rand::thread_rng().gen::<usize>() % partitions) as u16;
+            inner.pending.insert(r, (node, meta.clone()));
+            moves.push(r);
         }
+        moves
     }
 
-    pub fn add_pending_node(&mut self, vnode: u16, node: net::SocketAddr, meta: T) {
-        assert!(self.pending.insert(vnode, (node, meta)).is_none());
+    pub fn add_pending_node(&self, vnode: u16, node: net::SocketAddr, meta: T) {
+        let mut inner = self.inner.write().unwrap();
+        assert!(inner.pending.insert(vnode, (node, meta)).is_none());
     }
 
-    pub fn remove_pending_node(&mut self, vnode: u16, node: net::SocketAddr) {
-        assert!(self.pending.remove(&vnode).unwrap().0 == node);
+    pub fn remove_pending_node(&self, vnode: u16, node: net::SocketAddr) {
+        let mut inner = self.inner.write().unwrap();
+        assert!(inner.pending.remove(&vnode).unwrap().0 == node);
     }
 
-    pub fn promote_pending_node(&mut self, vnode: u16, node: net::SocketAddr) {
-        let p = self.pending.remove(&vnode).unwrap();
+    pub fn promote_pending_node(&self, vnode: u16, node: net::SocketAddr) {
+        let mut inner = self.inner.write().unwrap();
+        let p = inner.pending.remove(&vnode).unwrap();
         debug_assert!(p.0 == node);
-        self.ring[vnode as usize] = p;
+        inner.ring[vnode as usize] = p;
     }
 
     pub fn get_vnode(&self, vnode: u16) -> (net::SocketAddr, Option<net::SocketAddr>) {
-        (self.ring.get(vnode as usize).map(|a| a.0).unwrap(), self.pending.get(&vnode).map(|a| a.0))
+        let inner = self.inner.read().unwrap();
+        (inner.ring.get(vnode as usize).map(|a| a.0).unwrap(),
+         inner.pending.get(&vnode).map(|a| a.0))
     }
 }
 

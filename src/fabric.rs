@@ -1,24 +1,26 @@
+use std::{fmt, thread, net};
+use std::error::Error;
+use std::sync::{Arc, RwLock, atomic};
+use std::collections::HashMap;
 use rotor::{self, Machine, Scope, Response, Void};
 use rotor::mio::{EventSet, PollOpt};
 use rotor::mio::util::BoundedQueue;
 use rotor::mio::tcp::{TcpListener, TcpStream};
 use rotor_tools::loop_ext::LoopExt;
 use rotor_stream::{Accept, Stream, Protocol, Intent, Transport, Exception};
-use std::{thread, net};
-use std::error::Error;
-use std::sync::{Arc, RwLock};
-use std::collections::HashMap;
 use rand::{thread_rng, Rng};
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
+use serde::{Serialize, Deserialize};
 use bincode::{self, serde as bincode_serde};
 pub use fabric_msg::*;
+use utils::GenericError;
 
 pub type HandlerFn = Box<Fn(net::SocketAddr, FabricMsg) + Send + Sync>;
 
-pub type FabricResult<T> = Result<T, Box<Error>>;
+pub type FabricResult<T> = Result<T, GenericError>;
 
 pub struct Fabric {
-    loop_thread: thread::JoinHandle<()>,
+    loop_thread: Option<thread::JoinHandle<()>>,
     shared_context: Arc<SharedContext>,
 }
 
@@ -27,6 +29,7 @@ struct SharedContext {
     msg_handlers: RwLock<HashMap<u8, HandlerFn>>,
     connector_notifier: rotor::Notifier,
     connector_queue: BoundedQueue<net::SocketAddr>,
+    running: atomic::AtomicBool,
 }
 
 struct Context {
@@ -34,17 +37,20 @@ struct Context {
 }
 
 enum OutMachine {
-    Connector(BoundedQueue<net::SocketAddr>),
+    Connector(net::SocketAddr, BoundedQueue<net::SocketAddr>),
     Connection(Stream<OutConnection>),
 }
 
 struct OutConnection {
-    addr: net::SocketAddr,
+    identified: bool,
+    this: net::SocketAddr,
+    other: net::SocketAddr,
     notifier: rotor::Notifier,
 }
 
 struct InConnection {
-    addr: net::SocketAddr,
+    this: net::SocketAddr,
+    other: Option<net::SocketAddr>,
 }
 
 rotor_compose! {
@@ -69,22 +75,23 @@ impl SharedContext {
             msg_handlers: RwLock::new(Default::default()),
             connector_notifier: connector_notifier,
             connector_queue: connector_queue,
+            running: atomic::AtomicBool::new(false),
         }
     }
 }
 
 impl Machine for OutMachine {
     type Context = Context;
-    type Seed = net::SocketAddr;
+    type Seed = (net::SocketAddr, net::SocketAddr);
 
-    fn create(addr: Self::Seed, scope: &mut Scope<Self::Context>) -> Response<Self, Void> {
-        let stream = TcpStream::connect(&addr).unwrap();
-        Stream::new(stream, addr, scope).wrap(OutMachine::Connection)
+    fn create((this, other): Self::Seed, scope: &mut Scope<Self::Context>) -> Response<Self, Void> {
+        let stream = TcpStream::connect(&other).unwrap();
+        Stream::new(stream, (this, other), scope).wrap(OutMachine::Connection)
     }
 
     fn ready(self, events: EventSet, scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
         match self {
-            OutMachine::Connector(_) => unreachable!(),
+            OutMachine::Connector(..) => unreachable!(),
             OutMachine::Connection(m) => {
                 m.ready(events, scope)
                     .map(OutMachine::Connection, |_| unreachable!())
@@ -110,10 +117,13 @@ impl Machine for OutMachine {
 
     fn wakeup(self, scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
         match self {
-            OutMachine::Connector(q) => {
-                let addr = q.pop().unwrap();
-                debug!("connector wake up with: {:?}", addr);
-                Response::spawn(OutMachine::Connector(q), addr)
+            OutMachine::Connector(this, q) => {
+                if !scope.shared.running.load(atomic::Ordering::Relaxed) {
+                    scope.shutdown_loop();
+                }
+                let other = q.pop().unwrap();
+                debug!("connector wake up with: {:?}", other);
+                Response::spawn(OutMachine::Connector(this, q), (this, other))
             }
             OutMachine::Connection(m) => {
                 m.wakeup(scope).map(OutMachine::Connection, |_| unreachable!())
@@ -122,19 +132,49 @@ impl Machine for OutMachine {
     }
 }
 
+fn write_msg<T: Serialize + fmt::Debug>(transport: &mut Transport<TcpStream>, msg: &T) {
+    let msg_len = bincode_serde::serialized_size(msg);
+    debug!("writing msg {:?} ({} bytes)", msg, msg_len);
+    transport.output().write_u32::<LittleEndian>(msg_len as u32).unwrap();
+    bincode_serde::serialize_into(transport.output(), msg, bincode::SizeLimit::Infinite).unwrap();
+}
+
+fn read_msg<T: Deserialize + fmt::Debug>(transport: &mut Transport<TcpStream>) -> (Option<T>, usize) {
+    let mut consumed = 0;
+    let mut needed = 4;
+    let mut de_msg = None;
+    {
+        let mut buf = &transport.input()[..];
+        if let Ok(msg_len) = buf.read_u32::<LittleEndian>().map(|l| l as usize) {
+            if buf.len() >= msg_len {
+                let mut msg_buf = &buf[..msg_len];
+                let de_result = bincode_serde::deserialize_from(&mut msg_buf,
+                                                                bincode::SizeLimit::Infinite);
+                match de_result {
+                    Ok(msg) => {
+                        debug!("read msg {:?} ({} bytes)", msg, msg_len);
+                        de_msg = Some(msg);
+                    }
+                    Err(e) => error!("Error deserializing msg: {:?}", e),
+                }
+                consumed += 4 + msg_len;
+            } else {
+                needed += msg_len;
+            }
+        }
+    }
+    transport.input().consume(consumed);
+    (de_msg, needed)
+}
+
 impl OutConnection {
     fn pull_msgs(self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
                  -> Intent<Self> {
         let nodes = scope.shared.nodes.read().unwrap();
-        let node = nodes.get(&self.addr).unwrap();
+        let node = nodes.get(&self.other).unwrap();
         if let Some(msg) = node.0.pop() {
             debug!("pull message from queue {:?}", msg);
-            let msg_size = bincode_serde::serialized_size(&msg);
-            transport.output().write_u32::<LittleEndian>(msg_size as u32).unwrap();
-            bincode_serde::serialize_into(&mut transport.output(),
-                                          &msg,
-                                          bincode::SizeLimit::Infinite)
-                .unwrap();
+            write_msg(transport, &msg);
             Intent::of(self).expect_flush()
         } else {
             debug!("no message, will sleep");
@@ -145,7 +185,7 @@ impl OutConnection {
     fn cleanup(&self, scope: &mut Scope<Context>) {
         debug!("cleaning up");
         // TODO create another connection if queue still has items
-        scope.shared.nodes.write().unwrap().get_mut(&self.addr).map(|n| {
+        scope.shared.nodes.write().unwrap().get_mut(&self.other).map(|n| {
             n.1.retain(|a| unsafe {
                 use std::mem;
                 mem::transmute_copy::<_, (usize, usize)>(a) !=
@@ -158,17 +198,20 @@ impl OutConnection {
 impl Protocol for OutConnection {
     type Context = Context;
     type Socket = TcpStream;
-    type Seed = net::SocketAddr;
+    type Seed = (net::SocketAddr, net::SocketAddr);
 
-    fn create(addr: Self::Seed, sock: &mut TcpStream, scope: &mut Scope<Context>) -> Intent<Self> {
-        debug!("outgoing connection to {:?}", addr);
+    fn create((this, other): Self::Seed, sock: &mut TcpStream, scope: &mut Scope<Context>)
+              -> Intent<Self> {
+        debug!("outgoing connection to {:?}", other);
         let _ = sock.set_nodelay(true);
         let _ = sock.set_keepalive(Some(1));
         let notifier = scope.notifier();
         let mut nodes = scope.shared.nodes.write().unwrap();
-        nodes.get_mut(&addr).unwrap().1.push(notifier.clone());
+        nodes.get_mut(&other).unwrap().1.push(notifier.clone());
         Intent::of(OutConnection {
-                addr: addr,
+                identified: false,
+                this: this,
+                other: other,
                 notifier: notifier,
             })
             .expect_flush()
@@ -180,9 +223,15 @@ impl Protocol for OutConnection {
         unreachable!();
     }
 
-    fn bytes_flushed(self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
+    fn bytes_flushed(mut self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
                      -> Intent<Self> {
-        self.pull_msgs(transport, scope)
+        if self.identified {
+            self.pull_msgs(transport, scope)
+        } else {
+            write_msg(transport, &self.this);
+            self.identified = true;
+            Intent::of(self).expect_flush()
+        }
     }
 
     fn timeout(self, _transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
@@ -214,54 +263,51 @@ impl Protocol for OutConnection {
 impl Protocol for InConnection {
     type Context = Context;
     type Socket = TcpStream;
-    type Seed = ();
+    type Seed = net::SocketAddr;
 
-    fn create(_seed: (), sock: &mut TcpStream, _scope: &mut Scope<Context>) -> Intent<Self> {
+    fn create(this: Self::Seed, sock: &mut TcpStream, _scope: &mut Scope<Context>) -> Intent<Self> {
         debug!("incomming connection from {:?}", sock.peer_addr().unwrap());
         let _ = sock.set_nodelay(true);
         let _ = sock.set_keepalive(Some(1));
-        Intent::of(InConnection { addr: sock.peer_addr().unwrap() }).expect_bytes(4)
+        Intent::of(InConnection {
+                this: this,
+                other: None,
+            })
+            .expect_bytes(4)
     }
 
-    fn bytes_read(self, transport: &mut Transport<TcpStream>, _end: usize,
+    fn bytes_read(mut self, transport: &mut Transport<TcpStream>, _end: usize,
                   scope: &mut Scope<Context>)
                   -> Intent<Self> {
-        let mut consumed = 0;
-        let mut needed = 4;
-        {
-            let mut buf = &transport.input()[..];
-            while let Ok(msg_len) = buf.read_u32::<LittleEndian>().map(|l| l as usize) {
-                if buf.len() >= msg_len {
-                    let mut msg_buf = &buf[..msg_len];
-                    buf = &buf[msg_len..];
-                    let de_result =
-                        bincode_serde::deserialize_from::<_,
-                                                          FabricMsg>(&mut msg_buf,
-                                                                     bincode::SizeLimit::Infinite);
-                    match de_result {
-                        Ok(msg) => {
-                            let msg_type = msg.get_type();
-                            if let Some(handler) = scope.shared
-                                .msg_handlers
-                                .read()
-                                .unwrap()
-                                .get(&(msg_type as u8)) {
-                                handler(self.addr, msg);
-                            } else {
-                                warn!("No handler for msg type {:?}", msg_type);
-                            }
-                        }
-                        Err(e) => error!("Error deserializing msg: {:?}", e),
-                    }
-                    consumed += 4 + msg_len;
+        // first message is always the node addr
+        if self.other.is_none() {
+            let (addr_opt, needed) = read_msg::<net::SocketAddr>(transport);
+            if let Some(addr) = addr_opt {
+                self.other = Some(addr);
+                debug!("identified connection from {:?}", addr);
+            }
+            return Intent::of(self).expect_bytes(needed);
+        }
+
+        loop {
+            let (msg_opt, needed) = read_msg::<FabricMsg>(transport);
+            if let Some(msg) = msg_opt {
+                let msg_type = msg.get_type();
+                if let Some(handler) = scope.shared
+                    .msg_handlers
+                    .read()
+                    .unwrap()
+                    .get(&(msg_type as u8)) {
+                    handler(self.other.unwrap(), msg);
                 } else {
-                    needed += msg_len;
-                    break;
+                    warn!("No handler for msg type {:?}", msg_type);
                 }
             }
+
+            if transport.input().len() < needed {
+                return Intent::of(self).expect_bytes(needed);
+            }
         }
-        transport.input().consume(consumed);
-        Intent::of(self).expect_bytes(needed)
     }
 
     fn bytes_flushed(self, _transport: &mut Transport<TcpStream>, _scope: &mut Scope<Context>)
@@ -299,7 +345,7 @@ impl Fabric {
         let lst = try!(TcpListener::bind(&bind_addr));
         let connector_queue = BoundedQueue::with_capacity(128);
         let connector_notifier = event_loop.add_and_fetch(Fsm::Out, |scope| {
-                let connector = OutMachine::Connector(connector_queue.clone());
+                let connector = OutMachine::Connector(bind_addr, connector_queue.clone());
                 Response::ok((connector, scope.notifier()))
             })
             .unwrap();
@@ -308,14 +354,17 @@ impl Fabric {
                     Ok(()) => {}
                     Err(e) => return Response::error(Box::new(e)),
                 }
-                Response::ok(Fsm::In(Accept::Server(lst, ())))
+                Response::ok(Fsm::In(Accept::Server(lst, bind_addr)))
             })
             .unwrap();
+        // create context and mark as running
         let context = Context::new(connector_notifier, connector_queue);
         let shared_context = context.shared.clone();
+        shared_context.running.store(true, atomic::Ordering::Relaxed);
+        // start event loop thread
         let thread = thread::spawn(move || event_loop.run(context).unwrap());
         Ok(Fabric {
-            loop_thread: thread,
+            loop_thread: Some(thread),
             shared_context: shared_context,
         })
     }
@@ -347,6 +396,14 @@ impl Fabric {
 
     pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: HandlerFn) {
         self.shared_context.msg_handlers.write().unwrap().insert(msg_type as u8, handler);
+    }
+}
+
+impl Drop for Fabric {
+    fn drop(&mut self) {
+        self.shared_context.running.store(false, atomic::Ordering::Relaxed);
+        self.shared_context.connector_notifier.wakeup().unwrap();
+        self.loop_thread.take().map(|t| t.join());
     }
 }
 

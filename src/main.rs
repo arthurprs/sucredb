@@ -22,6 +22,7 @@ extern crate byteorder;
 #[macro_use]
 mod utils;
 mod version_vector;
+#[cfg(not(test))]
 mod gossip;
 mod inflightmap;
 mod dht;
@@ -30,10 +31,13 @@ mod fabric_msg;
 mod fabric;
 mod storage;
 mod hash;
-mod resp;
 mod database;
+#[cfg(not(test))]
+mod resp;
+#[cfg(not(test))]
 mod server;
 
+#[cfg(not(test))]
 fn main() {
     env_logger::init().unwrap();
     let server = server::Server::new();
