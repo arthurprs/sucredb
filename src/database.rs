@@ -114,6 +114,7 @@ impl Database {
             let state = inflight.get_mut(&cookie).unwrap();
             container.map(|dcc| state.container.sync(dcc));
             state.replies += 1;
+            // TODO: only consider succesfull
             if state.replies >= state.required {
                 // return to client & remove state
                 true
