@@ -119,7 +119,9 @@ impl Machine for OutMachine {
         match self {
             OutMachine::Connector(this, q) => {
                 if !scope.shared.running.load(atomic::Ordering::Relaxed) {
+                    debug!("shuting down loop");
                     scope.shutdown_loop();
+                    return Response::done();
                 }
                 let other = q.pop().unwrap();
                 debug!("connector wake up with: {:?}", other);
@@ -300,7 +302,7 @@ impl Protocol for InConnection {
                     .get(&(msg_type as u8)) {
                     handler(self.other.unwrap(), msg);
                 } else {
-                    warn!("No handler for msg type {:?}", msg_type);
+                    error!("No handler for msg type {:?}", msg_type);
                 }
             }
 
@@ -341,6 +343,7 @@ impl Protocol for InConnection {
 
 impl Fabric {
     pub fn new(bind_addr: net::SocketAddr) -> FabricResult<Self> {
+        // rotor sorcery
         let mut event_loop = try!(rotor::Loop::new(&rotor::Config::new()));
         let lst = try!(TcpListener::bind(&bind_addr));
         let connector_queue = BoundedQueue::with_capacity(128);
@@ -350,9 +353,8 @@ impl Fabric {
             })
             .unwrap();
         event_loop.add_machine_with(|scope| {
-                match scope.register(&lst, EventSet::readable(), PollOpt::edge()) {
-                    Ok(()) => {}
-                    Err(e) => return Response::error(Box::new(e)),
+                if let Err(e) = scope.register(&lst, EventSet::readable(), PollOpt::edge()) {
+                    return Response::error(Box::new(e));
                 }
                 Response::ok(Fsm::In(Accept::Server(lst, bind_addr)))
             })
@@ -362,7 +364,11 @@ impl Fabric {
         let shared_context = context.shared.clone();
         shared_context.running.store(true, atomic::Ordering::Relaxed);
         // start event loop thread
-        let thread = thread::spawn(move || event_loop.run(context).unwrap());
+        let thread = thread::spawn(move || {
+            info!("starting event_loop thread");
+            event_loop.run(context).unwrap();
+            info!("exiting event_loop thread");
+        });
         Ok(Fabric {
             loop_thread: Some(thread),
             shared_context: shared_context,
@@ -401,9 +407,13 @@ impl Fabric {
 
 impl Drop for Fabric {
     fn drop(&mut self) {
+        debug!("dropping fabric");
+        // mark as not running and wakeup connector as it knows how to shutdown the loop
         self.shared_context.running.store(false, atomic::Ordering::Relaxed);
         self.shared_context.connector_notifier.wakeup().unwrap();
-        self.loop_thread.take().map(|t| t.join());
+        // join the loop thread
+        self.loop_thread.take().unwrap().join().unwrap();
+            debug!("droped fabric");
     }
 }
 

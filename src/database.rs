@@ -297,6 +297,7 @@ impl Database {
     fn inflight(&self, cookie: u64) -> Option<ReqState> {
         self.inflight.lock().unwrap().remove(&cookie)
     }
+
     fn response(&self, cookie: u64) -> Option<DottedCausalContainer<Vec<u8>>> {
         self.responses.lock().unwrap().remove(&cookie)
     }
