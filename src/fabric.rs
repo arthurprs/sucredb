@@ -15,7 +15,7 @@ use bincode::{self, serde as bincode_serde};
 pub use fabric_msg::*;
 use utils::GenericError;
 
-pub type HandlerFn = Box<Fn(net::SocketAddr, FabricMsg) + Send + Sync>;
+pub type HandlerFn = Box<Fn(&net::SocketAddr, FabricMsg) + Send + Sync>;
 
 pub type FabricResult<T> = Result<T, GenericError>;
 
@@ -300,7 +300,7 @@ impl Protocol for InConnection {
                     .read()
                     .unwrap()
                     .get(&(msg_type as u8)) {
-                    handler(self.other.unwrap(), msg);
+                    handler(&self.other.unwrap(), msg);
                 } else {
                     error!("No handler for msg type {:?}", msg_type);
                 }
@@ -365,9 +365,7 @@ impl Fabric {
         shared_context.running.store(true, atomic::Ordering::Relaxed);
         // start event loop thread
         let thread = thread::spawn(move || {
-            info!("starting event_loop thread");
             event_loop.run(context).unwrap();
-            info!("exiting event_loop thread");
         });
         Ok(Fabric {
             loop_thread: Some(thread),
@@ -407,13 +405,11 @@ impl Fabric {
 
 impl Drop for Fabric {
     fn drop(&mut self) {
-        debug!("dropping fabric");
         // mark as not running and wakeup connector as it knows how to shutdown the loop
         self.shared_context.running.store(false, atomic::Ordering::Relaxed);
         self.shared_context.connector_notifier.wakeup().unwrap();
         // join the loop thread
         self.loop_thread.take().unwrap().join().unwrap();
-            debug!("droped fabric");
     }
 }
 
