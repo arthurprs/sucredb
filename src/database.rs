@@ -90,7 +90,7 @@ impl Database {
         self.vnodes.write().unwrap().remove(&vnode_n);
     }
 
-    fn new_state_from(&self, token: usize, from: net::SocketAddr) -> u64 {
+    fn new_state_from(&self, token: usize, nodes: u8, from: net::SocketAddr) -> u64 {
         let cookie = token as u64;
         let _a = self.inflight
             .lock()
@@ -98,8 +98,8 @@ impl Database {
             .insert(cookie,
                     ReqState {
                         from: from,
-                        required: (self.replication_factor / 2 + 1) as u8,
-                        total: self.replication_factor as u8,
+                        required: nodes / 2 + 1,
+                        total: nodes,
                         replies: 0,
                         succesfull: 0,
                         container: DottedCausalContainer::new(),
@@ -108,14 +108,14 @@ impl Database {
         cookie
     }
 
-    fn new_state(&self, token: usize) -> u64 {
-        self.new_state_from(token, self.dht.node())
+    fn new_state(&self, token: usize, nodes: u8) -> u64 {
+        self.new_state_from(token, nodes, self.dht.node())
     }
 
     pub fn get(&self, token: usize, key: &[u8]) {
         let vnode_n = self.dht.key_vnode(key);
         let nodes = self.dht.nodes_for_key(key, self.replication_factor);
-        let cookie = self.new_state(token);
+        let cookie = self.new_state(token, nodes.len() as u8);
 
         for node in nodes {
             if node == self.dht.node() {
@@ -126,14 +126,17 @@ impl Database {
         }
     }
 
-    fn get_callback(&self, cookie: u64, container: Option<DottedCausalContainer<Vec<u8>>>) {
+    fn get_callback(&self, cookie: u64, container_opt: Option<DottedCausalContainer<Vec<u8>>>) {
         let mut inflight = self.inflight.lock().unwrap();
         if {
             let state = inflight.get_mut(&cookie).unwrap();
-            container.map(|dcc| state.container.sync(dcc));
+            if let Some(container) = container_opt {
+                state.container.sync(container);
+                state.succesfull += 1;
+            }
             state.replies += 1;
             // TODO: only consider succesfull
-            if state.replies >= state.required {
+            if state.succesfull == state.required {
                 // return to client & remove state
                 true
             } else if state.replies == state.total {
@@ -197,7 +200,7 @@ impl Database {
                 vv: VersionVector) {
         let vnode_n = self.dht.key_vnode(key);
         let nodes = self.dht.nodes_for_key(key, self.replication_factor);
-        let cookie = self.new_state_from(token, from);
+        let cookie = self.new_state_from(token, nodes.len() as u8, from);
 
         if nodes.iter().position(|n| n == &self.dht.node()).is_none() {
             // forward if we can't coordinate it
@@ -218,12 +221,15 @@ impl Database {
         }
     }
 
-    fn set_callback(&self, cookie: u64) {
+    fn set_callback(&self, cookie: u64, succesfull: bool) {
         let mut inflight = self.inflight.lock().unwrap();
         if {
             let state = inflight.get_mut(&cookie).unwrap();
             state.replies += 1;
-            if state.replies == state.required {
+            if succesfull {
+                state.succesfull += 1;
+            }
+            if state.succesfull == state.required {
                 //     if state.from == self.dht.node() {
                 //         // return to proxy
                 //     } else {
@@ -253,7 +259,7 @@ impl Database {
             .map(|vn| {
                 vn.lock().unwrap().set_local(self, hash(self.dht.node()), key, value_opt, vv)
             });
-        self.set_callback(cookie);
+        self.set_callback(cookie, true);
         dcc.unwrap()
     }
 
@@ -289,7 +295,7 @@ impl Database {
     }
 
     fn set_ack_handler(&self, from: &net::SocketAddr, msg: FabricMsgSetAck) {
-        unimplemented!()
+        self.set_callback(msg.cookie, msg.result.is_ok());
     }
 
     fn set_remote_handler(&self, from: &net::SocketAddr, msg: FabricMsgSetRemote) {
@@ -311,7 +317,7 @@ impl Database {
     }
 
     fn set_remote_ack_handler(&self, _from: &net::SocketAddr, msg: FabricMsgSetRemoteAck) {
-        self.set_callback(msg.cookie);
+        self.set_callback(msg.cookie, msg.result.is_ok());
     }
 
     fn inflight(&self, cookie: u64) -> Option<ReqState> {
@@ -430,36 +436,36 @@ mod tests {
             db.init_vnode(i);
         }
         db.get(1, b"test");
-        assert!(db.inflight(1).unwrap().container.is_empty());
+        assert!(db.response(1).unwrap().is_empty());
 
         db.set(1, b"test", Some(b"value1"), VersionVector::new());
-        assert!(db.inflight(1).unwrap().container.is_empty());
+        assert!(db.response(1).unwrap().is_empty());
 
         db.get(1, b"test");
-        assert!(db.inflight(1).unwrap().container.values().eq(vec![b"value1"]));
+        assert!(db.response(1).unwrap().values().eq(vec![b"value1"]));
 
         db.set(1, b"test", Some(b"value2"), VersionVector::new());
-        assert!(db.inflight(1).unwrap().container.is_empty());
+        assert!(db.response(1).unwrap().is_empty());
 
         db.get(1, b"test");
-        let state = db.inflight(1).unwrap();
-        assert!(state.container.values().eq(vec![b"value1", b"value2"]));
+        let state = db.response(1).unwrap();
+        assert!(state.values().eq(vec![b"value1", b"value2"]));
 
         db.set(1,
                b"test",
                Some(b"value12"),
-               state.container.version_vector().clone());
-        assert!(db.inflight(1).unwrap().container.is_empty());
+               state.version_vector().clone());
+        assert!(db.response(1).unwrap().is_empty());
 
         db.get(1, b"test");
-        let state = db.inflight(1).unwrap();
-        assert!(state.container.values().eq(vec![b"value12"]));
+        let state = db.response(1).unwrap();
+        assert!(state.values().eq(vec![b"value12"]));
 
-        db.set(1, b"test", None, state.container.version_vector().clone());
-        assert!(db.inflight(1).unwrap().container.is_empty());
+        db.set(1, b"test", None, state.version_vector().clone());
+        assert!(db.response(1).unwrap().is_empty());
 
         db.get(1, b"test");
-        assert!(db.inflight(1).unwrap().container.is_empty());
+        assert!(db.response(1).unwrap().is_empty());
     }
 
     #[test]
