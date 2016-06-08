@@ -32,6 +32,7 @@ pub struct Database {
     // TODO: move this inside vnode?
     // TODO: create a thread to walk inflight and handle timeouts
     inflight: Mutex<HashMap<u64, ReqState>>,
+    // FIXME: here just to add dev/debug
     responses: Mutex<HashMap<u64, DottedCausalContainer<Vec<u8>>>>,
 }
 
@@ -113,8 +114,7 @@ impl Database {
     }
 
     pub fn get(&self, token: usize, key: &[u8]) {
-        let vnode_n = self.dht.key_vnode(key);
-        let nodes = self.dht.nodes_for_key(key, self.replication_factor);
+        let (vnode_n, nodes) = self.dht.nodes_for_key(key, self.replication_factor);
         let cookie = self.new_state(token, nodes.len() as u8);
 
         for node in nodes {
@@ -198,8 +198,7 @@ impl Database {
 
     pub fn set_(&self, from: net::SocketAddr, token: usize, key: &[u8], value_opt: Option<&[u8]>,
                 vv: VersionVector) {
-        let vnode_n = self.dht.key_vnode(key);
-        let nodes = self.dht.nodes_for_key(key, self.replication_factor);
+        let (vnode_n, nodes) = self.dht.nodes_for_key(key, self.replication_factor);
         let cookie = self.new_state_from(token, nodes.len() as u8, from);
 
         if nodes.iter().position(|n| n == &self.dht.node()).is_none() {
@@ -230,13 +229,6 @@ impl Database {
                 state.succesfull += 1;
             }
             if state.succesfull == state.required {
-                //     if state.from == self.dht.node() {
-                //         // return to proxy
-                //     } else {
-                //         // return to client
-                //     }
-                // }
-                // if state.replies == state.total {
                 // remove state
                 true
             } else {
@@ -244,6 +236,11 @@ impl Database {
             }
         } {
             let state = inflight.remove(&cookie).unwrap();
+            if state.from == self.dht.node() {
+                // return to proxy
+            } else {
+                // return to client
+            }
             self.responses.lock().unwrap().insert(cookie, state.container);
         }
     }
@@ -291,10 +288,11 @@ impl Database {
     }
 
     fn set_handler(&self, from: &net::SocketAddr, msg: FabricMsgSet) {
+        // self.set_(*from, msg.cookie, &msg.key, msg.value.map(|v| &v[..]), msg.version_vector);
         unimplemented!()
     }
 
-    fn set_ack_handler(&self, from: &net::SocketAddr, msg: FabricMsgSetAck) {
+    fn set_ack_handler(&self, _from: &net::SocketAddr, msg: FabricMsgSetAck) {
         self.set_callback(msg.cookie, msg.result.is_ok());
     }
 

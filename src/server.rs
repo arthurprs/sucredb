@@ -80,6 +80,7 @@ impl Protocol for RespConnection {
         writeln!(&mut stderr(), "Error: {}", reason).ok();
         Intent::done()
     }
+
     fn fatal(self, reason: Exception, _scope: &mut Scope<Self::Context>) -> Option<Box<Error>> {
         writeln!(&mut stderr(), "Error: {}", reason).ok();
         None

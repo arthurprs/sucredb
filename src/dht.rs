@@ -35,7 +35,7 @@ impl<T: Clone + Serialize + Deserialize> DHT<T> {
         (hash(key) % inner.ring.len() as u64) as u16
     }
 
-    pub fn nodes_for_key(&self, key: &[u8], replication_factor: usize) -> Vec<net::SocketAddr> {
+    pub fn nodes_for_key(&self, key: &[u8], replication_factor: usize) -> (u16, Vec<net::SocketAddr>) {
         let inner = self.inner.read().unwrap();
         let vnode = self.key_vnode(key);
         let ring_len = inner.ring.len();
@@ -49,7 +49,7 @@ impl<T: Clone + Serialize + Deserialize> DHT<T> {
                 result.insert(p.0);
             }
         }
-        result.iter().cloned().collect()
+        (vnode, result.iter().cloned().collect())
     }
 
     pub fn members(&self) -> Vec<net::SocketAddr> {
