@@ -59,11 +59,16 @@ struct VNode {
 }
 
 impl Database {
-    pub fn new(node: net::SocketAddr) -> Arc<Database> {
+    pub fn new(node: net::SocketAddr, create: bool) -> Arc<Database> {
         let db = Arc::new(Database {
             replication_factor: 3,
             fabric: Fabric::new(node).unwrap(),
-            dht: DHT::new(node, (), 64),
+            dht: DHT::new(node,
+                          if create {
+                              Some(((), 64))
+                          } else {
+                              None
+                          }),
             inflight: Mutex::new(Default::default()),
             responses: Mutex::new(Default::default()),
             vnodes: RwLock::new(Default::default()),
@@ -434,7 +439,7 @@ mod tests {
     fn test() {
         let _ = fs::remove_dir_all("./vnode_t");
         let _ = env_logger::init();
-        let db = Database::new("127.0.0.1:9000".parse().unwrap());
+        let db = Database::new("127.0.0.1:9000".parse().unwrap(), true);
         for i in 0u16..64 {
             db.init_vnode(i);
         }
@@ -472,17 +477,21 @@ mod tests {
     fn test_two() {
         let _ = fs::remove_dir_all("./vnode_t");
         let _ = env_logger::init();
-        let db1 = Database::new("127.0.0.1:9000".parse().unwrap());
-        let db2 = Database::new("127.0.0.1:9001".parse().unwrap());
+        let db1 = Database::new("127.0.0.1:9000".parse().unwrap(), true);
+        let db2 = Database::new("127.0.0.1:9001".parse().unwrap(), false);
         for i in 0u16..64 {
             db1.init_vnode(i);
             db2.init_vnode(i);
         }
         for i in 0u16..32 {
             db1.dht.add_pending_node(i * 2 + 1, db2.dht.node(), ());
+            thread::sleep_ms(100);
             db1.dht.promote_pending_node(i * 2 + 1, db2.dht.node());
+            thread::sleep_ms(100);
             db2.dht.add_pending_node(i * 2 + 1, db1.dht.node(), ());
+            thread::sleep_ms(100);
             db2.dht.promote_pending_node(i * 2 + 1, db1.dht.node());
+            thread::sleep_ms(100);
         }
 
         db1.get(1, b"test");
