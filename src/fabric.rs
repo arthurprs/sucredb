@@ -15,7 +15,7 @@ use bincode::{self, serde as bincode_serde};
 pub use fabric_msg::*;
 use utils::GenericError;
 
-pub type HandlerFn = Box<Fn(&net::SocketAddr, FabricMsg) + Send + Sync>;
+pub type FabricHandlerFn = Box<Fn(&net::SocketAddr, FabricMsg) + Send + Sync>;
 
 pub type FabricResult<T> = Result<T, GenericError>;
 
@@ -26,7 +26,7 @@ pub struct Fabric {
 
 struct SharedContext {
     nodes: RwLock<HashMap<net::SocketAddr, (BoundedQueue<FabricMsg>, Vec<rotor::Notifier>)>>,
-    msg_handlers: RwLock<HashMap<u8, HandlerFn>>,
+    msg_handlers: RwLock<HashMap<u8, FabricHandlerFn>>,
     connector_notifier: rotor::Notifier,
     connector_queue: BoundedQueue<net::SocketAddr>,
     running: atomic::AtomicBool,
@@ -398,7 +398,7 @@ impl Fabric {
         Ok(())
     }
 
-    pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: HandlerFn) {
+    pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: FabricHandlerFn) {
         self.shared_context.msg_handlers.write().unwrap().insert(msg_type as u8, handler);
     }
 }

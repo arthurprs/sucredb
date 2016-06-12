@@ -36,6 +36,14 @@ pub struct Database {
     responses: Mutex<HashMap<u64, DottedCausalContainer<Vec<u8>>>>,
 }
 
+#[repr(u8)]
+enum VNodeState {
+    Sync,
+    Syncing,
+    Zombie,
+    Wait,
+}
+
 struct VNodePeer {
     knowledge: u64,
     log: BTreeMap<u64, Vec<u8>>,
@@ -43,6 +51,7 @@ struct VNodePeer {
 
 struct VNode {
     num: u16,
+    // state: VNodeState,
     clock: BitmappedVersionVector,
     log: BTreeMap<u64, Vec<u8>>,
     peers: LinearMap<u64, VNodePeer>,
@@ -114,7 +123,7 @@ impl Database {
     }
 
     pub fn get(&self, token: usize, key: &[u8]) {
-        let (vnode_n, nodes) = self.dht.nodes_for_key(key, self.replication_factor);
+        let (vnode_n, nodes) = self.dht.nodes_for_key(key, self.replication_factor, false);
         let cookie = self.new_state(token, nodes.len() as u8);
 
         for node in nodes {
@@ -130,17 +139,13 @@ impl Database {
         let mut inflight = self.inflight.lock().unwrap();
         if {
             let state = inflight.get_mut(&cookie).unwrap();
+            state.replies += 1;
             if let Some(container) = container_opt {
                 state.container.sync(container);
                 state.succesfull += 1;
             }
-            state.replies += 1;
-            // TODO: only consider succesfull
             if state.succesfull == state.required {
                 // return to client & remove state
-                true
-            } else if state.replies == state.total {
-                // remove state
                 true
             } else {
                 false
@@ -198,7 +203,7 @@ impl Database {
 
     pub fn set_(&self, from: net::SocketAddr, token: usize, key: &[u8], value_opt: Option<&[u8]>,
                 vv: VersionVector) {
-        let (vnode_n, nodes) = self.dht.nodes_for_key(key, self.replication_factor);
+        let (vnode_n, nodes) = self.dht.nodes_for_key(key, self.replication_factor, true);
         let cookie = self.new_state_from(token, nodes.len() as u8, from);
 
         if nodes.iter().position(|n| n == &self.dht.node()).is_none() {
@@ -449,10 +454,7 @@ mod tests {
         let state = db.response(1).unwrap();
         assert!(state.values().eq(vec![b"value1", b"value2"]));
 
-        db.set(1,
-               b"test",
-               Some(b"value12"),
-               state.version_vector().clone());
+        db.set(1, b"test", Some(b"value12"), state.version_vector().clone());
         assert!(db.response(1).unwrap().is_empty());
 
         db.get(1, b"test");

@@ -5,13 +5,13 @@ authors = ["arthurprs"]
 
 [dependencies]
 rand = "*"
-ramp = "0.2.4"
+ramp = "*"
 serde = "*"
 serde_json = "*"
 serde_macros = "*"
-log = "0.3.6"
+log = "*"
 env_logger = "*"
-lmdb-rs = "0.7.0"
+lmdb-rs = "*"
 tendril="*"
 rotor="*"
 rotor-tools="*"
@@ -24,6 +24,11 @@ features = ["serde_impl"]
 [dependencies.bincode]
 version = "*"
 features = ["serde"]
+
+[dependencies.etcd]
+version="*"
+default-features = false
+features = ["nightly"]
 
 [dependencies.rotor-stream]
 path= "../rotor-stream"
