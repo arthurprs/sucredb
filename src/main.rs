@@ -33,6 +33,7 @@ mod fabric;
 mod storage;
 mod hash;
 mod database;
+mod vnode;
 #[cfg(not(test))]
 mod resp;
 #[cfg(not(test))]
