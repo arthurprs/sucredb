@@ -1,4 +1,4 @@
-use std::{thread, net};
+use std::{thread, net, mem};
 use std::sync::{Arc, RwLock};
 use std::collections::{HashMap, HashSet};
 use rand::{self, Rng};
@@ -21,6 +21,7 @@ struct Ring<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
     vnodes: Vec<(net::SocketAddr, T)>,
     #[serde(serialize_with="utils::json_serialize_map", deserialize_with="utils::json_deserialize_map")]
     pending: HashMap<u16, (net::SocketAddr, T)>,
+    zombie: HashMap<u16, (net::SocketAddr, T)>,
 }
 
 struct Inner<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
@@ -37,6 +38,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             ring: Ring {
                 vnodes: Default::default(),
                 pending: Default::default(),
+                zombie: Default::default(),
             },
             ring_version: 0,
             etcd: etcd,
@@ -97,6 +99,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         inner.ring = Ring {
             vnodes: vec![(self.node, meta); partitions],
             pending: Default::default(),
+            zombie: Default::default(),
         };
         let new = Self::serialize(&inner.ring).unwrap();
         let r = inner.etcd.set("/dht", &new, None).unwrap();
@@ -179,9 +182,11 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         let inner = self.inner.read().unwrap();
         let mut ring = inner.ring.clone();
 
-        let p = ring.pending.remove(&vnode).unwrap();
-        debug_assert!(p.0 == node);
-        ring.vnodes[vnode as usize] = p;
+        let mut p = ring.pending.remove(&vnode).unwrap();
+        assert!(p.0 == node);
+        mem::swap(&mut p, &mut ring.vnodes[vnode as usize]);
+        assert!(ring.zombie.insert(vnode, p).is_none());
+
         self.propose(&inner.ring, ring);
     }
 
