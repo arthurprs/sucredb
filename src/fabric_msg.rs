@@ -138,3 +138,26 @@ pub struct FabricBootstrapAck {
     pub vnode: u16,
     pub cookie: u64,
 }
+
+macro_rules! impl_into {
+    ($w: ident, $msg: ident) => (
+        impl Into<FabricMsg> for $msg {
+            fn into(self) -> FabricMsg {
+                FabricMsg::$w(self)
+            }
+        }
+    );
+}
+
+
+impl_into!(GetRemote, FabricMsgGetRemote);
+impl_into!(GetRemoteAck, FabricMsgGetRemoteAck);
+impl_into!(Set, FabricMsgSet);
+impl_into!(SetAck, FabricMsgSetAck);
+impl_into!(SetRemote, FabricMsgSetRemote);
+impl_into!(SetRemoteAck, FabricMsgSetRemoteAck);
+
+impl_into!(BootstrapAck, FabricBootstrapAck);
+impl_into!(BootstrapSend, FabricBootstrapSend);
+impl_into!(BootstrapFin, FabricBootstrapFin);
+impl_into!(BootstrapStart, FabricBootstrapStart);

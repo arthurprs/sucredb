@@ -373,11 +373,11 @@ impl Fabric {
         })
     }
 
-    pub fn send_message(&self, recipient: &net::SocketAddr, msg: FabricMsg) -> FabricResult<()> {
+    pub fn send_message<T: Into<FabricMsg>>(&self, recipient: &net::SocketAddr, msg: T) -> FabricResult<()> {
         // fast path if connection already available
         if let Some(node) = self.shared_context.nodes.read().unwrap().get(recipient) {
             if let Some(n) = thread_rng().choose(&node.1) {
-                node.0.push(msg).unwrap();
+                node.0.push(msg.into()).unwrap();
                 n.wakeup().unwrap();
                 return Ok(());
             };
@@ -386,7 +386,7 @@ impl Fabric {
         let node = nodes.entry(*recipient)
             .or_insert_with(|| (BoundedQueue::with_capacity(1024), Vec::new()));
         // push the message
-        node.0.push(msg).unwrap();
+        node.0.push(msg.into()).unwrap();
         // we might have raced, so only create new conn if necessary
         if let Some(n) = thread_rng().choose(&node.1) {
             n.wakeup().unwrap()

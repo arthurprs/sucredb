@@ -8,6 +8,7 @@ use database::Database;
 use bincode::{self, serde as bincode_serde};
 use fabric::*;
 use utils::GenericError;
+use rand::{Rng, thread_rng};
 
 const PEER_LOG_SIZE: usize = 1000;
 
@@ -27,6 +28,7 @@ pub struct VNode {
     log: BTreeMap<u64, Vec<u8>>,
     peers: LinearMap<u64, VNodePeer>,
     migrations: HashMap<u64, Migration>,
+    syncs: HashMap<u64, Synchronization>,
     storage: Storage,
 }
 
@@ -36,8 +38,12 @@ struct VNodePeer {
 }
 
 enum Migration {
-    Outgoing{peer: net::SocketAddr, iterator: StorageIterator},
-    Incomming{peer: net::SocketAddr},
+    Outgoing{peer: net::SocketAddr, iterator: StorageIterator, count: u64,},
+    Incomming{peer: net::SocketAddr, count: u64,},
+}
+
+enum Synchronization {
+
 }
 
 impl VNodePeer {
@@ -64,15 +70,15 @@ impl VNodePeer {
 }
 
 macro_rules! handle {
-    ($db: expr, $from: expr, $msg: expr, $et: expr, $eet: ident, $r: expr) => (
+    ($db: expr, $from: expr, $msg: expr, $eet: ident, $r: expr) => (
         match $r {
             Ok(ok) => ok,
             Err(e) => {
-                $db.fabric.send_message(&$from, $et($eet {
+                $db.fabric.send_message(&$from,  $eet {
                     cookie: $msg.cookie,
                     vnode: $msg.vnode,
                     result: Err(e),
-                })).unwrap();
+                }).unwrap();
                 return;
             }
         }
@@ -87,6 +93,7 @@ impl VNode {
             clock: BitmappedVersionVector::new(),
             peers: Default::default(),
             migrations: Default::default(),
+            syncs: Default::default(),
             storage: Storage::open(Path::new("./vnode_t"), num as i32, true).unwrap(),
             log: Default::default(),
         }
@@ -103,19 +110,25 @@ impl VNode {
         let mut migration = Migration::Outgoing {
             iterator: self.storage.iter(),
             peer: from,
+            count: 0,
         };
 
-        migration.proceed(db, self.num, msg.cookie);
+        migration.send(db, self.num, msg.cookie);
 
         let p = self.migrations.insert(msg.cookie, migration);
         assert!(p.is_none());
     }
 
     pub fn handler_bootstrap_send(&mut self, db: &Database, from: net::SocketAddr, msg: FabricBootstrapSend) {
-        handle!(
-            db, from, msg, FabricMsg::BootstrapFin, FabricBootstrapFin,
+        let migration = handle!(
+            db, from, msg, FabricBootstrapFin,
             self.migrations.get_mut(&msg.cookie).ok_or(FabricMsgError::CookieNotFound)
         );
+
+        match *migration {
+            Migration::Incomming{ref mut count, ..} => *count += 1,
+            _ => unreachable!()
+        }
 
         let mut bytes = Vec::new();
         bincode_serde::serialize_into(&mut bytes, &msg.container, bincode::SizeLimit::Infinite).unwrap();
@@ -129,10 +142,11 @@ impl VNode {
 
     pub fn handler_bootstrap_ack(&mut self, db: &Database, from: net::SocketAddr, msg: FabricBootstrapAck) {
         let migration = handle!(
-            db, from, msg, FabricMsg::BootstrapFin, FabricBootstrapFin,
+            db, from, msg, FabricBootstrapFin,
             self.migrations.get_mut(&msg.cookie).ok_or(FabricMsgError::CookieNotFound)
         );
-        migration.proceed(db, self.num, msg.cookie);
+
+        migration.send(db, self.num, msg.cookie);
     }
 
     pub fn handler_bootstrap_fin(&mut self, db: &Database, from: net::SocketAddr, msg: FabricBootstrapFin) {
@@ -148,13 +162,15 @@ impl VNode {
         }
     }
 
-    //
     pub fn start_migration(&mut self, db: &Database) {
         let cookie = self.cookie();
         let nodes = db.dht.nodes_for_vnode(self.num, db.replication_factor, false);
         let migration = Migration::Incomming {
-            peer: nodes[0],
+            peer: thread_rng().choose(&nodes).cloned().unwrap(),
+            count: 0,
         };
+        let p = self.migrations.insert(cookie, migration);
+        assert!(p.is_some());
     }
 
     // STORAGE
@@ -215,10 +231,9 @@ impl VNode {
 }
 
 impl Migration {
-
-    fn proceed(&mut self, db: &Database, vnode: u16, cookie: u64) {
+    fn send(&mut self, db: &Database, vnode: u16, cookie: u64) -> bool {
         match *self {
-            Migration::Outgoing{peer, ref mut iterator} => {
+            Migration::Outgoing{peer, ref mut iterator, ref mut count} => {
                 let done = !iterator.iter(|k, v| {
                     db.fabric.send_message(&peer, FabricMsg::BootstrapSend(FabricBootstrapSend {
                         cookie: cookie,
@@ -226,6 +241,7 @@ impl Migration {
                         key: k.into(),
                         container: bincode_serde::deserialize(v).unwrap(),
                     })).unwrap();
+                    *count += 1;
                     false
                 });
                 if done {
@@ -235,8 +251,9 @@ impl Migration {
                         result: Ok(()),
                     })).unwrap();
                 }
+                done
             }
-            _ => ()
+            _ => unreachable!()
         }
     }
 }
