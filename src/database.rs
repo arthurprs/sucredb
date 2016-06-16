@@ -20,10 +20,10 @@ pub struct ReqState {
 }
 
 pub struct Database {
-    dht: DHT<()>,
-    fabric: Fabric,
+    pub dht: DHT<()>,
+    pub fabric: Fabric,
+    pub replication_factor: usize,
     vnodes: RwLock<HashMap<u16, Mutex<VNode>>>,
-    replication_factor: usize,
     // TODO: move this inside vnode?
     // TODO: create a thread to walk inflight and handle timeouts
     inflight: Mutex<HashMap<u64, ReqState>>,
@@ -140,7 +140,7 @@ impl Database {
             .read()
             .unwrap()
             .get(&vnode)
-            .map(|vn| vn.lock().unwrap().get(self, key));
+            .map(|vn| vn.lock().unwrap().storage_get(self, key));
         self.get_callback(cookie, container);
     }
 
@@ -160,7 +160,7 @@ impl Database {
             .read()
             .unwrap()
             .get(&msg.vnode)
-            .map(|vn| vn.lock().unwrap().get(self, &msg.key))
+            .map(|vn| vn.lock().unwrap().storage_get(self, &msg.key))
             .ok_or(FabricMsgError::VNodeNotFound);
         self.fabric
             .send_message(&from,
@@ -238,7 +238,9 @@ impl Database {
             .unwrap()
             .get(&vnode_n)
             .map(|vn| {
-                vn.lock().unwrap().set_local(self, hash(self.dht.node()), key, value_opt, vv)
+                vn.lock()
+                    .unwrap()
+                    .storage_set_local(self, hash(self.dht.node()), key, value_opt, vv)
             });
         self.set_callback(cookie, true);
         dcc.unwrap()
@@ -286,7 +288,7 @@ impl Database {
             .read()
             .unwrap()
             .get(&msg.vnode)
-            .map(|vn| vn.lock().unwrap().set_remote(self, hash(from), &key, container))
+            .map(|vn| vn.lock().unwrap().storage_set_remote(self, hash(from), &key, container))
             .ok_or(FabricMsgError::VNodeNotFound);
         self.fabric
             .send_message(from,

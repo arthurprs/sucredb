@@ -4,16 +4,17 @@ use version_vector::{VersionVector, DottedCausalContainer};
 // like Gossip, KV, Boostrap, etc..
 // TODO: error support
 #[derive(Debug, Copy, Clone)]
-#[repr(u8)]
 pub enum FabricMsgType {
     Crud,
     Bootstrap,
-    Other,
+    Synch,
+    Unknown,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FabricMsgError {
     VNodeNotFound,
+    CookieNotFound
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -24,14 +25,15 @@ pub enum FabricMsg {
     SetAck(FabricMsgSetAck),
     SetRemote(FabricMsgSetRemote),
     SetRemoteAck(FabricMsgSetRemoteAck),
-    Bootstrap,
-    BootstrapStream,
-    BootstrapFin,
-    SyncStart,
-    SyncStream,
-    SyncAck,
-    SyncFin,
-    Other,
+    BootstrapStart(FabricBootstrapStart),
+    BootstrapSend(FabricBootstrapSend),
+    BootstrapAck(FabricBootstrapAck),
+    BootstrapFin(FabricBootstrapFin),
+    SyncStart(FabricBootstrapStart),
+    SyncSend(FabricBootstrapSend),
+    SyncAck(FabricBootstrapAck),
+    SyncFin(FabricBootstrapSend),
+    Unknown,
 }
 
 macro_rules! fmsg {
@@ -52,13 +54,14 @@ impl FabricMsg {
             FabricMsg::SetAck(..) => FabricMsgType::Crud,
             FabricMsg::SetRemote(..) => FabricMsgType::Crud,
             FabricMsg::SetRemoteAck(..) => FabricMsgType::Crud,
-            FabricMsg::Bootstrap => FabricMsgType::Bootstrap,
-            FabricMsg::BootstrapStream => FabricMsgType::Bootstrap,
-            FabricMsg::BootstrapFin => FabricMsgType::Bootstrap,
-            // FabricMsg::SyncStart => FabricMsgType::SyncStart,
-            // FabricMsg::SyncStream => FabricMsgType::SyncStream,
-            // FabricMsg::SyncAck => FabricMsgType::SyncAck,
-            // FabricMsg::SyncFin => FabricMsgType::SyncFin,
+            FabricMsg::BootstrapStart(..) => FabricMsgType::Bootstrap,
+            FabricMsg::BootstrapSend(..) => FabricMsgType::Bootstrap,
+            FabricMsg::BootstrapAck(..) => FabricMsgType::Bootstrap,
+            FabricMsg::BootstrapFin(..) => FabricMsgType::Bootstrap,
+            FabricMsg::SyncStart(..) => FabricMsgType::Synch,
+            FabricMsg::SyncSend(..) => FabricMsgType::Synch,
+            FabricMsg::SyncAck(..) => FabricMsgType::Synch,
+            FabricMsg::SyncFin(..) => FabricMsgType::Synch,
             _ => unreachable!(),
         }
     }
@@ -107,4 +110,31 @@ pub struct FabricMsgSetAck {
     pub vnode: u16,
     pub cookie: u64,
     pub result: Result<(), FabricMsgError>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FabricBootstrapStart {
+    pub vnode: u16,
+    pub cookie: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FabricBootstrapFin {
+    pub vnode: u16,
+    pub cookie: u64,
+    pub result: Result<(), FabricMsgError>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FabricBootstrapSend {
+    pub vnode: u16,
+    pub cookie: u64,
+    pub key: Vec<u8>,
+    pub container: DottedCausalContainer<Vec<u8>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FabricBootstrapAck {
+    pub vnode: u16,
+    pub cookie: u64,
 }

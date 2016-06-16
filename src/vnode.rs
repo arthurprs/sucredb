@@ -1,10 +1,13 @@
+use std::net;
 use std::path::Path;
-use std::collections::{BTreeMap};
+use std::collections::{HashMap, BTreeMap};
 use linear_map::LinearMap;
 use version_vector::*;
-use storage::Storage;
+use storage::{Storage, StorageIterator};
 use database::Database;
 use bincode::{self, serde as bincode_serde};
+use fabric::*;
+use utils::GenericError;
 
 const PEER_LOG_SIZE: usize = 1000;
 
@@ -16,20 +19,26 @@ enum VNodeState {
     Wait,
 }
 
+pub struct VNode {
+    num: u16,
+    cookie_gen: u64,
+    // state: VNodeState,
+    clock: BitmappedVersionVector,
+    log: BTreeMap<u64, Vec<u8>>,
+    peers: LinearMap<u64, VNodePeer>,
+    migrations: HashMap<u64, Migration>,
+    storage: Storage,
+}
+
 struct VNodePeer {
     knowledge: u64,
     log: BTreeMap<u64, Vec<u8>>,
 }
 
-pub struct VNode {
-    num: u16,
-    // state: VNodeState,
-    clock: BitmappedVersionVector,
-    log: BTreeMap<u64, Vec<u8>>,
-    peers: LinearMap<u64, VNodePeer>,
-    storage: Storage,
+enum Migration {
+    Outgoing{peer: net::SocketAddr, iterator: StorageIterator},
+    Incomming{peer: net::SocketAddr},
 }
-
 
 impl VNodePeer {
     fn new() -> VNodePeer {
@@ -54,18 +63,102 @@ impl VNodePeer {
     }
 }
 
+macro_rules! handle {
+    ($db: expr, $from: expr, $msg: expr, $et: expr, $eet: ident, $r: expr) => (
+        match $r {
+            Ok(ok) => ok,
+            Err(e) => {
+                $db.fabric.send_message(&$from, $et($eet {
+                    cookie: $msg.cookie,
+                    vnode: $msg.vnode,
+                    result: Err(e),
+                })).unwrap();
+                return;
+            }
+        }
+    );
+}
+
 impl VNode {
     pub fn new(num: u16) -> VNode {
         VNode {
             num: num,
+            cookie_gen: 0,
             clock: BitmappedVersionVector::new(),
             peers: Default::default(),
+            migrations: Default::default(),
             storage: Storage::open(Path::new("./vnode_t"), num as i32, true).unwrap(),
             log: Default::default(),
         }
     }
 
-    pub fn get(&self, _db: &Database, key: &[u8]) -> DottedCausalContainer<Vec<u8>> {
+    fn cookie(&mut self) -> u64 {
+        let cookie = self.cookie_gen;
+        self.cookie_gen += 1;
+        cookie
+    }
+
+    // HANDLERS
+    pub fn handler_bootstrap_start(&mut self, db: &Database, from: net::SocketAddr, msg: FabricBootstrapStart) {
+        let mut migration = Migration::Outgoing {
+            iterator: self.storage.iter(),
+            peer: from,
+        };
+
+        migration.proceed(db, self.num, msg.cookie);
+
+        let p = self.migrations.insert(msg.cookie, migration);
+        assert!(p.is_none());
+    }
+
+    pub fn handler_bootstrap_send(&mut self, db: &Database, from: net::SocketAddr, msg: FabricBootstrapSend) {
+        handle!(
+            db, from, msg, FabricMsg::BootstrapFin, FabricBootstrapFin,
+            self.migrations.get_mut(&msg.cookie).ok_or(FabricMsgError::CookieNotFound)
+        );
+
+        let mut bytes = Vec::new();
+        bincode_serde::serialize_into(&mut bytes, &msg.container, bincode::SizeLimit::Infinite).unwrap();
+        self.storage.set(&msg.key, &bytes);
+
+        db.fabric.send_message(&from, FabricMsg::BootstrapAck(FabricBootstrapAck {
+            cookie: msg.cookie,
+            vnode: self.num,
+        })).unwrap();
+    }
+
+    pub fn handler_bootstrap_ack(&mut self, db: &Database, from: net::SocketAddr, msg: FabricBootstrapAck) {
+        let migration = handle!(
+            db, from, msg, FabricMsg::BootstrapFin, FabricBootstrapFin,
+            self.migrations.get_mut(&msg.cookie).ok_or(FabricMsgError::CookieNotFound)
+        );
+        migration.proceed(db, self.num, msg.cookie);
+    }
+
+    pub fn handler_bootstrap_fin(&mut self, db: &Database, from: net::SocketAddr, msg: FabricBootstrapFin) {
+        match msg.result {
+            Ok(_) => {
+                info!("{:?} from {}", msg, from);
+                self.migrations.remove(&msg.cookie).unwrap();
+            }
+            Err(_) => {
+                warn!("{:?} from {}", msg, from);
+                self.migrations.remove(&msg.cookie).unwrap();
+            }
+        }
+    }
+
+    //
+    pub fn start_migration(&mut self, db: &Database) {
+        let cookie = self.cookie();
+        let nodes = db.dht.nodes_for_vnode(self.num, db.replication_factor, false);
+        let migration = Migration::Incomming {
+            peer: nodes[0],
+        };
+    }
+
+    // STORAGE
+    pub fn storage_get(&self, _db: &Database, key: &[u8]) -> DottedCausalContainer<Vec<u8>> {
         let mut dcc = if let Some(bytes) = self.storage.get_vec(key) {
             bincode_serde::deserialize(&bytes).unwrap()
         } else {
@@ -75,10 +168,10 @@ impl VNode {
         dcc
     }
 
-    pub fn set_local(&mut self, db: &Database, id: u64, key: &[u8], value_opt: Option<&[u8]>,
-                 vv: &VersionVector)
-                 -> DottedCausalContainer<Vec<u8>> {
-        let mut dcc = self.get(db, key);
+    pub fn storage_set_local(&mut self, db: &Database, id: u64, key: &[u8],
+                             value_opt: Option<&[u8]>, vv: &VersionVector)
+                             -> DottedCausalContainer<Vec<u8>> {
+        let mut dcc = self.storage_get(db, key);
         dcc.discard(vv);
         let dot = self.clock.event(id);
         if let Some(value) = value_opt {
@@ -98,9 +191,9 @@ impl VNode {
         dcc
     }
 
-    pub fn set_remote(&mut self, db: &Database, peer_id: u64, key: &[u8],
-                  mut new_dcc: DottedCausalContainer<Vec<u8>>) {
-        let old_dcc = self.get(db, key);
+    pub fn storage_set_remote(&mut self, db: &Database, peer_id: u64, key: &[u8],
+                              mut new_dcc: DottedCausalContainer<Vec<u8>>) {
+        let old_dcc = self.storage_get(db, key);
         new_dcc.add_to_bvv(&mut self.clock);
         new_dcc.sync(old_dcc);
         new_dcc.strip(&self.clock);
@@ -118,5 +211,32 @@ impl VNode {
             .entry(peer_id)
             .or_insert_with(|| VNodePeer::new())
             .log(self.clock.get(peer_id).unwrap().base(), key.into());
+    }
+}
+
+impl Migration {
+
+    fn proceed(&mut self, db: &Database, vnode: u16, cookie: u64) {
+        match *self {
+            Migration::Outgoing{peer, ref mut iterator} => {
+                let done = !iterator.iter(|k, v| {
+                    db.fabric.send_message(&peer, FabricMsg::BootstrapSend(FabricBootstrapSend {
+                        cookie: cookie,
+                        vnode: vnode,
+                        key: k.into(),
+                        container: bincode_serde::deserialize(v).unwrap(),
+                    })).unwrap();
+                    false
+                });
+                if done {
+                    db.fabric.send_message(&peer, FabricMsg::BootstrapFin(FabricBootstrapFin {
+                        cookie: cookie,
+                        vnode: vnode,
+                        result: Ok(()),
+                    })).unwrap();
+                }
+            }
+            _ => ()
+        }
     }
 }

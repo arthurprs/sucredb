@@ -1,6 +1,7 @@
 #![feature(custom_derive, plugin)]
 #![feature(question_mark)]
 #![allow(dead_code)]
+#![feature(arc_counts)]
 #![plugin(serde_macros)]
 #[macro_use]
 extern crate log;

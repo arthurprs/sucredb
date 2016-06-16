@@ -4,11 +4,22 @@ use lmdb_rs;
 use std::collections::HashMap;
 use utils::*;
 use std::str;
+use std::sync::Arc;
+
+pub struct StorageIterator {
+    env: lmdb_rs::Environment,
+    db_h: lmdb_rs::DbHandle,
+    tx: lmdb_rs::ReadonlyTransaction<'static>,
+    db: lmdb_rs::Database<'static>,
+    cursor: lmdb_rs::core::CursorIterator<'static, lmdb_rs::CursorIter>,
+    iterators_handle: Arc<()>,
+}
 
 pub struct Storage {
     path: PathBuf,
     env: lmdb_rs::Environment,
-    db: lmdb_rs::DbHandle,
+    db_h: lmdb_rs::DbHandle,
+    iterators_handle: Arc<()>,
 }
 
 impl Storage {
@@ -28,17 +39,43 @@ impl Storage {
             .map_size(10 * 1024 * 1024)
             .autocreate_dir(create)
             .open(&db_path, 0o777));
-        let db = try!(env.get_default_db(lmdb_rs::DbFlags::empty()));
+        let db_h = try!(env.get_default_db(lmdb_rs::DbFlags::empty()));
         Ok(Storage {
             path: path.as_ref().into(),
             env: env,
-            db: db,
+            db_h: db_h,
+            iterators_handle: Arc::new(()),
         })
     }
 
-    pub fn get<R, F: Fn(Option<&[u8]>) -> R>(&self, key: &[u8], callback: F) -> R {
+    pub fn get<R, F: FnOnce(Option<&[u8]>) -> R>(&self, key: &[u8], callback: F) -> R {
         debug!("get {:?}", str::from_utf8(key));
-        callback(self.env.get_reader().unwrap().bind(&self.db).get(&key).ok())
+        callback(self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok())
+    }
+
+    pub fn iter(&self) -> StorageIterator {
+        unsafe {
+            use std::mem::{forget, transmute, transmute_copy};
+            let tx = self.env.get_reader().unwrap();
+            let iterator: StorageIterator;
+            {
+                let db = tx.bind(&self.db_h);
+                {
+                    let cursor = db.iter().unwrap();
+                    iterator = StorageIterator {
+                        db_h: self.db_h.clone(),
+                        env: self.env.clone(),
+                        iterators_handle: self.iterators_handle.clone(),
+                        db: transmute_copy(&db),
+                        tx: transmute_copy(&tx),
+                        cursor: transmute(cursor),
+                    };
+                }
+                forget(db);
+            };
+            forget(tx);
+            iterator
+        }
     }
 
     pub fn get_vec(&self, key: &[u8]) -> Option<Vec<u8>> {
@@ -48,26 +85,47 @@ impl Storage {
     pub fn set(&self, key: &[u8], value: &[u8]) {
         debug!("set {:?} {:?}", str::from_utf8(key), value);
         let txn = self.env.new_transaction().unwrap();
-        txn.bind(&self.db).set(&key, &value).unwrap();
+        txn.bind(&self.db_h).set(&key, &value).unwrap();
         txn.commit().unwrap();
     }
 
     pub fn del(&self, key: &[u8]) {
         let txn = self.env.new_transaction().unwrap();
-        txn.bind(&self.db).del(&key).unwrap();
+        txn.bind(&self.db_h).del(&key).unwrap();
         txn.commit().unwrap();
     }
 
     pub fn clear(&self) {
         let txn = self.env.new_transaction().unwrap();
-        txn.bind(&self.db).clear().unwrap();
+        txn.bind(&self.db_h).clear().unwrap();
         txn.commit().unwrap();
     }
 
     pub fn purge(self) {
-        self.env.new_transaction().unwrap().bind(&self.db).del_db().unwrap();
-        let Storage { path, .. } = self;
+        self.env.new_transaction().unwrap().bind(&self.db_h).del_db().unwrap();
+        let path = self.path.clone();
+        drop(self);
         let _ = fs::remove_dir_all(path);
+    }
+}
+
+impl Drop for Storage {
+    fn drop(&mut self) {
+        assert_eq!(Arc::strong_count(&self.iterators_handle), 1);
+    }
+}
+
+unsafe impl Send for StorageIterator {}
+unsafe impl Sync for StorageIterator {}
+
+impl StorageIterator {
+    pub fn iter<F: FnMut(&[u8], &[u8]) -> bool>(&mut self, mut callback: F) -> bool {
+        while let Some(cv) = self.cursor.next() {
+            if !callback(cv.get_key(), cv.get_value()) {
+                return true;
+            }
+        }
+        false
     }
 }
 

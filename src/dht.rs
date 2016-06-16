@@ -75,7 +75,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             {
                 let node = r.node.unwrap();
                 let ring = Self::deserialize(&node.value.unwrap()).unwrap();
-                let ring_version =  node.modified_index.unwrap();
+                let ring_version = node.modified_index.unwrap();
                 debug!("new ring version {}", ring_version);
                 let mut inner = inner.write().unwrap();
                 inner.ring = ring;
@@ -121,10 +121,14 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
 
     pub fn nodes_for_key(&self, key: &[u8], n: usize, include_pending: bool)
                          -> (u16, Vec<net::SocketAddr>) {
-        let inner = self.inner.read().unwrap();
         let vnode = self.key_vnode(key);
-        let ring_len = inner.ring.vnodes.len();
+        (vnode, self.nodes_for_vnode(vnode, n, include_pending))
+    }
+
+    pub fn nodes_for_vnode(&self, vnode: u16, n: usize, include_pending: bool) -> Vec<net::SocketAddr> {
         let mut result = HashSet::new();
+        let inner = self.inner.read().unwrap();
+        let ring_len = inner.ring.vnodes.len();
         for i in 0..n {
             let vnode_i = (vnode as usize + i) % ring_len;
             if let Some(p) = inner.ring.vnodes.get(vnode_i) {
@@ -136,7 +140,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
                 }
             }
         }
-        (vnode, result.iter().cloned().collect())
+        result.iter().cloned().collect()
     }
 
     pub fn members(&self) -> Vec<net::SocketAddr> {
