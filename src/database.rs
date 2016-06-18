@@ -428,6 +428,7 @@ mod tests {
         thread::sleep_ms(100);
 
         for i in 0u16..32 {
+            db1.start_migration(i * 2 + 1);
             db2.start_migration(i * 2);
         }
 

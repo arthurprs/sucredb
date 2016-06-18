@@ -425,14 +425,6 @@ mod tests {
     fn test() {
         let _ = env_logger::init();
         let fabric = Fabric::new("127.0.0.1:6479".parse().unwrap()).unwrap();
-        fabric.send_message(&"127.0.0.1:6479".parse().unwrap(),
-                          FabricMsgSetRemoteAck {
-                              cookie: 0,
-                              vnode: 0,
-                              result: Ok(()),
-                          })
-            .unwrap();
-        thread::sleep_ms(100);
         let counter = Arc::new(atomic::AtomicUsize::new(0));
         let counter_ = counter.clone();
         fabric.register_msg_handler(FabricMsgType::Crud,

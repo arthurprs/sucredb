@@ -26,8 +26,7 @@ impl Protocol for RespConnection {
     type Seed = ();
 
     fn create(_seed: (), _sock: &mut TcpStream, _scope: &mut Scope<Context>) -> Intent<Self> {
-        debug!("incomming connection from {:?}",
-               _sock.local_addr().unwrap());
+        debug!("incomming connection from {:?}", _sock.local_addr().unwrap());
         Intent::of(RespConnection::Receiving).expect_delimiter(b"\r\n", 1024)
     }
 
@@ -35,9 +34,7 @@ impl Protocol for RespConnection {
                   _scope: &mut Scope<Context>)
                   -> Intent<Self> {
         let buf_len = transport.input().len();
-        debug!("buffer is {:?} ({})",
-               str::from_utf8(&transport.input()[..]),
-               buf_len);
+        debug!("buffer is {:?} ({})", str::from_utf8(&transport.input()[..]), buf_len);
         let mut parser = resp::Parser::new(&transport.input()[..]);
         match parser.parse() {
             Ok(req) => {

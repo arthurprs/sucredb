@@ -167,6 +167,12 @@ mod tests {
         let mut results: Vec<Vec<u8>> = Vec::new();
         storage.iter().iter(|k, v| {
             results.push(v.into());
+            results.len() < 2
+        });
+        assert_eq!(results, &[b"1", b"2"]);
+        results.clear();
+        storage.iter().iter(|k, v| {
+            results.push(v.into());
             true
         });
         assert_eq!(results, &[b"1", b"2", b"3"]);
@@ -178,8 +184,7 @@ mod tests {
         Storage::open(Path::new("t/test_open_all"), 1, true).unwrap();
         Storage::open(Path::new("t/test_open_all"), 2, true).unwrap();
         Storage::open(Path::new("t/test_open_all"), 3, true).unwrap();
-        assert_eq!(Storage::open_all(Path::new("t/test_open_all")).unwrap().len(),
-                   3);
+        assert_eq!(Storage::open_all(Path::new("t/test_open_all")).unwrap().len(), 3);
     }
 
 }

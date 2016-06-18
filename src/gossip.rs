@@ -291,9 +291,7 @@ impl<T: Metadata> Inner<T> {
         self.next_alive_probe = now + time::Duration::from_millis(PING_PERIOD_MS);
         let candidates = self.get_candidates(true, PING_CANDIDATES);
         if candidates.len() != 0 {
-            debug!("{} gossiping to {} alive nodes",
-                   self.addr,
-                   candidates.len());
+            debug!("{} gossiping to {} alive nodes", self.addr, candidates.len());
             for &k in &candidates {
                 let (seq, msg) = self.generate_ping_msg();
                 self.ping_inflight
