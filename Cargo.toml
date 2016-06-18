@@ -16,6 +16,7 @@ tendril="*"
 rotor="*"
 rotor-tools="*"
 byteorder="*"
+nodrop="*"
 
 [dependencies.linear-map]
 git = "https://github.com/contain-rs/linear-map.git"

@@ -5,13 +5,14 @@ use std::collections::HashMap;
 use utils::*;
 use std::str;
 use std::sync::Arc;
+use nodrop::NoDrop;
 
 pub struct StorageIterator {
-    env: lmdb_rs::Environment,
-    db_h: lmdb_rs::DbHandle,
-    tx: lmdb_rs::ReadonlyTransaction<'static>,
-    db: lmdb_rs::Database<'static>,
-    cursor: lmdb_rs::core::CursorIterator<'static, lmdb_rs::CursorIter>,
+    env: NoDrop<Box<lmdb_rs::Environment>>,
+    db_h: NoDrop<Box<lmdb_rs::DbHandle>>,
+    tx: NoDrop<Box<lmdb_rs::ReadonlyTransaction<'static>>>,
+    db: NoDrop<Box<lmdb_rs::Database<'static>>>,
+    cursor: NoDrop<lmdb_rs::core::CursorIterator<'static, lmdb_rs::CursorIter>>,
     iterators_handle: Arc<()>,
 }
 
@@ -54,27 +55,21 @@ impl Storage {
     }
 
     pub fn iter(&self) -> StorageIterator {
+        let env = NoDrop::new(Box::new(self.env.clone()));
+        let db_h = NoDrop::new(Box::new(self.db_h.clone()));
+        let tx = NoDrop::new(Box::new(env.get_reader().unwrap()));
+        let db = NoDrop::new(Box::new(tx.bind(&self.db_h)));
+        let cursor = NoDrop::new(db.iter().unwrap());
         unsafe {
-            use std::mem::{forget, transmute, transmute_copy};
-            let tx = self.env.get_reader().unwrap();
-            let iterator: StorageIterator;
-            {
-                let db = tx.bind(&self.db_h);
-                {
-                    let cursor = db.iter().unwrap();
-                    iterator = StorageIterator {
-                        db_h: self.db_h.clone(),
-                        env: self.env.clone(),
-                        iterators_handle: self.iterators_handle.clone(),
-                        db: transmute_copy(&db),
-                        tx: transmute_copy(&tx),
-                        cursor: transmute(cursor),
-                    };
-                }
-                forget(db);
-            };
-            forget(tx);
-            iterator
+            use std::mem::transmute_copy;
+            StorageIterator {
+                db_h: transmute_copy(&db_h),
+                env: transmute_copy(&env),
+                iterators_handle: self.iterators_handle.clone(),
+                db: transmute_copy(&db),
+                tx: transmute_copy(&tx),
+                cursor: transmute_copy(&cursor),
+            }
         }
     }
 
@@ -129,6 +124,21 @@ impl StorageIterator {
     }
 }
 
+impl Drop for StorageIterator {
+    fn drop(&mut self) {
+        unsafe {
+            use std::mem::transmute_copy;
+            transmute_copy::<_, NoDrop<lmdb_rs::core::CursorIterator<'static, lmdb_rs::CursorIter>>>(&self.cursor)
+                .into_inner();
+            transmute_copy::<_, NoDrop<Box<lmdb_rs::ReadonlyTransaction<'static>>>>(&self.tx)
+                .into_inner();
+            transmute_copy::<_, NoDrop<Box<lmdb_rs::DbHandle>>>(&self.db_h).into_inner();
+            transmute_copy::<_, NoDrop<Box<lmdb_rs::Database<'static>>>>(&self.db).into_inner();
+            transmute_copy::<_, NoDrop<Box<lmdb_rs::Environment>>>(&self.env).into_inner();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +157,20 @@ mod tests {
         storage.purge();
     }
 
+    #[test]
+    fn test_iter() {
+        let _ = fs::remove_dir_all("t/test_simple");
+        let storage = Storage::open(Path::new("t/test_simple"), 1, true).unwrap();
+        storage.set(b"1", b"1");
+        storage.set(b"2", b"2");
+        storage.set(b"3", b"3");
+        let mut results: Vec<Vec<u8>> = Vec::new();
+        storage.iter().iter(|k, v| {
+            results.push(v.into());
+            true
+        });
+        assert_eq!(results, &[b"1", b"2", b"3"]);
+    }
 
     #[test]
     fn test_open_all() {

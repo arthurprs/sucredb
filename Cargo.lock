@@ -9,6 +9,7 @@ dependencies = [
  "linear-map 1.0.0 (git+https://github.com/contain-rs/linear-map.git)",
  "lmdb-rs 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "nodrop 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "ramp 0.2.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.3.14 (registry+https://github.com/rust-lang/crates.io-index)",
  "rotor 0.6.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -390,6 +391,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nodrop"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "odds 0.2.14 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.1.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -401,6 +410,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "libc 0.2.12 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
+
+[[package]]
+name = "odds"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "openssl"
