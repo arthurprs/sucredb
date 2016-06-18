@@ -20,6 +20,7 @@ extern crate rotor_stream;
 extern crate rotor_tools;
 extern crate byteorder;
 extern crate etcd;
+extern crate nodrop;
 
 #[macro_use]
 mod utils;

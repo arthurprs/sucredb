@@ -27,8 +27,8 @@ pub struct VNode {
     clock: BitmappedVersionVector,
     log: BTreeMap<u64, Vec<u8>>,
     peers: LinearMap<u64, VNodePeer>,
-    migrations: HashMap<u64, Migration>,
-    syncs: HashMap<u64, Synchronization>,
+    migrations: LinearMap<u64, Migration>,
+    syncs: LinearMap<u64, Synchronization>,
     storage: Storage,
 }
 
@@ -38,12 +38,20 @@ struct VNodePeer {
 }
 
 enum Migration {
-    Outgoing{peer: net::SocketAddr, iterator: StorageIterator, count: u64,},
-    Incomming{peer: net::SocketAddr, count: u64,},
+    Outgoing {
+        peer: net::SocketAddr,
+        iterator: StorageIterator,
+        count: u64,
+    },
+    Incomming {
+        peer: net::SocketAddr,
+        count: u64,
+    },
 }
 
 enum Synchronization {
-
+    Outgoing {},
+    Incomming {},
 }
 
 impl VNodePeer {
@@ -86,7 +94,7 @@ macro_rules! handle {
 }
 
 impl VNode {
-    pub fn new(num: u16) -> VNode {
+    pub fn new(storage_dir: &Path, num: u16) -> VNode {
         VNode {
             num: num,
             cookie_gen: 0,
@@ -94,7 +102,7 @@ impl VNode {
             peers: Default::default(),
             migrations: Default::default(),
             syncs: Default::default(),
-            storage: Storage::open(Path::new("./vnode_t"), num as i32, true).unwrap(),
+            storage: Storage::open(storage_dir, num as i32, true).unwrap(),
             log: Default::default(),
         }
     }
@@ -106,10 +114,11 @@ impl VNode {
     }
 
     // HANDLERS
-    pub fn handler_bootstrap_start(&mut self, db: &Database, from: net::SocketAddr, msg: FabricBootstrapStart) {
+    pub fn handler_bootstrap_start(&mut self, db: &Database, from: &net::SocketAddr,
+                                   msg: FabricBootstrapStart) {
         let mut migration = Migration::Outgoing {
             iterator: self.storage.iter(),
-            peer: from,
+            peer: *from,
             count: 0,
         };
 
@@ -119,37 +128,48 @@ impl VNode {
         assert!(p.is_none());
     }
 
-    pub fn handler_bootstrap_send(&mut self, db: &Database, from: net::SocketAddr, msg: FabricBootstrapSend) {
-        let migration = handle!(
-            db, from, msg, FabricBootstrapFin,
-            self.migrations.get_mut(&msg.cookie).ok_or(FabricMsgError::CookieNotFound)
-        );
+    pub fn handler_bootstrap_send(&mut self, db: &Database, from: &net::SocketAddr,
+                                  msg: FabricBootstrapSend) {
+        let migration =
+            handle!(db,
+                    from,
+                    msg,
+                    FabricBootstrapFin,
+                    self.migrations.get_mut(&msg.cookie).ok_or(FabricMsgError::CookieNotFound));
 
         match *migration {
-            Migration::Incomming{ref mut count, ..} => *count += 1,
-            _ => unreachable!()
+            Migration::Incomming { ref mut count, .. } => *count += 1,
+            _ => unreachable!(),
         }
 
         let mut bytes = Vec::new();
-        bincode_serde::serialize_into(&mut bytes, &msg.container, bincode::SizeLimit::Infinite).unwrap();
+        bincode_serde::serialize_into(&mut bytes, &msg.container, bincode::SizeLimit::Infinite)
+            .unwrap();
         self.storage.set(&msg.key, &bytes);
 
-        db.fabric.send_message(&from, FabricMsg::BootstrapAck(FabricBootstrapAck {
-            cookie: msg.cookie,
-            vnode: self.num,
-        })).unwrap();
+        db.fabric
+            .send_message(&from,
+                          FabricBootstrapAck {
+                              cookie: msg.cookie,
+                              vnode: self.num,
+                          })
+            .unwrap();
     }
 
-    pub fn handler_bootstrap_ack(&mut self, db: &Database, from: net::SocketAddr, msg: FabricBootstrapAck) {
-        let migration = handle!(
-            db, from, msg, FabricBootstrapFin,
-            self.migrations.get_mut(&msg.cookie).ok_or(FabricMsgError::CookieNotFound)
-        );
+    pub fn handler_bootstrap_ack(&mut self, db: &Database, from: &net::SocketAddr,
+                                 msg: FabricBootstrapAck) {
+        let migration =
+            handle!(db,
+                    from,
+                    msg,
+                    FabricBootstrapFin,
+                    self.migrations.get_mut(&msg.cookie).ok_or(FabricMsgError::CookieNotFound));
 
         migration.send(db, self.num, msg.cookie);
     }
 
-    pub fn handler_bootstrap_fin(&mut self, db: &Database, from: net::SocketAddr, msg: FabricBootstrapFin) {
+    pub fn handler_bootstrap_fin(&mut self, db: &Database, from: &net::SocketAddr,
+                                 msg: FabricBootstrapFin) {
         match msg.result {
             Ok(_) => {
                 info!("{:?} from {}", msg, from);
@@ -164,13 +184,30 @@ impl VNode {
 
     pub fn start_migration(&mut self, db: &Database) {
         let cookie = self.cookie();
-        let nodes = db.dht.nodes_for_vnode(self.num, db.replication_factor, false);
-        let migration = Migration::Incomming {
-            peer: thread_rng().choose(&nodes).cloned().unwrap(),
-            count: 0,
-        };
-        let p = self.migrations.insert(cookie, migration);
-        assert!(p.is_some());
+        let mut nodes = db.dht.nodes_for_vnode(self.num, db.replication_factor, false);
+        thread_rng().shuffle(&mut nodes);
+        for node in nodes {
+            if node == db.dht.node() {
+                continue;
+            }
+            let migration = Migration::Incomming {
+                peer: node,
+                count: 0,
+            };
+
+            db.fabric
+                .send_message(&node,
+                              FabricBootstrapStart {
+                                  cookie: cookie,
+                                  vnode: self.num,
+                              })
+                .unwrap();
+
+            let p = self.migrations.insert(cookie, migration);
+            assert!(p.is_none());
+            return;
+        }
+        unreachable!();
     }
 
     // STORAGE
@@ -233,27 +270,34 @@ impl VNode {
 impl Migration {
     fn send(&mut self, db: &Database, vnode: u16, cookie: u64) -> bool {
         match *self {
-            Migration::Outgoing{peer, ref mut iterator, ref mut count} => {
+            Migration::Outgoing { peer, ref mut iterator, ref mut count } => {
                 let done = !iterator.iter(|k, v| {
-                    db.fabric.send_message(&peer, FabricMsg::BootstrapSend(FabricBootstrapSend {
-                        cookie: cookie,
-                        vnode: vnode,
-                        key: k.into(),
-                        container: bincode_serde::deserialize(v).unwrap(),
-                    })).unwrap();
+                    db.fabric
+                        .send_message(&peer,
+                                      FabricBootstrapSend {
+                                          cookie: cookie,
+                                          vnode: vnode,
+                                          key: k.into(),
+                                          container: bincode_serde::deserialize(v).unwrap(),
+                                      })
+                        .unwrap();
                     *count += 1;
                     false
                 });
                 if done {
-                    db.fabric.send_message(&peer, FabricMsg::BootstrapFin(FabricBootstrapFin {
-                        cookie: cookie,
-                        vnode: vnode,
-                        result: Ok(()),
-                    })).unwrap();
+                    debug!("[{}] migration of {} is done", db.dht.node(), vnode);
+                    db.fabric
+                        .send_message(&peer,
+                                      FabricBootstrapFin {
+                                          cookie: cookie,
+                                          vnode: vnode,
+                                          result: Ok(()),
+                                      })
+                        .unwrap();
                 }
                 done
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 }

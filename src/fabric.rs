@@ -373,7 +373,8 @@ impl Fabric {
         })
     }
 
-    pub fn send_message<T: Into<FabricMsg>>(&self, recipient: &net::SocketAddr, msg: T) -> FabricResult<()> {
+    pub fn send_message<T: Into<FabricMsg>>(&self, recipient: &net::SocketAddr, msg: T)
+                                            -> FabricResult<()> {
         // fast path if connection already available
         if let Some(node) = self.shared_context.nodes.read().unwrap().get(recipient) {
             if let Some(n) = thread_rng().choose(&node.1) {
@@ -418,18 +419,36 @@ mod tests {
     use super::*;
     use std::{thread, net};
     use env_logger;
+    use std::sync::{Arc, atomic};
 
     #[test]
     fn test() {
         let _ = env_logger::init();
         let fabric = Fabric::new("127.0.0.1:6479".parse().unwrap()).unwrap();
-        fabric.send_message(&"127.0.0.1:6479".parse().unwrap(), FabricMsg::Bootstrap).unwrap();
-        thread::sleep_ms(3000);
-        fabric.register_msg_handler(FabricMsgType::Bootstrap,
+        fabric.send_message(&"127.0.0.1:6479".parse().unwrap(),
+                          FabricMsgSetRemoteAck {
+                              cookie: 0,
+                              vnode: 0,
+                              result: Ok(()),
+                          })
+            .unwrap();
+        thread::sleep_ms(100);
+        let counter = Arc::new(atomic::AtomicUsize::new(0));
+        let counter_ = counter.clone();
+        fabric.register_msg_handler(FabricMsgType::Crud,
                                     Box::new(move |_, m| {
-                                        info!("yay, handler received {:?}", m);
+                                        counter_.fetch_add(1, atomic::Ordering::Relaxed);
                                     }));
-        fabric.send_message(&"127.0.0.1:6479".parse().unwrap(), FabricMsg::Bootstrap).unwrap();
-        thread::sleep_ms(3000);
+        for _ in 0..3 {
+            fabric.send_message(&"127.0.0.1:6479".parse().unwrap(),
+                              FabricMsgSetRemoteAck {
+                                  cookie: 0,
+                                  vnode: 0,
+                                  result: Ok(()),
+                              })
+                .unwrap();
+        }
+        thread::sleep_ms(100);
+        assert_eq!(counter.load(atomic::Ordering::Relaxed), 3);
     }
 }

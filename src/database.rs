@@ -1,4 +1,4 @@
-use std::net;
+use std::{net, path};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use dht::DHT;
@@ -23,6 +23,7 @@ pub struct Database {
     pub dht: DHT<()>,
     pub fabric: Fabric,
     pub replication_factor: usize,
+    storage_dir: path::PathBuf,
     vnodes: RwLock<HashMap<u16, Mutex<VNode>>>,
     // TODO: move this inside vnode?
     // TODO: create a thread to walk inflight and handle timeouts
@@ -33,7 +34,7 @@ pub struct Database {
 
 
 impl Database {
-    pub fn new(node: net::SocketAddr, create: bool) -> Arc<Database> {
+    pub fn new(node: net::SocketAddr, storage_dir: &str, create: bool) -> Arc<Database> {
         let db = Arc::new(Database {
             replication_factor: 3,
             fabric: Fabric::new(node).unwrap(),
@@ -43,6 +44,7 @@ impl Database {
                           } else {
                               None
                           }),
+            storage_dir: storage_dir.into(),
             inflight: Mutex::new(Default::default()),
             responses: Mutex::new(Default::default()),
             vnodes: RwLock::new(Default::default()),
@@ -51,6 +53,11 @@ impl Database {
         db.fabric.register_msg_handler(FabricMsgType::Crud,
                                        Box::new(move |f, m| {
                                            cdb.upgrade().unwrap().fabric_crud_handler(f, m)
+                                       }));
+        let cdb = Arc::downgrade(&db);
+        db.fabric.register_msg_handler(FabricMsgType::Bootstrap,
+                                       Box::new(move |f, m| {
+                                           cdb.upgrade().unwrap().fabric_boostrap_handler(f, m)
                                        }));
         db
     }
@@ -67,16 +74,44 @@ impl Database {
         }
     }
 
+    pub fn fabric_boostrap_handler(&self, from: &net::SocketAddr, msg: FabricMsg) {
+        let vnodes = self.vnodes.read().unwrap();
+        match msg {
+            FabricMsg::BootstrapStart(m) => {
+                vnodes.get(&m.vnode)
+                    .map(|vn| vn.lock().unwrap().handler_bootstrap_start(self, from, m))
+            }
+            FabricMsg::BootstrapSend(m) => {
+                vnodes.get(&m.vnode)
+                    .map(|vn| vn.lock().unwrap().handler_bootstrap_send(self, from, m))
+            }
+            FabricMsg::BootstrapAck(m) => {
+                vnodes.get(&m.vnode)
+                    .map(|vn| vn.lock().unwrap().handler_bootstrap_ack(self, from, m))
+            }
+            FabricMsg::BootstrapFin(m) => {
+                vnodes.get(&m.vnode)
+                    .map(|vn| vn.lock().unwrap().handler_bootstrap_fin(self, from, m))
+            }
+            _ => unreachable!("Can't handle {:?}", msg),
+        };
+    }
+
     pub fn init_vnode(&self, vnode_n: u16) {
         self.vnodes
             .write()
             .unwrap()
             .entry(vnode_n)
-            .or_insert_with(|| Mutex::new(VNode::new(vnode_n)));
+            .or_insert_with(|| Mutex::new(VNode::new(&self.storage_dir, vnode_n)));
     }
 
     pub fn remove_vnode(&self, vnode_n: u16) {
         self.vnodes.write().unwrap().remove(&vnode_n);
+    }
+
+    fn start_migration(&self, vnode: u16) {
+        let vnodes = self.vnodes.read().unwrap();
+        vnodes.get(&vnode).unwrap().lock().unwrap().start_migration(self);
     }
 
     fn new_state_from(&self, token: usize, nodes: u8, from: net::SocketAddr) -> u64 {
@@ -232,7 +267,7 @@ impl Database {
     fn set_local(&self, cookie: u64, key: &[u8], value_opt: Option<&[u8]>, vv: &VersionVector)
                  -> DottedCausalContainer<Vec<u8>> {
         let vnode_n = self.dht.key_vnode(key);
-        debug!("set_local {:?}", vnode_n);
+        debug!("[{}] set_local {:?}", self.dht.node(), vnode_n);
         let dcc = self.vnodes
             .read()
             .unwrap()
@@ -323,9 +358,9 @@ mod tests {
 
     #[test]
     fn test() {
-        let _ = fs::remove_dir_all("./vnode_t");
+        let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db = Database::new("127.0.0.1:9000".parse().unwrap(), true);
+        let db = Database::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
         for i in 0u16..64 {
             db.init_vnode(i);
         }
@@ -361,37 +396,39 @@ mod tests {
 
     #[test]
     fn test_two() {
-        let _ = fs::remove_dir_all("./vnode_t");
+        let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db1 = Database::new("127.0.0.1:9000".parse().unwrap(), true);
-        let db2 = Database::new("127.0.0.1:9001".parse().unwrap(), false);
+        let db1 = Database::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let db2 = Database::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         for i in 0u16..64 {
             db1.init_vnode(i);
             db2.init_vnode(i);
         }
         for i in 0u16..32 {
             db1.dht.add_pending_node(i * 2 + 1, db2.dht.node(), ());
-            thread::sleep_ms(100);
+            thread::sleep_ms(20);
             db1.dht.promote_pending_node(i * 2 + 1, db2.dht.node());
-            thread::sleep_ms(100);
-            db2.dht.add_pending_node(i * 2 + 1, db1.dht.node(), ());
-            thread::sleep_ms(100);
-            db2.dht.promote_pending_node(i * 2 + 1, db1.dht.node());
-            thread::sleep_ms(100);
+            thread::sleep_ms(20);
         }
 
         db1.get(1, b"test");
-        thread::sleep_ms(1000);
+        thread::sleep_ms(100);
         assert!(db1.response(1).unwrap().is_empty());
 
         db1.set(1, b"test", Some(b"value1"), VersionVector::new());
-        thread::sleep_ms(1000);
+        thread::sleep_ms(100);
         assert!(db1.response(1).unwrap().is_empty());
 
         for &db in &[&db1, &db2] {
             db.get(1, b"test");
-            thread::sleep_ms(1000);
+            thread::sleep_ms(100);
             assert!(db.response(1).unwrap().values().eq(vec![b"value1"]));
+        }
+
+        thread::sleep_ms(100);
+
+        for i in 0u16..32 {
+            db2.start_migration(i * 2);
         }
 
         thread::sleep_ms(1000);

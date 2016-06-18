@@ -21,6 +21,7 @@ struct Ring<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
     vnodes: Vec<(net::SocketAddr, T)>,
     #[serde(serialize_with="utils::json_serialize_map", deserialize_with="utils::json_deserialize_map")]
     pending: HashMap<u16, (net::SocketAddr, T)>,
+    #[serde(serialize_with="utils::json_serialize_map", deserialize_with="utils::json_deserialize_map")]
     zombie: HashMap<u16, (net::SocketAddr, T)>,
 }
 
@@ -125,7 +126,8 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         (vnode, self.nodes_for_vnode(vnode, n, include_pending))
     }
 
-    pub fn nodes_for_vnode(&self, vnode: u16, n: usize, include_pending: bool) -> Vec<net::SocketAddr> {
+    pub fn nodes_for_vnode(&self, vnode: u16, n: usize, include_pending: bool)
+                           -> Vec<net::SocketAddr> {
         let mut result = HashSet::new();
         let inner = self.inner.read().unwrap();
         let ring_len = inner.ring.vnodes.len();
@@ -189,7 +191,6 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         let mut p = ring.pending.remove(&vnode).unwrap();
         assert!(p.0 == node);
         mem::swap(&mut p, &mut ring.vnodes[vnode as usize]);
-        assert!(ring.zombie.insert(vnode, p).is_none());
 
         self.propose(&inner.ring, ring);
     }
