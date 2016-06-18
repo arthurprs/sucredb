@@ -1,6 +1,7 @@
 use std::{thread, net, mem};
 use std::sync::{Arc, RwLock};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
+use linear_map::set::LinearSet;
 use rand::{self, Rng};
 use serde::{Serialize, Deserialize};
 use serde_json;
@@ -128,7 +129,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
 
     pub fn nodes_for_vnode(&self, vnode: u16, n: usize, include_pending: bool)
                            -> Vec<net::SocketAddr> {
-        let mut result = HashSet::new();
+        let mut result = LinearSet::new();
         let inner = self.inner.read().unwrap();
         let ring_len = inner.ring.vnodes.len();
         for i in 0..n {
@@ -142,13 +143,13 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
                 }
             }
         }
-        result.iter().cloned().collect()
+        result.into()
     }
 
     pub fn members(&self) -> Vec<net::SocketAddr> {
         let inner = self.inner.read().unwrap();
-        let members_set: HashSet<_> = inner.ring.vnodes.iter().map(|&(n, _)| n).collect();
-        members_set.iter().cloned().collect()
+        let members_set: LinearSet<_> = inner.ring.vnodes.iter().map(|&(n, _)| n).collect();
+        members_set.into()
     }
 
     pub fn add_node(&self) {

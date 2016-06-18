@@ -19,7 +19,7 @@ byteorder="*"
 nodrop="*"
 
 [dependencies.linear-map]
-git = "https://github.com/contain-rs/linear-map.git"
+git = "https://github.com/arthurprs/linear-map.git"
 features = ["serde_impl"]
 
 [dependencies.bincode]
