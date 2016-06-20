@@ -83,7 +83,57 @@ impl BitmappedVersion {
     //     }
     //     values
     // }
+
+    pub fn delta(&self, other: &Self) -> BitmappedVersionDelta {
+        // impl is generic but let's restrict it just in case
+        assert!(self.base >= other.base);
+        assert!(self.base + self.bitmap.bit_length() as Version >=
+                other.base + other.bitmap.bit_length() as Version);
+        if self.base < other.base {
+            return other.delta(self);
+        }
+        let ones = (self.base - other.base) as usize;
+        let len = ones + cmp::max(self.bitmap.bit_length(), other.bitmap.bit_length()) as usize;
+        BitmappedVersionDelta {
+            base: other.base,
+            ones: ones,
+            bself: self.bitmap.clone(),
+            bother: other.bitmap.clone(),
+            pos: 0,
+            len: len,
+        }
+    }
 }
+
+pub struct BitmappedVersionDelta {
+    base: Version,
+    ones: usize,
+    bself: ramp::Int,
+    bother: ramp::Int,
+    pos: usize,
+    len: usize,
+}
+
+impl Iterator for BitmappedVersionDelta {
+    type Item = Version;
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.pos < self.len {
+            if (self.pos < self.ones || self.bself.bit((self.pos - self.ones) as u32)) &&
+               (!self.bother.bit(self.pos as u32)) {
+                self.pos += 1;
+                return Some(self.base + self.pos as Version);
+            }
+            self.pos += 1;
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.len - self.pos, Some(self.len - self.pos))
+    }
+}
+
+impl ExactSizeIterator for BitmappedVersionDelta {}
 
 impl BitmappedVersionVector {
     pub fn new() -> Self {
@@ -338,6 +388,19 @@ mod test_bvv {
         a.merge(&b);
         assert_eq!(a.get(1).unwrap(), &BitmappedVersion::new(5, 3));
         assert_eq!(a.get(2).unwrap(), &BitmappedVersion::new(2, 4));
+    }
+
+    #[test]
+    fn delta() {
+        let a = BitmappedVersion::new(5, 3);
+        let b = BitmappedVersion::new(2, 4);
+        assert_eq!(vec![3, 4, 6, 7], a.delta(&b).collect::<Vec<Version>>());
+        let a = BitmappedVersion::new(7, 0);
+        let b = BitmappedVersion::new(2, 4);
+        assert_eq!(vec![3, 4, 6, 7], a.delta(&b).collect::<Vec<Version>>());
+        let a = BitmappedVersion::new(7, 0);
+        let b = BitmappedVersion::new(7, 0);
+        assert!(a.delta(&b).collect::<Vec<Version>>().is_empty());
     }
 
     #[test]
