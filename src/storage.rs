@@ -102,6 +102,10 @@ impl Storage {
         drop(self);
         let _ = fs::remove_dir_all(path);
     }
+
+    pub fn sync(&self) {
+        self.env.sync(true).unwrap();
+    }
 }
 
 impl Drop for Storage {

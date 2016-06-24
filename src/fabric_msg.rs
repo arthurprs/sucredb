@@ -29,10 +29,10 @@ pub enum FabricMsg {
     BootstrapSend(FabricBootstrapSend),
     BootstrapAck(FabricBootstrapAck),
     BootstrapFin(FabricBootstrapFin),
-    SyncStart(FabricBootstrapStart),
-    SyncSend(FabricBootstrapSend),
-    SyncAck(FabricBootstrapAck),
-    SyncFin(FabricBootstrapSend),
+    SyncStart(MsgSyncStart),
+    SyncSend(MsgSyncSend),
+    SyncAck(MsgSyncAck),
+    SyncFin(MsgSyncFin),
     Unknown,
 }
 
@@ -139,6 +139,33 @@ pub struct FabricBootstrapAck {
     pub cookie: u64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MsgSyncStart {
+    pub vnode: u16,
+    pub cookie: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MsgSyncFin {
+    pub vnode: u16,
+    pub cookie: u64,
+    pub result: Result<(), FabricMsgError>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MsgSyncSend {
+    pub vnode: u16,
+    pub cookie: u64,
+    pub key: Vec<u8>,
+    pub container: DottedCausalContainer<Vec<u8>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MsgSyncAck {
+    pub vnode: u16,
+    pub cookie: u64,
+}
+
 macro_rules! impl_into {
     ($w: ident, $msg: ident) => (
         impl Into<FabricMsg> for $msg {
@@ -161,3 +188,9 @@ impl_into!(BootstrapAck, FabricBootstrapAck);
 impl_into!(BootstrapSend, FabricBootstrapSend);
 impl_into!(BootstrapFin, FabricBootstrapFin);
 impl_into!(BootstrapStart, FabricBootstrapStart);
+
+
+impl_into!(SyncAck, MsgSyncAck);
+impl_into!(SyncSend, MsgSyncSend);
+impl_into!(SyncFin, MsgSyncFin);
+impl_into!(SyncStart, MsgSyncStart);

@@ -1,29 +1,33 @@
 use std::{thread, net, mem};
 use std::sync::{Arc, RwLock};
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use linear_map::set::LinearSet;
 use rand::{self, Rng};
 use serde::{Serialize, Deserialize};
 use serde_json;
 use hash::hash;
+use fabric::NodeId;
 use etcd;
 use utils::{self, GenericError};
 
 pub type DHTChangeFn = Box<Fn() + Send + Sync>;
 
 pub struct DHT<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
-    node: net::SocketAddr,
+    node: NodeId,
+    addr: net::SocketAddr,
     inner: Arc<RwLock<Inner<T>>>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct Ring<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
-    vnodes: Vec<(net::SocketAddr, T)>,
+pub struct Ring<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
+    vnodes: Vec<(NodeId, T)>,
     #[serde(serialize_with="utils::json_serialize_map", deserialize_with="utils::json_deserialize_map")]
-    pending: HashMap<u16, (net::SocketAddr, T)>,
+    nodes: HashMap<NodeId, net::SocketAddr>,
     #[serde(serialize_with="utils::json_serialize_map", deserialize_with="utils::json_deserialize_map")]
-    zombie: HashMap<u16, (net::SocketAddr, T)>,
+    pending: HashMap<u16, (NodeId, T)>,
+    #[serde(serialize_with="utils::json_serialize_map", deserialize_with="utils::json_deserialize_map")]
+    zombie: HashMap<u16, (NodeId, T)>,
 }
 
 struct Inner<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
@@ -34,45 +38,47 @@ struct Inner<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
 }
 
 impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
-    pub fn new(node: net::SocketAddr, initial: Option<(T, usize)>) -> DHT<T> {
-        let etcd = Default::default();
+    pub fn new(node: NodeId, addr: net::SocketAddr, initial: Option<(T, usize)>) -> DHT<T> {
+        let etcd1 = Default::default();
+        let etcd2 = Default::default();
         let inner = Arc::new(RwLock::new(Inner {
             ring: Ring {
                 vnodes: Default::default(),
+                nodes: Default::default(),
                 pending: Default::default(),
                 zombie: Default::default(),
             },
             ring_version: 0,
-            etcd: etcd,
+            etcd: etcd1,
             callback: None,
         }));
         let mut dht = DHT {
             node: node,
+            addr: addr,
             inner: inner.clone(),
             thread: None,
         };
         if let Some((meta, partitions)) = initial {
             dht.reset(meta, partitions);
         } else {
-            dht.refresh();
+            dht.join();
         }
-        dht.thread = Some(thread::spawn(move || Self::run(inner)));
+        dht.thread = Some(thread::spawn(move || Self::run(inner, etcd2)));
         dht
     }
 
-    fn run(inner: Arc<RwLock<Inner<T>>>) {
+    fn run(inner: Arc<RwLock<Inner<T>>>, etcd: etcd::Client) {
         loop {
+            let watch_version = inner.read().unwrap().ring_version + 1;
             // listen for changes
-            let r = {
-                let inner = inner.read().unwrap();
-                match inner.etcd.watch("/dht", Some(inner.ring_version + 1), false) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        warn!("etcd err: {:?}", e);
-                        continue;
-                    }
+            let r = match etcd.watch("/dht", Some(watch_version), false) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("etcd err: {:?}", e);
+                    continue;
                 }
             };
+
             // deserialize and update state
             {
                 let node = r.node.unwrap();
@@ -85,21 +91,29 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             }
             // call callback
             inner.read().unwrap().callback.as_ref().map(|f| f());
+            trace!("dht callback called");
         }
     }
 
-    fn refresh(&self) {
-        let mut inner = self.inner.write().unwrap();
-        let r = inner.etcd.get("/dht", false, false, false).unwrap();
-        let node = r.node.unwrap();
-        inner.ring = Self::deserialize(&node.value.unwrap()).unwrap();
-        inner.ring_version = node.modified_index.unwrap();
+    fn join(&self) {
+        loop {
+            let r = self.inner.read().unwrap().etcd.get("/dht", false, false, false).unwrap();
+            let node = r.node.unwrap();
+            let ring = Self::deserialize(&node.value.unwrap()).unwrap();
+            let ring_version = node.modified_index.unwrap();
+            let mut new_ring = ring.clone();
+            new_ring.nodes.insert(self.node, self.addr);
+            if self.propose(ring_version, new_ring).is_ok() {
+                break;
+            }
+        }
     }
 
     fn reset(&self, meta: T, partitions: usize) {
         let mut inner = self.inner.write().unwrap();
         inner.ring = Ring {
             vnodes: vec![(self.node, meta); partitions],
+            nodes: vec![(self.node, self.addr)].into_iter().collect(),
             pending: Default::default(),
             zombie: Default::default(),
         };
@@ -112,7 +126,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         self.inner.write().unwrap().callback = Some(callback);
     }
 
-    pub fn node(&self) -> net::SocketAddr {
+    pub fn node(&self) -> NodeId {
         self.node
     }
 
@@ -121,14 +135,12 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         (hash(key) % inner.ring.vnodes.len() as u64) as u16
     }
 
-    pub fn nodes_for_key(&self, key: &[u8], n: usize, include_pending: bool)
-                         -> (u16, Vec<net::SocketAddr>) {
+    pub fn nodes_for_key(&self, key: &[u8], n: usize, include_pending: bool) -> (u16, Vec<NodeId>) {
         let vnode = self.key_vnode(key);
         (vnode, self.nodes_for_vnode(vnode, n, include_pending))
     }
 
-    pub fn nodes_for_vnode(&self, vnode: u16, n: usize, include_pending: bool)
-                           -> Vec<net::SocketAddr> {
+    pub fn nodes_for_vnode(&self, vnode: u16, n: usize, include_pending: bool) -> Vec<NodeId> {
         let mut result = LinearSet::new();
         let inner = self.inner.read().unwrap();
         let ring_len = inner.ring.vnodes.len();
@@ -146,19 +158,18 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         result.into()
     }
 
-    pub fn members(&self) -> Vec<net::SocketAddr> {
+    pub fn members(&self) -> Vec<(NodeId, net::SocketAddr)> {
         let inner = self.inner.read().unwrap();
-        let members_set: LinearSet<_> = inner.ring.vnodes.iter().map(|&(n, _)| n).collect();
-        members_set.into()
+        inner.ring.nodes.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
-    pub fn add_node(&self) {
-        unimplemented!()
+    fn ring_clone(&self) -> (Ring<T>, u64) {
+        let inner = self.inner.read().unwrap();
+        (inner.ring.clone(), inner.ring_version)
     }
 
-    pub fn claim(&self, node: net::SocketAddr, meta: T) -> Vec<u16> {
-        let inner = self.inner.read().unwrap();
-        let mut ring = inner.ring.clone();
+    pub fn claim(&self, node: NodeId, meta: T) -> Vec<u16> {
+        let (mut ring, ring_version) = self.ring_clone();
         let mut moves = Vec::new();
         let members = self.members().len() + 1;
         let partitions = ring.vnodes.len();
@@ -167,51 +178,53 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             ring.pending.insert(r, (node, meta.clone()));
             moves.push(r);
         }
-        self.propose(&inner.ring, ring);
+        self.propose(ring_version, ring).unwrap();
         moves
     }
 
-    pub fn add_pending_node(&self, vnode: u16, node: net::SocketAddr, meta: T) {
-        let inner = self.inner.read().unwrap();
-        let mut ring = inner.ring.clone();
+    pub fn add_pending_node(&self, vnode: u16, node: NodeId, meta: T) {
+        let (mut ring, ring_version) = self.ring_clone();
         assert!(ring.pending.insert(vnode, (node, meta)).is_none());
-        self.propose(&inner.ring, ring);
+        self.propose(ring_version, ring).unwrap();
     }
 
-    pub fn remove_pending_node(&self, vnode: u16, node: net::SocketAddr) {
-        let inner = self.inner.read().unwrap();
-        let mut ring = inner.ring.clone();
+    pub fn remove_pending_node(&self, vnode: u16, node: NodeId) {
+        let (mut ring, ring_version) = self.ring_clone();
         assert!(ring.pending.remove(&vnode).unwrap().0 == node);
-        self.propose(&inner.ring, ring);
+        self.propose(ring_version, ring).unwrap();
     }
 
-    pub fn promote_pending_node(&self, vnode: u16, node: net::SocketAddr) {
-        let inner = self.inner.read().unwrap();
-        let mut ring = inner.ring.clone();
+    pub fn promote_pending_node(&self, vnode: u16, node: NodeId) {
+        let (mut ring, ring_version) = self.ring_clone();
 
         let mut p = ring.pending.remove(&vnode).unwrap();
         assert!(p.0 == node);
         mem::swap(&mut p, &mut ring.vnodes[vnode as usize]);
 
-        self.propose(&inner.ring, ring);
+        self.propose(ring_version, ring).unwrap();
     }
 
-    pub fn get_vnode(&self, vnode: u16) -> (net::SocketAddr, Option<net::SocketAddr>) {
+    pub fn get_vnode(&self, vnode: u16) -> (NodeId, Option<NodeId>) {
         let inner = self.inner.read().unwrap();
         (inner.ring.vnodes.get(vnode as usize).map(|a| a.0).unwrap(),
          inner.ring.pending.get(&vnode).map(|a| a.0))
     }
 
-    fn propose(&self, old_ring: &Ring<T>, new_ring: Ring<T>) {
+    fn propose(&self, old_version: u64, new_ring: Ring<T>) -> Result<(), GenericError> {
         // self.inner.write().unwrap().ring = new_ring;
+        debug!("proposing new ring");
         let new = Self::serialize(&new_ring).unwrap();
-        let old = Self::serialize(old_ring).unwrap();
-        self.inner
+        let r = try!(self.inner
             .read()
             .unwrap()
             .etcd
-            .compare_and_swap("/dht", &new, None, Some(&old), None)
-            .unwrap();
+            .compare_and_swap("/dht", &new, None, None, Some(old_version))
+            .map_err(|mut e| e.pop().unwrap()));
+        let mut inner = self.inner.write().unwrap();
+        inner.ring = new_ring;
+        inner.ring_version = r.node.unwrap().modified_index.unwrap();
+        debug!("proposed new ring version {}", inner.ring_version);
+        Ok(())
     }
 
     fn serialize(ring: &Ring<T>) -> serde_json::Result<String> {
@@ -230,10 +243,11 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let node = "127.0.0.1:9000".parse().unwrap();
-        let dht = DHT::new(node, Some(((), 256)));
+        let node = 0;
+        let addr = "127.0.0.1:9000".parse().unwrap();
+        let dht = DHT::new(node, addr, Some(((), 256)));
         assert_eq!(dht.nodes_for_key(b"abc", 1, true).1, &[node]);
         assert_eq!(dht.nodes_for_key(b"abc", 3, true).1, &[node]);
-        assert_eq!(dht.members(), &[node]);
+        assert_eq!(dht.members(), &[(node, addr)]);
     }
 }

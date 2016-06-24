@@ -15,9 +15,13 @@ use bincode::{self, serde as bincode_serde};
 pub use fabric_msg::*;
 use utils::GenericError;
 
-pub type FabricHandlerFn = Box<Fn(&net::SocketAddr, FabricMsg) + Send + Sync>;
+pub type NodeId = u64;
+
+pub type FabricHandlerFn = Box<Fn(NodeId, FabricMsg) + Send + Sync>;
 
 pub type FabricResult<T> = Result<T, GenericError>;
+
+type FabricId = (NodeId, net::SocketAddr);
 
 pub struct Fabric {
     loop_thread: Option<thread::JoinHandle<()>>,
@@ -25,10 +29,12 @@ pub struct Fabric {
 }
 
 struct SharedContext {
-    nodes: RwLock<HashMap<net::SocketAddr, (BoundedQueue<FabricMsg>, Vec<rotor::Notifier>)>>,
+    node: NodeId,
+    outgoing: RwLock<HashMap<NodeId, (BoundedQueue<FabricMsg>, Vec<rotor::Notifier>)>>,
+    nodes_addr: RwLock<HashMap<NodeId, net::SocketAddr>>,
     msg_handlers: RwLock<HashMap<u8, FabricHandlerFn>>,
     connector_notifier: rotor::Notifier,
-    connector_queue: BoundedQueue<net::SocketAddr>,
+    connector_queue: BoundedQueue<FabricId>,
     running: atomic::AtomicBool,
 }
 
@@ -37,20 +43,20 @@ struct Context {
 }
 
 enum OutMachine {
-    Connector(net::SocketAddr, BoundedQueue<net::SocketAddr>),
+    Connector(FabricId, BoundedQueue<FabricId>),
     Connection(Stream<OutConnection>),
 }
 
 struct OutConnection {
     identified: bool,
-    this: net::SocketAddr,
-    other: net::SocketAddr,
+    this: FabricId,
+    other: FabricId,
     notifier: rotor::Notifier,
 }
 
 struct InConnection {
-    this: net::SocketAddr,
-    other: Option<net::SocketAddr>,
+    this: FabricId,
+    other: Option<FabricId>,
 }
 
 rotor_compose! {
@@ -61,17 +67,21 @@ rotor_compose! {
 }
 
 impl Context {
-    fn new(connector_notifier: rotor::Notifier, connector_queue: BoundedQueue<net::SocketAddr>)
+    fn new(node: NodeId, connector_notifier: rotor::Notifier,
+           connector_queue: BoundedQueue<FabricId>)
            -> Self {
-        Context { shared: Arc::new(SharedContext::new(connector_notifier, connector_queue)) }
+        Context { shared: Arc::new(SharedContext::new(node, connector_notifier, connector_queue)) }
     }
 }
 
 impl SharedContext {
-    fn new(connector_notifier: rotor::Notifier, connector_queue: BoundedQueue<net::SocketAddr>)
+    fn new(node: NodeId, connector_notifier: rotor::Notifier,
+           connector_queue: BoundedQueue<FabricId>)
            -> Self {
         SharedContext {
-            nodes: RwLock::new(Default::default()),
+            node: node,
+            outgoing: RwLock::new(Default::default()),
+            nodes_addr: RwLock::new(Default::default()),
             msg_handlers: RwLock::new(Default::default()),
             connector_notifier: connector_notifier,
             connector_queue: connector_queue,
@@ -82,10 +92,10 @@ impl SharedContext {
 
 impl Machine for OutMachine {
     type Context = Context;
-    type Seed = (net::SocketAddr, net::SocketAddr);
+    type Seed = (FabricId, FabricId);
 
     fn create((this, other): Self::Seed, scope: &mut Scope<Self::Context>) -> Response<Self, Void> {
-        let stream = TcpStream::connect(&other).unwrap();
+        let stream = TcpStream::connect(&other.1).unwrap();
         Stream::new(stream, (this, other), scope).wrap(OutMachine::Connection)
     }
 
@@ -172,8 +182,8 @@ fn read_msg<T: Deserialize + fmt::Debug>(transport: &mut Transport<TcpStream>) -
 impl OutConnection {
     fn pull_msgs(self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
                  -> Intent<Self> {
-        let nodes = scope.shared.nodes.read().unwrap();
-        let node = nodes.get(&self.other).unwrap();
+        let outgoing = scope.shared.outgoing.read().unwrap();
+        let node = outgoing.get(&self.other.0).unwrap();
         if let Some(msg) = node.0.pop() {
             debug!("pull message from queue {:?}", msg);
             write_msg(transport, &msg);
@@ -187,7 +197,7 @@ impl OutConnection {
     fn cleanup(&self, scope: &mut Scope<Context>) {
         debug!("cleaning up");
         // TODO create another connection if queue still has items
-        scope.shared.nodes.write().unwrap().get_mut(&self.other).map(|n| {
+        scope.shared.outgoing.write().unwrap().get_mut(&self.other.0).map(|n| {
             n.1.retain(|a| unsafe {
                 use std::mem;
                 mem::transmute_copy::<_, (usize, usize)>(a) !=
@@ -200,7 +210,7 @@ impl OutConnection {
 impl Protocol for OutConnection {
     type Context = Context;
     type Socket = TcpStream;
-    type Seed = (net::SocketAddr, net::SocketAddr);
+    type Seed = (FabricId, FabricId);
 
     fn create((this, other): Self::Seed, sock: &mut TcpStream, scope: &mut Scope<Context>)
               -> Intent<Self> {
@@ -208,8 +218,8 @@ impl Protocol for OutConnection {
         let _ = sock.set_nodelay(true);
         let _ = sock.set_keepalive(Some(1));
         let notifier = scope.notifier();
-        let mut nodes = scope.shared.nodes.write().unwrap();
-        nodes.get_mut(&other).unwrap().1.push(notifier.clone());
+        let mut outgoing = scope.shared.outgoing.write().unwrap();
+        outgoing.get_mut(&other.0).unwrap().1.push(notifier.clone());
         Intent::of(OutConnection {
                 identified: false,
                 this: this,
@@ -265,7 +275,7 @@ impl Protocol for OutConnection {
 impl Protocol for InConnection {
     type Context = Context;
     type Socket = TcpStream;
-    type Seed = net::SocketAddr;
+    type Seed = FabricId;
 
     fn create(this: Self::Seed, sock: &mut TcpStream, _scope: &mut Scope<Context>) -> Intent<Self> {
         debug!("incomming connection from {:?}", sock.peer_addr().unwrap());
@@ -283,10 +293,10 @@ impl Protocol for InConnection {
                   -> Intent<Self> {
         // first message is always the node addr
         if self.other.is_none() {
-            let (addr_opt, needed) = read_msg::<net::SocketAddr>(transport);
-            if let Some(addr) = addr_opt {
-                self.other = Some(addr);
-                debug!("identified connection from {:?}", addr);
+            let (fabricid_opt, needed) = read_msg::<FabricId>(transport);
+            if let Some(fabricid) = fabricid_opt {
+                self.other = Some(fabricid);
+                debug!("identified connection from {:?}", fabricid);
             }
             return Intent::of(self).expect_bytes(needed);
         }
@@ -300,7 +310,7 @@ impl Protocol for InConnection {
                     .read()
                     .unwrap()
                     .get(&(msg_type as u8)) {
-                    handler(&self.other.unwrap(), msg);
+                    handler(self.other.unwrap().0, msg);
                 } else {
                     error!("No handler for msg type {:?}", msg_type);
                 }
@@ -342,13 +352,13 @@ impl Protocol for InConnection {
 }
 
 impl Fabric {
-    pub fn new(bind_addr: net::SocketAddr) -> FabricResult<Self> {
+    pub fn new(node: NodeId, bind_addr: net::SocketAddr) -> FabricResult<Self> {
         // rotor sorcery
         let mut event_loop = try!(rotor::Loop::new(&rotor::Config::new()));
         let lst = try!(TcpListener::bind(&bind_addr));
         let connector_queue = BoundedQueue::with_capacity(128);
         let connector_notifier = event_loop.add_and_fetch(Fsm::Out, |scope| {
-                let connector = OutMachine::Connector(bind_addr, connector_queue.clone());
+                let connector = OutMachine::Connector((node, bind_addr), connector_queue.clone());
                 Response::ok((connector, scope.notifier()))
             })
             .unwrap();
@@ -356,11 +366,11 @@ impl Fabric {
                 if let Err(e) = scope.register(&lst, EventSet::readable(), PollOpt::edge()) {
                     return Response::error(Box::new(e));
                 }
-                Response::ok(Fsm::In(Accept::Server(lst, bind_addr)))
+                Response::ok(Fsm::In(Accept::Server(lst, (node, bind_addr))))
             })
             .unwrap();
         // create context and mark as running
-        let context = Context::new(connector_notifier, connector_queue);
+        let context = Context::new(node, connector_notifier, connector_queue);
         let shared_context = context.shared.clone();
         shared_context.running.store(true, atomic::Ordering::Relaxed);
         // start event loop thread
@@ -373,18 +383,18 @@ impl Fabric {
         })
     }
 
-    pub fn send_message<T: Into<FabricMsg>>(&self, recipient: &net::SocketAddr, msg: T)
-                                            -> FabricResult<()> {
+    pub fn send_message<T: Into<FabricMsg>>(&self, recipient: NodeId, msg: T) -> FabricResult<()> {
         // fast path if connection already available
-        if let Some(node) = self.shared_context.nodes.read().unwrap().get(recipient) {
+        if let Some(node) = self.shared_context.outgoing.read().unwrap().get(&recipient) {
             if let Some(n) = thread_rng().choose(&node.1) {
                 node.0.push(msg.into()).unwrap();
                 n.wakeup().unwrap();
                 return Ok(());
             };
         }
-        let mut nodes = self.shared_context.nodes.write().unwrap();
-        let node = nodes.entry(*recipient)
+        let addr = self.shared_context.nodes_addr.read().unwrap().get(&recipient).cloned().unwrap();
+        let mut outgoing = self.shared_context.outgoing.write().unwrap();
+        let node = outgoing.entry(recipient)
             .or_insert_with(|| (BoundedQueue::with_capacity(1024), Vec::new()));
         // push the message
         node.0.push(msg.into()).unwrap();
@@ -392,7 +402,7 @@ impl Fabric {
         if let Some(n) = thread_rng().choose(&node.1) {
             n.wakeup().unwrap()
         } else {
-            self.shared_context.connector_queue.push(*recipient).unwrap();
+            self.shared_context.connector_queue.push((recipient, addr)).unwrap();
             self.shared_context.connector_notifier.wakeup().unwrap();
         }
 
@@ -401,6 +411,10 @@ impl Fabric {
 
     pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: FabricHandlerFn) {
         self.shared_context.msg_handlers.write().unwrap().insert(msg_type as u8, handler);
+    }
+
+    pub fn register_node(&self, node: NodeId, addr: net::SocketAddr) {
+        self.shared_context.nodes_addr.write().unwrap().insert(node, addr);
     }
 }
 
@@ -424,7 +438,8 @@ mod tests {
     #[test]
     fn test() {
         let _ = env_logger::init();
-        let fabric = Fabric::new("127.0.0.1:6479".parse().unwrap()).unwrap();
+        let fabric = Fabric::new(0, "127.0.0.1:6479".parse().unwrap()).unwrap();
+        fabric.register_node(0, "127.0.0.1:6479".parse().unwrap());
         let counter = Arc::new(atomic::AtomicUsize::new(0));
         let counter_ = counter.clone();
         fabric.register_msg_handler(FabricMsgType::Crud,
@@ -432,7 +447,7 @@ mod tests {
                                         counter_.fetch_add(1, atomic::Ordering::Relaxed);
                                     }));
         for _ in 0..3 {
-            fabric.send_message(&"127.0.0.1:6479".parse().unwrap(),
+            fabric.send_message(0,
                               FabricMsgSetRemoteAck {
                                   cookie: 0,
                                   vnode: 0,
