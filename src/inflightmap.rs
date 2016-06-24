@@ -26,6 +26,18 @@ impl<K: Hash + Eq + Clone, V, T: Ord> InFlightMap<K, V, T> {
         self.map.insert(key, value)
     }
 
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.map.get(key)
+    }
+
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.map.get_mut(key)
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        self.map.remove(key)
+    }
+
     pub fn pop_expired(&mut self, now: T) -> Option<(K, V)> {
         loop {
             match self.heap.peek() {
@@ -40,7 +52,7 @@ impl<K: Hash + Eq + Clone, V, T: Ord> InFlightMap<K, V, T> {
     }
 }
 
-// Like a 2-tuple but only ordered by the first item
+// Like a 2-tuple but comparison is only done for the first item
 struct Pair<T: Ord, V>(T, V);
 
 impl<T: Ord, V> PartialEq<Pair<T, V>> for Pair<T, V> {

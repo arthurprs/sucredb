@@ -79,15 +79,18 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
                 }
             };
 
-            // deserialize and update state
+            // deserialize
+            let node = r.node.unwrap();
+            let ring = Self::deserialize(&node.value.unwrap()).unwrap();
+            let ring_version = node.modified_index.unwrap();
+            debug!("new ring version {}", ring_version);
+            // update state
             {
-                let node = r.node.unwrap();
-                let ring = Self::deserialize(&node.value.unwrap()).unwrap();
-                let ring_version = node.modified_index.unwrap();
-                debug!("new ring version {}", ring_version);
                 let mut inner = inner.write().unwrap();
-                inner.ring = ring;
-                inner.ring_version = ring_version;
+                if ring_version > inner.ring_version {
+                    inner.ring = ring;
+                    inner.ring_version = ring_version;
+                }
             }
             // call callback
             inner.read().unwrap().callback.as_ref().map(|f| f());

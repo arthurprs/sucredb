@@ -189,7 +189,7 @@ impl OutConnection {
             write_msg(transport, &msg);
             Intent::of(self).expect_flush()
         } else {
-            debug!("no message, will sleep");
+            trace!("no message, will sleep");
             Intent::of(self).sleep()
         }
     }
@@ -455,7 +455,7 @@ mod tests {
                               })
                 .unwrap();
         }
-        thread::sleep_ms(100);
+        thread::sleep_ms(10);
         assert_eq!(counter.load(atomic::Ordering::Relaxed), 3);
     }
 }

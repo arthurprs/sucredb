@@ -420,9 +420,7 @@ mod tests {
         }
         for i in 0u16..32 {
             db1.dht.add_pending_node(i * 2 + 1, db2.dht.node(), ());
-            thread::sleep_ms(20);
             db1.dht.promote_pending_node(i * 2 + 1, db2.dht.node());
-            thread::sleep_ms(20);
         }
 
         db1.get(1, b"test");
@@ -438,14 +436,14 @@ mod tests {
             thread::sleep_ms(100);
             assert!(db.response(1).unwrap().values().eq(vec![b"value1"]));
         }
-        // thread::sleep_ms(100);
-        //
-        // for i in 0u16..32 {
-        //     db1.start_migration(i * 2 + 1);
-        //     db2.start_migration(i * 2);
-        // }
-        //
-        // thread::sleep_ms(1000);
+        thread::sleep_ms(100);
+
+        for i in 0u16..32 {
+            db1.start_migration(i * 2 + 1);
+            db2.start_migration(i * 2);
+        }
+
+        thread::sleep_ms(1000);
 
     }
 }
