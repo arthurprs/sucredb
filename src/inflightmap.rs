@@ -34,10 +34,6 @@ impl<K: Hash + Eq + Clone, V, T: Ord> InFlightMap<K, V, T> {
         self.map.get_mut(key)
     }
 
-    pub fn remove(&mut self, key: &K) -> Option<V> {
-        self.map.remove(key)
-    }
-
     pub fn pop_expired(&mut self, now: T) -> Option<(K, V)> {
         loop {
             match self.heap.peek() {
