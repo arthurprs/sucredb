@@ -340,7 +340,6 @@ impl Synchronization {
                                       })
                         .unwrap();
                     *count += 1;
-                    false
                 } else {
                     debug!("[{}] synchronization of {} is done", db.dht.node(), vnode);
                     db.fabric
@@ -351,8 +350,8 @@ impl Synchronization {
                                           result: Ok(()),
                                       })
                         .unwrap();
-                    true
                 }
+                false
             }
             _ => unreachable!(),
         }
@@ -443,7 +442,7 @@ impl Migration {
                                       })
                         .unwrap();
                 }
-                done
+                false
             }
             _ => unreachable!(),
         }
