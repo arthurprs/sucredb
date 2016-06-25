@@ -56,19 +56,20 @@ impl Database {
 
         let cdb = Arc::downgrade(&db);
         db.dht.set_callback(Box::new(move || {
-            let db = cdb.upgrade().unwrap();
-            db.dht.members().into_iter().map(|(n, a)| db.fabric.register_node(n, a)).count();
+            cdb.upgrade().map(|db| {
+                db.dht.members().into_iter().map(|(n, a)| db.fabric.register_node(n, a)).count()
+            });
         }));
 
         let cdb = Arc::downgrade(&db);
         db.fabric.register_msg_handler(FabricMsgType::Crud,
                                        Box::new(move |f, m| {
-                                           cdb.upgrade().unwrap().fabric_crud_handler(f, m)
+                                           cdb.upgrade().map(|db| db.fabric_crud_handler(f, m));
                                        }));
         let cdb = Arc::downgrade(&db);
         db.fabric.register_msg_handler(FabricMsgType::Bootstrap,
                                        Box::new(move |f, m| {
-                                           cdb.upgrade().unwrap().fabric_boostrap_handler(f, m)
+                                           cdb.upgrade().map(|db| db.fabric_boostrap_handler(f, m));
                                        }));
         db
     }

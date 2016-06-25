@@ -35,6 +35,7 @@ struct Inner<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
     ring_version: u64,
     etcd: etcd::Client,
     callback: Option<DHTChangeFn>,
+    running: bool,
 }
 
 impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
@@ -51,6 +52,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             ring_version: 0,
             etcd: etcd1,
             callback: None,
+            running: true,
         }));
         let mut dht = DHT {
             node: node,
@@ -69,7 +71,13 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
 
     fn run(inner: Arc<RwLock<Inner<T>>>, etcd: etcd::Client) {
         loop {
-            let watch_version = inner.read().unwrap().ring_version + 1;
+            let watch_version = {
+                let inner = inner.read().unwrap();
+                if !inner.running {
+                    break;
+                }
+                inner.ring_version + 1
+            };
             // listen for changes
             let r = match etcd.watch("/dht", Some(watch_version), false) {
                 Ok(r) => r,
@@ -83,19 +91,24 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             let node = r.node.unwrap();
             let ring = Self::deserialize(&node.value.unwrap()).unwrap();
             let ring_version = node.modified_index.unwrap();
-            debug!("new ring version {}", ring_version);
             // update state
             {
                 let mut inner = inner.write().unwrap();
+                if !inner.running {
+                    break;
+                }
                 if ring_version > inner.ring_version {
                     inner.ring = ring;
                     inner.ring_version = ring_version;
                 }
             }
+
+            debug!("new ring version {}", ring_version);
             // call callback
             inner.read().unwrap().callback.as_ref().map(|f| f());
             trace!("dht callback called");
         }
+        debug!("exiting dht thread");
     }
 
     fn join(&self) {
@@ -236,6 +249,12 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
 
     fn deserialize(json_ring: &str) -> serde_json::Result<Ring<T>> {
         serde_json::from_str(json_ring)
+    }
+}
+
+impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> Drop for DHT<T> {
+    fn drop(&mut self) {
+        self.inner.write().unwrap().running = false;
     }
 }
 
