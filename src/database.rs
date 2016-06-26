@@ -31,7 +31,6 @@ pub struct Database {
     responses: Mutex<HashMap<u64, DottedCausalContainer<Vec<u8>>>>,
 }
 
-
 impl Database {
     pub fn new(bind_addr: net::SocketAddr, storage_dir: &str, create: bool) -> Arc<Database> {
         // FIXME: save to storage
@@ -194,7 +193,7 @@ impl Database {
     fn send_get_remote(&self, addr: NodeId, vnode: u16, cookie: u64, key: &[u8]) {
         self.fabric
             .send_message(addr,
-                          FabricMsg::GetRemote(FabricMsgGetRemote {
+                          FabricMsg::GetRemote(MsgGetRemote {
                               cookie: cookie,
                               vnode: vnode,
                               key: key.into(),
@@ -202,7 +201,7 @@ impl Database {
             .unwrap();
     }
 
-    pub fn get_remote_handler(&self, from: NodeId, msg: FabricMsgGetRemote) {
+    pub fn get_remote_handler(&self, from: NodeId, msg: MsgGetRemote) {
         let result = self.vnodes
             .read()
             .unwrap()
@@ -211,7 +210,7 @@ impl Database {
             .ok_or(FabricMsgError::VNodeNotFound);
         self.fabric
             .send_message(from,
-                          FabricMsg::GetRemoteAck(FabricMsgGetRemoteAck {
+                          FabricMsg::GetRemoteAck(MsgGetRemoteAck {
                               cookie: msg.cookie,
                               vnode: msg.vnode,
                               result: result,
@@ -219,7 +218,7 @@ impl Database {
             .unwrap();
     }
 
-    fn get_remote_ack_handler(&self, _from: NodeId, msg: FabricMsgGetRemoteAck) {
+    fn get_remote_ack_handler(&self, _from: NodeId, msg: MsgGetRemoteAck) {
         self.get_callback(msg.cookie, msg.result.ok());
     }
 
@@ -298,7 +297,7 @@ impl Database {
                 vv: VersionVector) {
         self.fabric
             .send_message(addr,
-                          FabricMsg::Set(FabricMsgSet {
+                          FabricMsg::Set(MsgSet {
                               cookie: cookie,
                               vnode: vnode,
                               key: key.into(),
@@ -312,7 +311,7 @@ impl Database {
                        dcc: DottedCausalContainer<Vec<u8>>) {
         self.fabric
             .send_message(addr,
-                          FabricMsg::SetRemote(FabricMsgSetRemote {
+                          FabricMsg::SetRemote(MsgSetRemote {
                               cookie: cookie,
                               vnode: vnode,
                               key: key.into(),
@@ -321,17 +320,17 @@ impl Database {
             .unwrap();
     }
 
-    fn set_handler(&self, from: NodeId, msg: FabricMsgSet) {
+    fn set_handler(&self, from: NodeId, msg: MsgSet) {
         // self.set_(*from, msg.cookie, &msg.key, msg.value.map(|v| &v[..]), msg.version_vector);
         unimplemented!()
     }
 
-    fn set_ack_handler(&self, _from: NodeId, msg: FabricMsgSetAck) {
+    fn set_ack_handler(&self, _from: NodeId, msg: MsgSetAck) {
         self.set_callback(msg.cookie, msg.result.is_ok());
     }
 
-    fn set_remote_handler(&self, from: NodeId, msg: FabricMsgSetRemote) {
-        let FabricMsgSetRemote { key, container, vnode, cookie } = msg;
+    fn set_remote_handler(&self, from: NodeId, msg: MsgSetRemote) {
+        let MsgSetRemote { key, container, vnode, cookie } = msg;
         let result = self.vnodes
             .read()
             .unwrap()
@@ -342,7 +341,7 @@ impl Database {
             .ok_or(FabricMsgError::VNodeNotFound);
         self.fabric
             .send_message(from,
-                          FabricMsg::SetRemoteAck(FabricMsgSetRemoteAck {
+                          FabricMsg::SetRemoteAck(MsgSetRemoteAck {
                               vnode: vnode,
                               cookie: cookie,
                               result: result,
@@ -350,12 +349,16 @@ impl Database {
             .unwrap();
     }
 
-    fn set_remote_ack_handler(&self, _from: NodeId, msg: FabricMsgSetRemoteAck) {
+    fn set_remote_ack_handler(&self, _from: NodeId, msg: MsgSetRemoteAck) {
         self.set_callback(msg.cookie, msg.result.is_ok());
     }
 
     fn inflight(&self, cookie: u64) -> Option<ReqState> {
         self.inflight.lock().unwrap().remove(&cookie)
+    }
+
+    pub fn set_response(&self, cookie: u64, response: DottedCausalContainer<Vec<u8>>) {
+        self.responses.lock().unwrap().insert(cookie, response);
     }
 
     fn response(&self, cookie: u64) -> Option<DottedCausalContainer<Vec<u8>>> {

@@ -1,6 +1,7 @@
 use std::cmp;
 use linear_map::{self, LinearMap, Entry};
 use ramp;
+use serde;
 
 pub type Version = u64;
 pub type Id = u64;
@@ -8,9 +9,10 @@ pub type Id = u64;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VersionVector(LinearMap<Id, Version>);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BitmappedVersion {
     base: Version,
+    #[serde(serialize_with="serialize_ramp", deserialize_with="deserialize_ramp")]
     bitmap: ramp::Int,
 }
 
@@ -27,7 +29,7 @@ pub struct DottedCausalContainer<T> {
 }
 
 impl BitmappedVersion {
-    fn new(base: Version, bitmap: u32) -> BitmappedVersion {
+    pub fn new(base: Version, bitmap: u32) -> BitmappedVersion {
         BitmappedVersion {
             base: base,
             bitmap: bitmap.into(),
@@ -114,6 +116,8 @@ pub struct BitmappedVersionDelta {
     len: usize,
 }
 
+impl ExactSizeIterator for BitmappedVersionDelta {}
+
 impl Iterator for BitmappedVersionDelta {
     type Item = Version;
     fn next(&mut self) -> Option<Self::Item> {
@@ -133,7 +137,33 @@ impl Iterator for BitmappedVersionDelta {
     }
 }
 
-impl ExactSizeIterator for BitmappedVersionDelta {}
+
+pub fn serialize_ramp<S>(value: &ramp::Int, serializer: &mut S) -> Result<(), S::Error>
+    where S: serde::Serializer
+{
+    let hex = value.to_str_radix(36, true);
+    serializer.serialize_str(&hex)
+}
+
+pub fn deserialize_ramp<D>(deserializer: &mut D) -> Result<ramp::Int, D::Error>
+    where D: serde::Deserializer
+{
+    use serde::de::Error;
+    struct StringVisitor;
+    impl serde::de::Visitor for StringVisitor {
+        type Value = String;
+
+        fn visit_str<E>(&mut self, v: &str) -> Result<Self::Value, E> where E: Error {
+            Ok(v.to_owned())
+        }
+
+        fn visit_string<E>(&mut self, v: String) -> Result<Self::Value, E> where E: Error {
+            Ok(v)
+        }
+    }
+    deserializer.deserialize_map(StringVisitor)
+        .and_then(|s| ramp::Int::from_str_radix(&s, 36).map_err(|e| Error::custom(e.to_string())))
+}
 
 impl BitmappedVersionVector {
     pub fn new() -> Self {

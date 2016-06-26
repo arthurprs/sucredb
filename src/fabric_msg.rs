@@ -1,4 +1,4 @@
-use version_vector::{VersionVector, DottedCausalContainer};
+use version_vector::{Version, VersionVector, DottedCausalContainer, BitmappedVersion};
 
 // TODO: have only a few toplevel types
 // like Gossip, KV, Boostrap, etc..
@@ -19,16 +19,16 @@ pub enum FabricMsgError {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FabricMsg {
-    GetRemote(FabricMsgGetRemote),
-    GetRemoteAck(FabricMsgGetRemoteAck),
-    Set(FabricMsgSet),
-    SetAck(FabricMsgSetAck),
-    SetRemote(FabricMsgSetRemote),
-    SetRemoteAck(FabricMsgSetRemoteAck),
-    BootstrapStart(FabricBootstrapStart),
-    BootstrapSend(FabricBootstrapSend),
-    BootstrapAck(FabricBootstrapAck),
-    BootstrapFin(FabricBootstrapFin),
+    GetRemote(MsgGetRemote),
+    GetRemoteAck(MsgGetRemoteAck),
+    Set(MsgSet),
+    SetAck(MsgSetAck),
+    SetRemote(MsgSetRemote),
+    SetRemoteAck(MsgSetRemoteAck),
+    BootstrapStart(MsgBootstrapStart),
+    BootstrapSend(MsgBootstrapSend),
+    BootstrapAck(MsgBootstrapAck),
+    BootstrapFin(MsgBootstrapFin),
     SyncStart(MsgSyncStart),
     SyncSend(MsgSyncSend),
     SyncAck(MsgSyncAck),
@@ -68,21 +68,21 @@ impl FabricMsg {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FabricMsgGetRemote {
+pub struct MsgGetRemote {
     pub vnode: u16,
     pub cookie: u64,
     pub key: Vec<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FabricMsgGetRemoteAck {
+pub struct MsgGetRemoteAck {
     pub vnode: u16,
     pub cookie: u64,
     pub result: Result<DottedCausalContainer<Vec<u8>>, FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FabricMsgSetRemote {
+pub struct MsgSetRemote {
     pub vnode: u16,
     pub cookie: u64,
     pub key: Vec<u8>,
@@ -90,14 +90,14 @@ pub struct FabricMsgSetRemote {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FabricMsgSetRemoteAck {
+pub struct MsgSetRemoteAck {
     pub vnode: u16,
     pub cookie: u64,
     pub result: Result<(), FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FabricMsgSet {
+pub struct MsgSet {
     pub vnode: u16,
     pub cookie: u64,
     pub key: Vec<u8>,
@@ -106,27 +106,27 @@ pub struct FabricMsgSet {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FabricMsgSetAck {
+pub struct MsgSetAck {
     pub vnode: u16,
     pub cookie: u64,
     pub result: Result<(), FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FabricBootstrapStart {
+pub struct MsgBootstrapStart {
     pub vnode: u16,
     pub cookie: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FabricBootstrapFin {
+pub struct MsgBootstrapFin {
     pub vnode: u16,
     pub cookie: u64,
     pub result: Result<(), FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FabricBootstrapSend {
+pub struct MsgBootstrapSend {
     pub vnode: u16,
     pub cookie: u64,
     pub key: Vec<u8>,
@@ -134,7 +134,7 @@ pub struct FabricBootstrapSend {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FabricBootstrapAck {
+pub struct MsgBootstrapAck {
     pub vnode: u16,
     pub cookie: u64,
 }
@@ -143,13 +143,14 @@ pub struct FabricBootstrapAck {
 pub struct MsgSyncStart {
     pub vnode: u16,
     pub cookie: u64,
+    pub clock_in_peer: BitmappedVersion,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSyncFin {
     pub vnode: u16,
     pub cookie: u64,
-    pub result: Result<(), FabricMsgError>,
+    pub result: Result<Version, FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -177,18 +178,17 @@ macro_rules! impl_into {
 }
 
 
-impl_into!(GetRemote, FabricMsgGetRemote);
-impl_into!(GetRemoteAck, FabricMsgGetRemoteAck);
-impl_into!(Set, FabricMsgSet);
-impl_into!(SetAck, FabricMsgSetAck);
-impl_into!(SetRemote, FabricMsgSetRemote);
-impl_into!(SetRemoteAck, FabricMsgSetRemoteAck);
+impl_into!(GetRemote, MsgGetRemote);
+impl_into!(GetRemoteAck, MsgGetRemoteAck);
+impl_into!(Set, MsgSet);
+impl_into!(SetAck, MsgSetAck);
+impl_into!(SetRemote, MsgSetRemote);
+impl_into!(SetRemoteAck, MsgSetRemoteAck);
 
-impl_into!(BootstrapAck, FabricBootstrapAck);
-impl_into!(BootstrapSend, FabricBootstrapSend);
-impl_into!(BootstrapFin, FabricBootstrapFin);
-impl_into!(BootstrapStart, FabricBootstrapStart);
-
+impl_into!(BootstrapAck, MsgBootstrapAck);
+impl_into!(BootstrapSend, MsgBootstrapSend);
+impl_into!(BootstrapFin, MsgBootstrapFin);
+impl_into!(BootstrapStart, MsgBootstrapStart);
 
 impl_into!(SyncAck, MsgSyncAck);
 impl_into!(SyncSend, MsgSyncSend);

@@ -40,6 +40,7 @@ mod vnode;
 mod resp;
 #[cfg(not(test))]
 mod server;
+mod vnode_worker;
 
 #[cfg(not(test))]
 fn main() {

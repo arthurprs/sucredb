@@ -1,5 +1,4 @@
 use std::{hash, cmp};
-use std::marker::PhantomData;
 use std::str::FromStr;
 use std::string::ToString;
 use std::collections::HashMap;
@@ -23,6 +22,8 @@ pub fn json_deserialize_map<K, T, D>(deserializer: &mut D) -> Result<HashMap<K, 
           T: serde::Deserialize,
           D: serde::Deserializer
 {
+
+    use std::marker::PhantomData;
     use serde::de::Error;
 
     struct MapVisitor<K, T>(PhantomData<(K, T)>);

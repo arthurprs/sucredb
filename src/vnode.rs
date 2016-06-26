@@ -6,6 +6,7 @@ use storage::{Storage, StorageIterator};
 use database::Database;
 use bincode::{self, serde as bincode_serde};
 use fabric::*;
+use vnode_worker::{WorkerMsg, VNodeWorkers};
 use utils::GenericError;
 use rand::{Rng, thread_rng};
 use hash::hash;
@@ -149,8 +150,7 @@ impl VNode {
     }
 
     // HANDLERS
-    pub fn handler_bootstrap_start(&mut self, db: &Database, from: NodeId,
-                                   msg: FabricBootstrapStart) {
+    pub fn handler_bootstrap_start(&mut self, db: &Database, from: NodeId, msg: MsgBootstrapStart) {
         let cookie = msg.cookie;
         let mut migration = Migration::Outgoing {
             vnode: self.state.num,
@@ -165,16 +165,35 @@ impl VNode {
         assert!(p.is_none());
     }
 
-    pub fn handler_bootstrap_send(&mut self, db: &Database, from: NodeId, msg: FabricBootstrapSend) {
-        forward!(self, db, from, msg, FabricBootstrapFin, migrations, on_send);
+    pub fn handler_bootstrap_send(&mut self, db: &Database, from: NodeId, msg: MsgBootstrapSend) {
+        forward!(self, db, from, msg, MsgBootstrapFin, migrations, on_send);
     }
 
-    pub fn handler_bootstrap_ack(&mut self, db: &Database, from: NodeId, msg: FabricBootstrapAck) {
-        forward!(self, db, from, msg, FabricBootstrapFin, migrations, on_ack);
+    pub fn handler_bootstrap_ack(&mut self, db: &Database, from: NodeId, msg: MsgBootstrapAck) {
+        forward!(self, db, from, msg, MsgBootstrapFin, migrations, on_ack);
     }
 
-    pub fn handler_bootstrap_fin(&mut self, db: &Database, from: NodeId, msg: FabricBootstrapFin) {
-        forward!(self, db, from, msg, FabricBootstrapFin, migrations, on_fin);
+    pub fn handler_bootstrap_fin(&mut self, db: &Database, from: NodeId, msg: MsgBootstrapFin) {
+        forward!(self, db, from, msg, MsgBootstrapFin, migrations, on_fin);
+    }
+
+    pub fn handler_sync_start(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
+        let cookie = msg.cookie;
+        let clock_snapshot = self.state.clock.get(from).unwrap().clone();
+        let clock_in_peer = msg.clock_in_peer.clone();
+        let mut sync = Synchronization::Outgoing {
+            cookie: cookie,
+            missing_dots: clock_snapshot.delta(&clock_in_peer),
+            clock_in_peer: clock_in_peer,
+            clock_snapshot: clock_snapshot,
+            peer: from,
+            vnode: self.state.num,
+            count: 0,
+        };
+        sync.on_start(db, &mut self.state, msg);
+
+        let p = self.syncs.insert((from, cookie), sync);
+        assert!(p.is_none());
     }
 
     pub fn handler_sync_send(&mut self, db: &Database, from: NodeId, msg: MsgSyncSend) {
@@ -207,7 +226,7 @@ impl VNode {
 
             db.fabric
                 .send_message(node,
-                              FabricBootstrapStart {
+                              MsgBootstrapStart {
                                   cookie: cookie,
                                   vnode: self.state.num,
                               })
@@ -220,31 +239,48 @@ impl VNode {
         unreachable!();
     }
 
-    // pub fn start_sync(&mut self, db: &Database) {
-    //     self.state.peers.iter().max_by_key(|&(&n, vp)|
-    //         self.state.clock.get(n).map_or(0, |bv| bv.base()) - vp.knowledge
-    //     )
-    //     .map(|(&n, vp)| {
-    //         let cookie = self.cookie();
-    //         let sync = Synchronization::Incomming {
-    //             peer: n,
-    //             cookie: cookie,
-    //             vnode: self.state.num,
-    //             count: 0,
-    //         };
-    //
-    //         db.fabric
-    //             .send_message(n,
-    //                           MsgSyncStart {
-    //                               cookie: cookie,
-    //                               vnode: self.state.num,
-    //                           })
-    //             .unwrap();
-    //         let p = self.syncs.insert((n, cookie), sync);
-    //         assert!(p.is_none());
-    //         return;
-    //     });
-    // }
+    pub fn start_sync(&mut self, db: &Database) {
+        let incomming_count = self.syncs
+            .values()
+            .filter(|&s| match *s {
+                Synchronization::Incomming { .. } => true,
+                _ => false,
+            })
+            .count();
+
+        // TODO: this limit should be configurable
+        if incomming_count >= 1 {
+            return;
+        }
+
+        self.state
+            .peers
+            .keys()
+            .nth(thread_rng().gen_range(0, self.state.peers.len()))
+            .cloned()
+            .map(|n| {
+                let cookie = self.cookie();
+                let clock_in_peer = self.state.clock.get(n).cloned().unwrap();
+                let sync = Synchronization::Incomming {
+                    peer: n,
+                    cookie: cookie,
+                    vnode: self.state.num,
+                    count: 0,
+                };
+
+                db.fabric
+                    .send_message(n,
+                                  MsgSyncStart {
+                                      cookie: cookie,
+                                      vnode: self.state.num,
+                                      clock_in_peer: clock_in_peer,
+                                  })
+                    .unwrap();
+                let p = self.syncs.insert((n, cookie), sync);
+                assert!(p.is_none());
+                return;
+            });
+    }
 }
 
 
@@ -324,6 +360,7 @@ impl Synchronization {
                                         vnode,
                                         ref mut missing_dots,
                                         ref mut count,
+                                        ref clock_snapshot,
                                         .. } => {
                 let vnpeer = state.peers.get(&hash(peer)).unwrap();
                 let kv_opt = missing_dots.next()
@@ -347,7 +384,7 @@ impl Synchronization {
                                       MsgSyncFin {
                                           cookie: cookie,
                                           vnode: vnode,
-                                          result: Ok(()),
+                                          result: Ok(clock_snapshot.base()),
                                       })
                         .unwrap();
                 }
@@ -421,7 +458,7 @@ impl Migration {
                 let done = !iterator.iter(|k, v| {
                     db.fabric
                         .send_message(peer,
-                                      FabricBootstrapSend {
+                                      MsgBootstrapSend {
                                           cookie: cookie,
                                           vnode: vnode,
                                           key: k.into(),
@@ -435,7 +472,7 @@ impl Migration {
                     debug!("[{}] sync of {} is done", db.dht.node(), vnode);
                     db.fabric
                         .send_message(peer,
-                                      FabricBootstrapFin {
+                                      MsgBootstrapFin {
                                           cookie: cookie,
                                           vnode: vnode,
                                           result: Ok(()),
@@ -448,20 +485,20 @@ impl Migration {
         }
     }
 
-    fn on_start(&mut self, db: &Database, state: &mut VNodeState, msg: FabricBootstrapStart) -> bool {
+    fn on_start(&mut self, db: &Database, state: &mut VNodeState, msg: MsgBootstrapStart) -> bool {
         match *self {
             Migration::Outgoing { .. } => self.outgoing_send(db),
             _ => unreachable!(),
         }
     }
 
-    fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: FabricBootstrapSend) -> bool {
+    fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgBootstrapSend) -> bool {
         match *self {
             Migration::Incomming { vnode, peer, ref mut count, .. } => {
                 state.storage_set_remote(&msg.key, msg.container, None);
                 db.fabric
                     .send_message(peer,
-                                  FabricBootstrapAck {
+                                  MsgBootstrapAck {
                                       cookie: msg.cookie,
                                       vnode: vnode,
                                   })
@@ -474,7 +511,7 @@ impl Migration {
         }
     }
 
-    fn on_fin(&mut self, db: &Database, state: &mut VNodeState, msg: FabricBootstrapFin) -> bool {
+    fn on_fin(&mut self, db: &Database, state: &mut VNodeState, msg: MsgBootstrapFin) -> bool {
         match *self {
             Migration::Incomming { peer, .. } => {
                 state.storage.sync();
@@ -487,7 +524,7 @@ impl Migration {
         true
     }
 
-    fn on_ack(&mut self, db: &Database, state: &mut VNodeState, msg: FabricBootstrapAck) -> bool {
+    fn on_ack(&mut self, db: &Database, state: &mut VNodeState, msg: MsgBootstrapAck) -> bool {
         match *self {
             Migration::Outgoing { .. } => self.outgoing_send(db),
             _ => unreachable!(),
