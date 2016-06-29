@@ -2,21 +2,11 @@ use std::{net, path};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use dht::DHT;
-use hash::hash;
 use version_vector::*;
 use fabric::*;
 use rand::{Rng, thread_rng};
-use vnode::VNode;
+use vnode::*;
 
-pub struct ReqState {
-    replies: u8,
-    succesfull: u8,
-    required: u8,
-    total: u8,
-    from: NodeId,
-    // only used for get
-    container: DottedCausalContainer<Vec<u8>>,
-}
 
 pub struct Database {
     pub dht: DHT<()>,
@@ -26,9 +16,31 @@ pub struct Database {
     vnodes: RwLock<HashMap<u16, Mutex<VNode>>>,
     // TODO: move this inside vnode?
     // TODO: create a thread to walk inflight and handle timeouts
-    inflight: Mutex<HashMap<u64, ReqState>>,
+    inflight: Mutex<HashMap<u64, ProxyReqState>>,
     // FIXME: here just to add dev/debug
     responses: Mutex<HashMap<u64, DottedCausalContainer<Vec<u8>>>>,
+}
+
+struct ProxyReqState {
+    from: NodeId,
+    cookie: u64,
+}
+
+macro_rules! vnode {
+    ($s: expr, k: $k: expr, $ok: expr) => ({
+        vnode!($s, $s.dht.key_vnode(&$k), $ok);
+    });
+    ($s: expr, k: $k: expr, $ok: expr, $el: expr) => ({
+        vnode!($s, $s.dht.key_vnode(&$k), $ok, $el);
+    });
+    ($s: expr, $k: expr, $ok: expr) => ({
+        let vnodes = $s.vnodes.read().unwrap();
+        vnodes.get(&$k).map(|vn| vn.lock().unwrap()).map($ok);
+    });
+    ($s: expr, $k: expr, $ok: expr, $el: expr) => ({
+        let vnodes = $s.vnodes.read().unwrap();
+        vnodes.get(&$k).ok_or($k).map(|vn| vn.lock().unwrap()).map_or_else($el, $ok);
+    });
 }
 
 impl Database {
@@ -63,29 +75,29 @@ impl Database {
         let cdb = Arc::downgrade(&db);
         db.fabric.register_msg_handler(FabricMsgType::Crud,
                                        Box::new(move |f, m| {
-                                           cdb.upgrade().map(|db| db.fabric_crud_handler(f, m));
+                                           cdb.upgrade().map(|db| db.handler_fabric_crud(f, m));
                                        }));
         let cdb = Arc::downgrade(&db);
         db.fabric.register_msg_handler(FabricMsgType::Bootstrap,
                                        Box::new(move |f, m| {
-                                           cdb.upgrade().map(|db| db.fabric_boostrap_handler(f, m));
+                                           cdb.upgrade().map(|db| db.handler_fabric_boostrap(f, m));
                                        }));
         db
     }
 
-    pub fn fabric_crud_handler(&self, from: NodeId, msg: FabricMsg) {
+    pub fn handler_fabric_crud(&self, from: NodeId, msg: FabricMsg) {
         match msg {
-            FabricMsg::GetRemote(m) => self.get_remote_handler(from, m),
-            FabricMsg::GetRemoteAck(m) => self.get_remote_ack_handler(from, m),
-            FabricMsg::Set(m) => self.set_handler(from, m),
-            FabricMsg::SetAck(m) => self.set_ack_handler(from, m),
-            FabricMsg::SetRemote(m) => self.set_remote_handler(from, m),
-            FabricMsg::SetRemoteAck(m) => self.set_remote_ack_handler(from, m),
+            FabricMsg::GetRemote(m) => self.handler_get_remote(from, m),
+            FabricMsg::GetRemoteAck(m) => self.handler_get_remote_ack(from, m),
+            FabricMsg::Set(m) => self.handler_set(from, m),
+            FabricMsg::SetAck(m) => self.handler_set_ack(from, m),
+            FabricMsg::SetRemote(m) => self.handler_set_remote(from, m),
+            FabricMsg::SetRemoteAck(m) => self.handler_set_remote_ack(from, m),
             _ => unreachable!("Can't handle {:?}", msg),
         }
     }
 
-    pub fn fabric_boostrap_handler(&self, from: NodeId, msg: FabricMsg) {
+    pub fn handler_fabric_boostrap(&self, from: NodeId, msg: FabricMsg) {
         let vnodes = self.vnodes.read().unwrap();
         match msg {
             FabricMsg::BootstrapStart(m) => {
@@ -125,176 +137,8 @@ impl Database {
         vnodes.get(&vnode).unwrap().lock().unwrap().start_migration(self);
     }
 
-    fn new_state_from(&self, token: usize, nodes: u8, from: NodeId) -> u64 {
-        let cookie = token as u64;
-        let _a = self.inflight
-            .lock()
-            .unwrap()
-            .insert(cookie,
-                    ReqState {
-                        from: from,
-                        required: nodes / 2 + 1,
-                        total: nodes,
-                        replies: 0,
-                        succesfull: 0,
-                        container: DottedCausalContainer::new(),
-                    });
-        debug_assert!(_a.is_none());
-        cookie
-    }
-
-    fn new_state(&self, token: usize, nodes: u8) -> u64 {
-        self.new_state_from(token, nodes, self.dht.node())
-    }
-
-    pub fn get(&self, token: usize, key: &[u8]) {
-        let (vnode_n, nodes) = self.dht.nodes_for_key(key, self.replication_factor, false);
-        let cookie = self.new_state(token, nodes.len() as u8);
-
-        for node in nodes {
-            if node == self.dht.node() {
-                self.get_local(vnode_n, cookie, key);
-            } else {
-                self.send_get_remote(node, vnode_n, cookie, key);
-            }
-        }
-    }
-
-    fn get_callback(&self, cookie: u64, container_opt: Option<DottedCausalContainer<Vec<u8>>>) {
-        let mut inflight = self.inflight.lock().unwrap();
-        if {
-            let state = inflight.get_mut(&cookie).unwrap();
-            state.replies += 1;
-            if let Some(container) = container_opt {
-                state.container.sync(container);
-                state.succesfull += 1;
-            }
-            if state.succesfull == state.required {
-                // return to client & remove state
-                true
-            } else {
-                false
-            }
-        } {
-            let state = inflight.remove(&cookie).unwrap();
-            self.responses.lock().unwrap().insert(cookie, state.container);
-        }
-    }
-
-    fn get_local(&self, vnode: u16, cookie: u64, key: &[u8]) {
-        let container = self.vnodes
-            .read()
-            .unwrap()
-            .get(&vnode)
-            .map(|vn| vn.lock().unwrap().state.storage_get(key));
-        self.get_callback(cookie, container);
-    }
-
-    fn send_get_remote(&self, addr: NodeId, vnode: u16, cookie: u64, key: &[u8]) {
-        self.fabric
-            .send_message(addr,
-                          FabricMsg::GetRemote(MsgGetRemote {
-                              cookie: cookie,
-                              vnode: vnode,
-                              key: key.into(),
-                          }))
-            .unwrap();
-    }
-
-    pub fn get_remote_handler(&self, from: NodeId, msg: MsgGetRemote) {
-        let result = self.vnodes
-            .read()
-            .unwrap()
-            .get(&msg.vnode)
-            .map(|vn| vn.lock().unwrap().state.storage_get(&msg.key))
-            .ok_or(FabricMsgError::VNodeNotFound);
-        self.fabric
-            .send_message(from,
-                          FabricMsg::GetRemoteAck(MsgGetRemoteAck {
-                              cookie: msg.cookie,
-                              vnode: msg.vnode,
-                              result: result,
-                          }))
-            .unwrap();
-    }
-
-    fn get_remote_ack_handler(&self, _from: NodeId, msg: MsgGetRemoteAck) {
-        self.get_callback(msg.cookie, msg.result.ok());
-    }
-
-    pub fn set(&self, token: usize, key: &[u8], value_opt: Option<&[u8]>, vv: VersionVector) {
-        self.set_(self.dht.node(), token, key, value_opt, vv)
-    }
-
-    pub fn set_(&self, from: NodeId, token: usize, key: &[u8], value_opt: Option<&[u8]>,
-                vv: VersionVector) {
-        let (vnode_n, nodes) = self.dht.nodes_for_key(key, self.replication_factor, true);
-        let cookie = self.new_state_from(token, nodes.len() as u8, from);
-
-        if nodes.iter().position(|n| n == &self.dht.node()).is_none() {
-            // forward if we can't coordinate it
-            self.send_set(thread_rng().choose(&nodes).cloned().unwrap(),
-                          vnode_n,
-                          cookie,
-                          key,
-                          value_opt,
-                          vv);
-        } else {
-            // otherwise proceed normally
-            let dcc = self.set_local(cookie, key, value_opt, &vv);
-            for node in nodes {
-                if node != self.dht.node() {
-                    self.send_set_remote(node, vnode_n, cookie, key, dcc.clone());
-                }
-            }
-        }
-    }
-
-    fn set_callback(&self, cookie: u64, succesfull: bool) {
-        let mut inflight = self.inflight.lock().unwrap();
-        if {
-            let state = inflight.get_mut(&cookie).unwrap();
-            state.replies += 1;
-            if succesfull {
-                state.succesfull += 1;
-            }
-            if state.succesfull == state.required {
-                // remove state
-                true
-            } else {
-                false
-            }
-        } {
-            let state = inflight.remove(&cookie).unwrap();
-            if state.from == self.dht.node() {
-                // return to proxy
-            } else {
-                // return to client
-            }
-            self.responses.lock().unwrap().insert(cookie, state.container);
-        }
-    }
-
-    fn set_local(&self, cookie: u64, key: &[u8], value_opt: Option<&[u8]>, vv: &VersionVector)
-                 -> DottedCausalContainer<Vec<u8>> {
-        let vnode_n = self.dht.key_vnode(key);
-        debug!("[{}] set_local {:?}", self.dht.node(), vnode_n);
-        let dcc = self.vnodes
-            .read()
-            .unwrap()
-            .get(&vnode_n)
-            .map(|vn| {
-                vn.lock()
-                    .unwrap()
-                    .state
-                    .storage_set_local(hash(self.dht.node()), key, value_opt, vv)
-            });
-        self.set_callback(cookie, true);
-        dcc.unwrap()
-    }
-
-    fn send_set(&self, addr: NodeId, vnode: u16, cookie: u64, key: &[u8], value_opt: Option<&[u8]>,
-                vv: VersionVector) {
+    pub fn send_set(&self, addr: NodeId, vnode: u16, cookie: u64, key: &[u8],
+                    value_opt: Option<&[u8]>, vv: VersionVector) {
         self.fabric
             .send_message(addr,
                           FabricMsg::Set(MsgSet {
@@ -307,53 +151,58 @@ impl Database {
             .unwrap();
     }
 
-    fn send_set_remote(&self, addr: NodeId, vnode: u16, cookie: u64, key: &[u8],
-                       dcc: DottedCausalContainer<Vec<u8>>) {
-        self.fabric
-            .send_message(addr,
-                          FabricMsg::SetRemote(MsgSetRemote {
-                              cookie: cookie,
-                              vnode: vnode,
-                              key: key.into(),
-                              container: dcc.clone(),
-                          }))
-            .unwrap();
+
+    // CLIENT CRUD
+    fn set(&self, token: u64, key: &[u8], value: Option<&[u8]>, vv: VersionVector) {
+        vnode!(self, k: key, |mut vn| {
+            vn.do_set(self, token, key, value, vv);
+        });
     }
 
-    fn set_handler(&self, from: NodeId, msg: MsgSet) {
-        // self.set_(*from, msg.cookie, &msg.key, msg.value.map(|v| &v[..]), msg.version_vector);
-        unimplemented!()
+    fn get(&self, token: u64, key: &[u8]) {
+        vnode!(self, k: key, |mut vn| {
+            vn.do_get(self, token, key);
+        });
     }
 
-    fn set_ack_handler(&self, _from: NodeId, msg: MsgSetAck) {
-        self.set_callback(msg.cookie, msg.result.is_ok());
+    // CRUD HANDLERS
+    fn handler_set(&self, from: NodeId, msg: MsgSet) {
+        vnode!(self, msg.vnode, |mut vn| {
+            vn.handler_set(self, from, msg);
+        });
     }
 
-    fn set_remote_handler(&self, from: NodeId, msg: MsgSetRemote) {
-        let MsgSetRemote { key, container, vnode, cookie } = msg;
-        let result = self.vnodes
-            .read()
-            .unwrap()
-            .get(&msg.vnode)
-            .map(|vn| {
-                vn.lock().unwrap().state.storage_set_remote(&key, container, Some(hash(from)))
-            })
-            .ok_or(FabricMsgError::VNodeNotFound);
-        self.fabric
-            .send_message(from,
-                          FabricMsg::SetRemoteAck(MsgSetRemoteAck {
-                              vnode: vnode,
-                              cookie: cookie,
-                              result: result,
-                          }))
-            .unwrap();
+    fn handler_set_ack(&self, from: NodeId, msg: MsgSetAck) {
+
     }
 
-    fn set_remote_ack_handler(&self, _from: NodeId, msg: MsgSetRemoteAck) {
-        self.set_callback(msg.cookie, msg.result.is_ok());
+    fn handler_set_remote(&self, from: NodeId, msg: MsgSetRemote) {
+        vnode!(self, msg.vnode, |mut vn| {
+            vn.handler_set_remote(self, from, msg);
+        });
     }
 
-    fn inflight(&self, cookie: u64) -> Option<ReqState> {
+    fn handler_set_remote_ack(&self, from: NodeId, msg: MsgSetRemoteAck) {
+        vnode!(self, msg.vnode, |mut vn| {
+            vn.handler_set_remote_ack(self, from, msg);
+        });
+    }
+
+    fn handler_get_remote(&self, from: NodeId, msg: MsgGetRemote) {
+        vnode!(self, msg.vnode, |mut vn| {
+            vn.handler_get_remote(self, from, msg);
+        });
+    }
+
+    fn handler_get_remote_ack(&self, from: NodeId, msg: MsgGetRemoteAck) {
+        vnode!(self, msg.vnode, |mut vn| {
+            vn.handler_get_remote_ack(self, from, msg);
+        });
+    }
+
+    // UTILITIES
+
+    fn inflight(&self, cookie: u64) -> Option<ProxyReqState> {
         self.inflight.lock().unwrap().remove(&cookie)
     }
 

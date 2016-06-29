@@ -151,10 +151,10 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         (hash(key) % inner.ring.vnodes.len() as u64) as u16
     }
 
-    pub fn nodes_for_key(&self, key: &[u8], n: usize, include_pending: bool) -> (u16, Vec<NodeId>) {
-        let vnode = self.key_vnode(key);
-        (vnode, self.nodes_for_vnode(vnode, n, include_pending))
-    }
+    // pub fn nodes_for_key(&self, key: &[u8], n: usize, include_pending: bool) -> (u16, Vec<NodeId>) {
+    //     let vnode = self.key_vnode(key);
+    //     (vnode, self.nodes_for_vnode(vnode, n, include_pending))
+    // }
 
     pub fn nodes_for_vnode(&self, vnode: u16, n: usize, include_pending: bool) -> Vec<NodeId> {
         let mut result = LinearSet::new();
@@ -268,8 +268,8 @@ mod tests {
         let node = 0;
         let addr = "127.0.0.1:9000".parse().unwrap();
         let dht = DHT::new(node, addr, Some(((), 256)));
-        assert_eq!(dht.nodes_for_key(b"abc", 1, true).1, &[node]);
-        assert_eq!(dht.nodes_for_key(b"abc", 3, true).1, &[node]);
+        assert_eq!(dht.nodes_for_vnode(0, 1, true), &[node]);
+        assert_eq!(dht.nodes_for_vnode(0, 3, true), &[node]);
         assert_eq!(dht.members(), &[(node, addr)]);
     }
 }

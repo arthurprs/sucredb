@@ -1,29 +1,27 @@
 use std::path::Path;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use linear_map::LinearMap;
 use version_vector::*;
 use storage::{Storage, StorageIterator};
 use database::Database;
 use bincode::{self, serde as bincode_serde};
 use fabric::*;
-use vnode_worker::{WorkerMsg, VNodeWorkers};
-use utils::GenericError;
 use rand::{Rng, thread_rng};
-use hash::hash;
 
 const PEER_LOG_SIZE: usize = 1000;
 
 #[repr(u8)]
-enum VNodeStatus {
+pub enum VNodeStatus {
     InSync,
     Syncing,
     Zombie,
 }
 
 pub struct VNode {
-    pub state: VNodeState,
+    state: VNodeState,
     migrations: LinearMap<(NodeId, u64), Migration>,
     syncs: LinearMap<(NodeId, u64), Synchronization>,
+    inflight: HashMap<u64, ReqState>,
 }
 
 pub struct VNodeState {
@@ -38,6 +36,16 @@ pub struct VNodeState {
 struct VNodePeer {
     knowledge: u64,
     log: BTreeMap<u64, Vec<u8>>,
+}
+
+pub struct ReqState {
+    replies: u8,
+    succesfull: u8,
+    required: u8,
+    total: u8,
+    // only used for get
+    container: DottedCausalContainer<Vec<u8>>,
+    token: u64,
 }
 
 enum Migration {
@@ -129,6 +137,19 @@ macro_rules! forward {
     }
 }
 
+impl ReqState {
+    fn new(token: u64, nodes: usize) -> Self {
+        ReqState {
+            required: (nodes as u8) / 2 + 1,
+            total: nodes as u8,
+            replies: 0,
+            succesfull: 0,
+            container: DottedCausalContainer::new(),
+            token: token,
+        }
+    }
+}
+
 impl VNode {
     pub fn new(storage_dir: &Path, num: u16) -> VNode {
         VNode {
@@ -140,6 +161,7 @@ impl VNode {
                 storage: Storage::open(storage_dir, num as i32, true).unwrap(),
                 unflushed_coord_writes: 0,
             },
+            inflight: Default::default(),
             migrations: Default::default(),
             syncs: Default::default(),
         }
@@ -149,7 +171,135 @@ impl VNode {
         thread_rng().gen()
     }
 
-    // HANDLERS
+    // CLIENT CRUD
+    pub fn do_get(&mut self, db: &Database, token: u64, key: &[u8]) {
+        let nodes = db.dht.nodes_for_vnode(self.state.num, db.replication_factor, false);
+        let cookie = self.cookie();
+        assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len())).is_none());
+
+        for node in nodes {
+            if node == db.dht.node() {
+                let container = self.state.storage_get(key);
+                self.process_get(db, cookie, Some(container));
+            } else {
+                db.fabric
+                    .send_message(node,
+                                  MsgGetRemote {
+                                      cookie: cookie,
+                                      vnode: self.state.num,
+                                      key: key.into(),
+                                  })
+                    .unwrap();
+            }
+        }
+    }
+
+    pub fn do_set(&mut self, db: &Database, token: u64, key: &[u8], value_opt: Option<&[u8]>,
+                  vv: VersionVector) {
+        let nodes = db.dht.nodes_for_vnode(self.state.num, db.replication_factor, true);
+        let cookie = self.cookie();
+        assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len())).is_none());
+
+        let dcc = self.state
+            .storage_set_local(db.dht.node(), key, value_opt, &vv);
+        self.process_set(db, cookie, true);
+        for node in nodes {
+            if node != db.dht.node() {
+                db.fabric
+                    .send_message(node,
+                                  MsgSetRemote {
+                                      cookie: cookie,
+                                      vnode: self.state.num,
+                                      key: key.into(),
+                                      container: dcc.clone(),
+                                  })
+                    .unwrap();
+            }
+        }
+    }
+
+    // OTHER
+
+    fn process_get(&mut self, db: &Database, cookie: u64,
+                    container_opt: Option<DottedCausalContainer<Vec<u8>>>) {
+        if {
+            let state = self.inflight.get_mut(&cookie).unwrap();
+            state.replies += 1;
+            if let Some(container) = container_opt {
+                state.container.sync(container);
+                state.succesfull += 1;
+            }
+            if state.succesfull == state.required {
+                // return to client & remove state
+                true
+            } else {
+                false
+            }
+        } {
+            let state = self.inflight.remove(&cookie).unwrap();
+            db.set_response(state.token, state.container);
+        }
+    }
+
+    fn process_set(&mut self, db: &Database, cookie: u64, succesfull: bool) {
+        if {
+            let state = self.inflight.get_mut(&cookie).unwrap();
+            state.replies += 1;
+            if succesfull {
+                state.succesfull += 1;
+            }
+            if state.succesfull == state.required {
+                // return to client & remove state
+                true
+            } else {
+                false
+            }
+        } {
+            let state = self.inflight.remove(&cookie).unwrap();
+            db.set_response(state.token, state.container);
+        }
+    }
+
+    // CRUD HANDLERS
+
+    pub fn handler_get_remote_ack(&mut self, db: &Database, _from: NodeId, msg: MsgGetRemoteAck) {
+        self.process_get(db, msg.cookie, msg.result.ok());
+    }
+
+    pub fn handler_get_remote(&mut self, db: &Database, from: NodeId, msg: MsgGetRemote) {
+        let dcc = self.state.storage_get(&msg.key);
+        db.fabric
+            .send_message(from,
+                          FabricMsg::GetRemoteAck(MsgGetRemoteAck {
+                              cookie: msg.cookie,
+                              vnode: msg.vnode,
+                              result: Ok(dcc),
+                          }))
+            .unwrap();
+    }
+
+    pub fn handler_set(&mut self, db: &Database, from: NodeId, msg: MsgSet) {
+        unimplemented!()
+    }
+
+    pub fn handler_set_remote(&mut self, db: &Database, from: NodeId, msg: MsgSetRemote) {
+        let MsgSetRemote { key, container, vnode, cookie } = msg;
+        let result = self.state.storage_set_remote(&key, container, Some(from));
+        db.fabric
+            .send_message(from,
+                          FabricMsg::SetRemoteAck(MsgSetRemoteAck {
+                              vnode: vnode,
+                              cookie: cookie,
+                              result: Ok(result),
+                          }))
+            .unwrap();
+    }
+
+    pub fn handler_set_remote_ack(&mut self, db: &Database, from: NodeId, msg: MsgSetRemoteAck) {
+        self.process_set(db, msg.cookie, msg.result.is_ok());
+    }
+
+    // BOOTSTRAP
     pub fn handler_bootstrap_start(&mut self, db: &Database, from: NodeId, msg: MsgBootstrapStart) {
         let cookie = msg.cookie;
         let mut migration = Migration::Outgoing {
@@ -362,7 +512,7 @@ impl Synchronization {
                                         ref mut count,
                                         ref clock_snapshot,
                                         .. } => {
-                let vnpeer = state.peers.get(&hash(peer)).unwrap();
+                let vnpeer = state.peers.get(&peer).unwrap();
                 let kv_opt = missing_dots.next()
                     .and_then(|dot| vnpeer.get(dot))
                     .and_then(|k| state.storage.get_vec(&k).map(|v| (k, v)));
@@ -435,7 +585,7 @@ impl Synchronization {
                 db.fabric.send_message(peer, msg).unwrap();
             }
             Synchronization::Outgoing { ref clock_in_peer, peer, .. } => {
-                let vnpeer = state.peers.get_mut(&hash(peer)).unwrap();
+                let vnpeer = state.peers.get_mut(&peer).unwrap();
                 vnpeer.advance_knowledge(clock_in_peer.base());
             }
         }
