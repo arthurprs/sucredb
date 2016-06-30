@@ -189,7 +189,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         let mut moves = Vec::new();
         let members = self.members().len() + 1;
         let partitions = ring.vnodes.len();
-        for _ in 0..(members / partitions) {
+        for _ in 0..(partitions / members) {
             let r = (rand::thread_rng().gen::<usize>() % partitions) as u16;
             ring.pending.insert(r, (node, meta.clone()));
             moves.push(r);

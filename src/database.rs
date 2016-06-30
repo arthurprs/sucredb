@@ -14,7 +14,6 @@ pub struct Database {
     pub replication_factor: usize,
     storage_dir: path::PathBuf,
     vnodes: RwLock<HashMap<u16, Mutex<VNode>>>,
-    // TODO: move this inside vnode?
     // TODO: create a thread to walk inflight and handle timeouts
     inflight: Mutex<HashMap<u64, ProxyReqState>>,
     // FIXME: here just to add dev/debug
@@ -224,7 +223,7 @@ mod tests {
     use version_vector::VersionVector;
 
     #[test]
-    fn test() {
+    fn test_one() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
         let db = Database::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
@@ -297,6 +296,36 @@ mod tests {
         }
 
         thread::sleep_ms(1000);
+    }
+
+    #[test]
+    fn test_join() {
+        let _ = fs::remove_dir_all("./t");
+        let _ = env_logger::init();
+        let db1 = Database::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        for i in 0u16..64 {
+            db1.init_vnode(i);
+        }
+        for i in 0..100 {
+            db1.set(i, i.to_string().as_bytes(), Some(i.to_string().as_bytes()), VersionVector::new());
+            db1.response(i).unwrap();
+        }
+        for i in 0..100 {
+            db1.get(i, i.to_string().as_bytes());
+            db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]);
+        }
+
+        let db2 = Database::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        for i in 0u16..64 {
+            db2.init_vnode(i);
+        }
+        db2.dht.claim(db2.dht.node(), ());
+        for i in 0u16..64 {
+            if db2.dht.nodes_for_vnode(i, 3, true).contains(&db2.dht.node()) {
+                db2.start_migration(i);
+            }
+        }
+        thread::sleep_ms(5000);
 
     }
 }

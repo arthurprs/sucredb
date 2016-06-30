@@ -50,8 +50,10 @@ impl Storage {
     }
 
     pub fn get<R, F: FnOnce(Option<&[u8]>) -> R>(&self, key: &[u8], callback: F) -> R {
-        debug!("get {:?}", str::from_utf8(key));
-        callback(self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok())
+        let r1 = self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok();
+        let r2 = callback(r1);
+        debug!("get {:?} ({} bytes)", str::from_utf8(key), r1.map_or(-1, |x| x.len() as i64));
+        r2
     }
 
     pub fn iter(&self) -> StorageIterator {
@@ -78,7 +80,7 @@ impl Storage {
     }
 
     pub fn set(&self, key: &[u8], value: &[u8]) {
-        debug!("set {:?} {:?}", str::from_utf8(key), value);
+        debug!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
         let txn = self.env.new_transaction().unwrap();
         txn.bind(&self.db_h).set(&key, &value).unwrap();
         txn.commit().unwrap();

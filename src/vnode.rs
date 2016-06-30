@@ -110,28 +110,23 @@ impl VNodePeer {
 }
 
 macro_rules! forward {
-    ($db: expr, $from: expr, $msg: expr, $emsg: ident, $r: expr) => (
-        match $r {
-            Ok(ok) => ok,
-            Err(e) => {
-                $db.fabric.send_message($from,  $emsg {
-                    cookie: $msg.cookie,
-                    vnode: $msg.vnode,
-                    result: Err(e),
-                }).unwrap();
-                return;
-            }
-        }
-    );
     ($this: expr, $db: expr, $from: expr, $msg: expr, $emsg: ident, $col: ident, $f: ident) => {
         let cookie = $msg.cookie;
         if {
-            let sync = forward!($db, $from, $msg, $emsg,
-                $this.$col
-                    .get_mut(&($from, cookie))
-                    .ok_or(FabricMsgError::CookieNotFound));
-            sync.$f($db, &mut $this.state, $msg)
+            match $this.$col.get_mut(&($from, cookie)) {
+                Some(x) => x.$f($db, &mut $this.state, $msg),
+                None => {
+                    debug!("NotFound {}[{:?}]", stringify!($col), ($from, cookie));
+                    $db.fabric.send_message($from,  $emsg {
+                        cookie: $msg.cookie,
+                        vnode: $msg.vnode,
+                        result: Err(FabricMsgError::CookieNotFound),
+                    }).unwrap();
+                    return;
+                }
+            }
         } {
+            info!("Removing {}[{:?}]", stringify!($col), ($from, cookie));
             $this.$col.remove(&($from, cookie)).unwrap();
         }
     }
@@ -665,7 +660,7 @@ impl Migration {
         match *self {
             Migration::Incomming { peer, .. } => {
                 state.storage.sync();
-                // db.dht.promote_pending_node(vnode: u16, node: NodeId)
+                db.dht.promote_pending_node(state.num, db.dht.node());
                 // send it back as a form of ack-ack
                 db.fabric.send_message(peer, msg).unwrap();
             }
