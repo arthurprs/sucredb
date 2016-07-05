@@ -11,6 +11,7 @@ extern crate ramp;
 extern crate linear_map;
 extern crate serde;
 extern crate serde_json;
+extern crate serde_yaml;
 extern crate lmdb_rs;
 extern crate tendril;
 extern crate bincode;

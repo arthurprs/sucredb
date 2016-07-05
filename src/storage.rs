@@ -38,6 +38,7 @@ impl Storage {
         let db_path = path.as_ref().to_owned().join(db_num.to_string());
         let env = try!(lmdb_rs::Environment::new()
             .map_size(10 * 1024 * 1024)
+            .flags(lmdb_rs::core::EnvCreateNoTls)
             .autocreate_dir(create)
             .open(&db_path, 0o777));
         let db_h = try!(env.get_default_db(lmdb_rs::DbFlags::empty()));
@@ -52,7 +53,7 @@ impl Storage {
     pub fn get<R, F: FnOnce(Option<&[u8]>) -> R>(&self, key: &[u8], callback: F) -> R {
         let r1 = self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok();
         let r2 = callback(r1);
-        debug!("get {:?} ({} bytes)", str::from_utf8(key), r1.map_or(-1, |x| x.len() as i64));
+        debug!("get {:?} ({:?} bytes)", str::from_utf8(key), r1.map(|x| x.len()));
         r2
     }
 
@@ -132,14 +133,15 @@ impl StorageIterator {
 
 impl Drop for StorageIterator {
     fn drop(&mut self) {
+        info!("freeing StorageIterator");
         unsafe {
             use std::mem::transmute_copy;
             transmute_copy::<_, NoDrop<lmdb_rs::core::CursorIterator<'static, lmdb_rs::CursorIter>>>(&self.cursor)
                 .into_inner();
+            transmute_copy::<_, NoDrop<Box<lmdb_rs::Database<'static>>>>(&self.db).into_inner();
             transmute_copy::<_, NoDrop<Box<lmdb_rs::ReadonlyTransaction<'static>>>>(&self.tx)
                 .into_inner();
             transmute_copy::<_, NoDrop<Box<lmdb_rs::DbHandle>>>(&self.db_h).into_inner();
-            transmute_copy::<_, NoDrop<Box<lmdb_rs::Database<'static>>>>(&self.db).into_inner();
             transmute_copy::<_, NoDrop<Box<lmdb_rs::Environment>>>(&self.env).into_inner();
         }
     }

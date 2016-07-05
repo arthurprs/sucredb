@@ -51,18 +51,18 @@ impl<K: Hash + Eq + Copy, V, T: Ord> DerefMut for InFlightMap<K, V, T> {
 }
 
 // Like a 2-tuple but comparison is only done for the first item
-#[derive(Debug)]
-struct Pair<T: Ord, V>(T, V);
+#[derive(Debug, Clone)]
+struct Pair<T, V>(T, V);
 
-impl<T: Ord, V> PartialEq<Pair<T, V>> for Pair<T, V> {
+impl<T: PartialEq, V> PartialEq<Pair<T, V>> for Pair<T, V> {
     fn eq(&self, other: &Pair<T, V>) -> bool {
         other.0.eq(&self.0)
     }
 }
 
-impl<T: Ord, V> Eq for Pair<T, V> {}
+impl<T: Eq, V> Eq for Pair<T, V> {}
 
-impl<T: Ord, V> PartialOrd<Pair<T, V>> for Pair<T, V> {
+impl<T: PartialOrd, V> PartialOrd<Pair<T, V>> for Pair<T, V> {
     fn partial_cmp(&self, other: &Pair<T, V>) -> Option<Ordering> {
         other.0.partial_cmp(&self.0)
     }

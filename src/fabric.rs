@@ -146,7 +146,7 @@ impl Machine for OutMachine {
 
 fn write_msg<T: Serialize + fmt::Debug>(transport: &mut Transport<TcpStream>, msg: &T) {
     let msg_len = bincode_serde::serialized_size(msg);
-    debug!("writing msg {:?} ({} bytes)", msg, msg_len);
+    trace!("writing msg {:?} ({} bytes)", msg, msg_len);
     transport.output().write_u32::<LittleEndian>(msg_len as u32).unwrap();
     bincode_serde::serialize_into(transport.output(), msg, bincode::SizeLimit::Infinite).unwrap();
 }
@@ -164,7 +164,7 @@ fn read_msg<T: Deserialize + fmt::Debug>(transport: &mut Transport<TcpStream>) -
                                                                 bincode::SizeLimit::Infinite);
                 match de_result {
                     Ok(msg) => {
-                        debug!("read msg {:?} ({} bytes)", msg, msg_len);
+                        trace!("read msg {:?} ({} bytes)", msg, msg_len);
                         de_msg = Some(msg);
                     }
                     Err(e) => error!("Error deserializing msg: {:?}", e),
@@ -185,7 +185,7 @@ impl OutConnection {
         let outgoing = scope.shared.outgoing.read().unwrap();
         let node = outgoing.get(&self.other.0).unwrap();
         if let Some(msg) = node.0.pop() {
-            debug!("pull message from queue {:?}", msg);
+            debug!("pull message from write queue {:?}", msg);
             write_msg(transport, &msg);
             Intent::of(self).expect_flush()
         } else {
@@ -304,6 +304,7 @@ impl Protocol for InConnection {
         loop {
             let (msg_opt, needed) = read_msg::<FabricMsg>(transport);
             if let Some(msg) = msg_opt {
+                debug!("received msg {:?}", msg);
                 let msg_type = msg.get_type();
                 if let Some(handler) = scope.shared
                     .msg_handlers
@@ -420,11 +421,12 @@ impl Fabric {
 
 impl Drop for Fabric {
     fn drop(&mut self) {
+        warn!("droping fabric");
         // mark as not running and wakeup connector as it knows how to shutdown the loop
         self.shared_context.running.store(false, atomic::Ordering::Relaxed);
         self.shared_context.connector_notifier.wakeup().unwrap();
         // join the loop thread
-        self.loop_thread.take().unwrap().join().unwrap();
+        let _ = self.loop_thread.take().map(|t| t.join());
     }
 }
 

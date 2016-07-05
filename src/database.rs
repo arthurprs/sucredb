@@ -45,11 +45,12 @@ macro_rules! vnode {
 impl Database {
     pub fn new(bind_addr: net::SocketAddr, storage_dir: &str, create: bool) -> Arc<Database> {
         // FIXME: save to storage
-        let node = thread_rng().gen::<NodeId>();
+        let node = thread_rng().gen::<i64>().abs() as NodeId;
         let db = Arc::new(Database {
             replication_factor: 3,
             fabric: Fabric::new(node, bind_addr).unwrap(),
-            dht: DHT::new(node,
+            dht: DHT::new(3,
+                          node,
                           bind_addr,
                           if create {
                               Some(((), 64))
@@ -119,6 +120,14 @@ impl Database {
         };
     }
 
+    fn migrations(&self) -> usize {
+        self.vnodes.read().unwrap().values().map(|vn| vn.lock().unwrap().migrations.len()).sum()
+    }
+
+    fn synchronizations(&self) -> usize {
+        self.vnodes.read().unwrap().values().map(|vn| vn.lock().unwrap().syncs.len()).sum()
+    }
+
     pub fn init_vnode(&self, vnode_n: u16) {
         self.vnodes
             .write()
@@ -150,7 +159,6 @@ impl Database {
             .unwrap();
     }
 
-
     // CLIENT CRUD
     fn set(&self, token: u64, key: &[u8], value: Option<&[u8]>, vv: VersionVector) {
         vnode!(self, k: key, |mut vn| {
@@ -171,9 +179,7 @@ impl Database {
         });
     }
 
-    fn handler_set_ack(&self, from: NodeId, msg: MsgSetAck) {
-
-    }
+    fn handler_set_ack(&self, from: NodeId, msg: MsgSetAck) {}
 
     fn handler_set_remote(&self, from: NodeId, msg: MsgSetRemote) {
         vnode!(self, msg.vnode, |mut vn| {
@@ -201,16 +207,17 @@ impl Database {
 
     // UTILITIES
 
-    fn inflight(&self, cookie: u64) -> Option<ProxyReqState> {
-        self.inflight.lock().unwrap().remove(&cookie)
+    fn inflight(&self, token: u64) -> Option<ProxyReqState> {
+        self.inflight.lock().unwrap().remove(&token)
     }
 
-    pub fn set_response(&self, cookie: u64, response: DottedCausalContainer<Vec<u8>>) {
-        self.responses.lock().unwrap().insert(cookie, response);
+    pub fn set_response(&self, token: u64, response: DottedCausalContainer<Vec<u8>>) {
+        debug!("set_response {} to {:?}", token, response);
+        self.responses.lock().unwrap().insert(token, response);
     }
 
-    fn response(&self, cookie: u64) -> Option<DottedCausalContainer<Vec<u8>>> {
-        self.responses.lock().unwrap().remove(&cookie)
+    fn response(&self, token: u64) -> Option<DottedCausalContainer<Vec<u8>>> {
+        self.responses.lock().unwrap().remove(&token)
     }
 }
 
@@ -288,14 +295,6 @@ mod tests {
             thread::sleep_ms(100);
             assert!(db.response(1).unwrap().values().eq(vec![b"value1"]));
         }
-        thread::sleep_ms(100);
-
-        for i in 0u16..32 {
-            db1.start_migration(i * 2 + 1);
-            db2.start_migration(i * 2);
-        }
-
-        thread::sleep_ms(1000);
     }
 
     #[test]
@@ -307,25 +306,50 @@ mod tests {
             db1.init_vnode(i);
         }
         for i in 0..100 {
-            db1.set(i, i.to_string().as_bytes(), Some(i.to_string().as_bytes()), VersionVector::new());
+            db1.set(i,
+                    i.to_string().as_bytes(),
+                    Some(i.to_string().as_bytes()),
+                    VersionVector::new());
             db1.response(i).unwrap();
         }
         for i in 0..100 {
             db1.get(i, i.to_string().as_bytes());
-            db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]);
+            assert!(db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
         let db2 = Database::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+
         for i in 0u16..64 {
             db2.init_vnode(i);
         }
+        warn!("will check data in db2 before balancing");
+        for i in 0..100 {
+            db2.get(i, i.to_string().as_bytes());
+            thread::sleep_ms(10);
+            assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+        }
+
         db2.dht.claim(db2.dht.node(), ());
         for i in 0u16..64 {
-            if db2.dht.nodes_for_vnode(i, 3, true).contains(&db2.dht.node()) {
+            if db2.dht.nodes_for_vnode(i, db1.replication_factor, true).contains(&db2.dht.node()) {
                 db2.start_migration(i);
             }
         }
-        thread::sleep_ms(5000);
+        // warn!("will check data in db2 during balancing");
+        // for i in 0..100 {
+        //     db2.get(i, i.to_string().as_bytes());
+        //     thread::sleep_ms(100);
+        //     assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+        // }
 
+        while db1.migrations() + db2.migrations() > 0 {
+            thread::sleep_ms(100);
+        }
+        warn!("will check data in db2 after balancing");
+        for i in 0..100 {
+            db2.get(i, i.to_string().as_bytes());
+            thread::sleep_ms(10);
+            assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+        }
     }
 }

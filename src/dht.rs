@@ -1,14 +1,14 @@
-use std::{thread, net, mem};
+use std::{thread, net, cmp};
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
-use linear_map::set::LinearSet;
+use linear_map::LinearMap;
 use rand::{self, Rng};
 use serde::{Serialize, Deserialize};
-use serde_json;
+use serde_yaml;
 use hash::hash;
 use fabric::NodeId;
 use etcd;
-use utils::{self, GenericError};
+use utils::GenericError;
 
 pub type DHTChangeFn = Box<Fn() + Send + Sync>;
 
@@ -21,12 +21,10 @@ pub struct DHT<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Ring<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
-    vnodes: Vec<(NodeId, T)>,
-    #[serde(serialize_with="utils::json_serialize_map", deserialize_with="utils::json_deserialize_map")]
+    replication_factor: usize,
+    vnodes: Vec<LinearMap<NodeId, T>>,
     nodes: HashMap<NodeId, net::SocketAddr>,
-    #[serde(serialize_with="utils::json_serialize_map", deserialize_with="utils::json_deserialize_map")]
-    pending: HashMap<u16, (NodeId, T)>,
-    #[serde(serialize_with="utils::json_serialize_map", deserialize_with="utils::json_deserialize_map")]
+    pending: HashMap<u16, LinearMap<NodeId, T>>,
     zombie: HashMap<u16, (NodeId, T)>,
 }
 
@@ -39,11 +37,14 @@ struct Inner<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
 }
 
 impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
-    pub fn new(node: NodeId, addr: net::SocketAddr, initial: Option<(T, usize)>) -> DHT<T> {
+    pub fn new(replication_factor: usize, node: NodeId, addr: net::SocketAddr,
+               initial: Option<(T, usize)>)
+               -> DHT<T> {
         let etcd1 = Default::default();
         let etcd2 = Default::default();
         let inner = Arc::new(RwLock::new(Inner {
             ring: Ring {
+                replication_factor: replication_factor,
                 vnodes: Default::default(),
                 nodes: Default::default(),
                 pending: Default::default(),
@@ -128,7 +129,8 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
     fn reset(&self, meta: T, partitions: usize) {
         let mut inner = self.inner.write().unwrap();
         inner.ring = Ring {
-            vnodes: vec![(self.node, meta); partitions],
+            replication_factor: inner.ring.replication_factor,
+            vnodes: vec![[(self.node, meta)].iter().cloned().collect(); partitions],
             nodes: vec![(self.node, self.addr)].into_iter().collect(),
             pending: Default::default(),
             zombie: Default::default(),
@@ -157,21 +159,15 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
     // }
 
     pub fn nodes_for_vnode(&self, vnode: u16, n: usize, include_pending: bool) -> Vec<NodeId> {
-        let mut result = LinearSet::new();
+        let mut result = Vec::new();
         let inner = self.inner.read().unwrap();
-        let ring_len = inner.ring.vnodes.len();
-        for i in 0..n {
-            let vnode_i = (vnode as usize + i) % ring_len;
-            if let Some(p) = inner.ring.vnodes.get(vnode_i) {
-                result.insert(p.0);
-            }
-            if include_pending {
-                if let Some(p) = inner.ring.pending.get(&(vnode_i as u16)) {
-                    result.insert(p.0);
-                }
+        result.extend(inner.ring.vnodes[vnode as usize].iter().map(|(&n, _)| n));
+        if include_pending {
+            if let Some(pending) = inner.ring.pending.get(&vnode) {
+                result.extend(pending.iter().map(|(&n, _)| n));
             }
         }
-        result.into()
+        result
     }
 
     pub fn members(&self) -> Vec<(NodeId, net::SocketAddr)> {
@@ -189,10 +185,25 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         let mut moves = Vec::new();
         let members = self.members().len() + 1;
         let partitions = ring.vnodes.len();
-        for _ in 0..(partitions / members) {
-            let r = (rand::thread_rng().gen::<usize>() % partitions) as u16;
-            ring.pending.insert(r, (node, meta.clone()));
-            moves.push(r);
+        if members <= ring.replication_factor {
+            for i in 0..ring.vnodes.len() as u16 {
+                ring.pending.entry(i).or_insert(Default::default()).insert(node, meta.clone());
+                moves.push(i);
+            }
+        } else {
+            for _ in 0..partitions * ring.replication_factor / members {
+                loop {
+                    let r = (rand::thread_rng().gen::<usize>() % partitions) as u16;
+                    if let Some(pending) = ring.pending.get(&r) {
+                        if pending.contains_key(&node) {
+                            continue;
+                        }
+                    }
+                    ring.pending.entry(r).or_insert(Default::default()).insert(node, meta.clone());
+                    moves.push(r);
+                    break;
+                }
+            }
         }
         self.propose(ring_version, ring).unwrap();
         moves
@@ -200,30 +211,32 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
 
     pub fn add_pending_node(&self, vnode: u16, node: NodeId, meta: T) {
         let (mut ring, ring_version) = self.ring_clone();
-        assert!(ring.pending.insert(vnode, (node, meta)).is_none());
+        {
+            let pending = ring.pending.entry(vnode).or_insert(Default::default());
+            assert!(pending.insert(node, meta).is_none());
+        }
         self.propose(ring_version, ring).unwrap();
     }
 
     pub fn remove_pending_node(&self, vnode: u16, node: NodeId) {
         let (mut ring, ring_version) = self.ring_clone();
-        assert!(ring.pending.remove(&vnode).unwrap().0 == node);
+        {
+            let pending = ring.pending.entry(vnode).or_insert(Default::default());
+            pending.remove(&node).unwrap();
+        }
         self.propose(ring_version, ring).unwrap();
     }
 
     pub fn promote_pending_node(&self, vnode: u16, node: NodeId) {
         let (mut ring, ring_version) = self.ring_clone();
 
-        let mut p = ring.pending.remove(&vnode).unwrap();
-        assert!(p.0 == node);
-        mem::swap(&mut p, &mut ring.vnodes[vnode as usize]);
+        let new_meta = {
+            let pending = ring.pending.entry(vnode).or_insert(Default::default());
+            pending.remove(&node).unwrap()
+        };
 
+        assert!(ring.vnodes[vnode as usize].insert(node, new_meta).is_none());
         self.propose(ring_version, ring).unwrap();
-    }
-
-    pub fn get_vnode(&self, vnode: u16) -> (NodeId, Option<NodeId>) {
-        let inner = self.inner.read().unwrap();
-        (inner.ring.vnodes.get(vnode as usize).map(|a| a.0).unwrap(),
-         inner.ring.pending.get(&vnode).map(|a| a.0))
     }
 
     fn propose(&self, old_version: u64, new_ring: Ring<T>) -> Result<(), GenericError> {
@@ -243,18 +256,18 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         Ok(())
     }
 
-    fn serialize(ring: &Ring<T>) -> serde_json::Result<String> {
-        serde_json::to_string(&ring)
+    fn serialize(ring: &Ring<T>) -> serde_yaml::Result<String> {
+        serde_yaml::to_string(&ring)
     }
 
-    fn deserialize(json_ring: &str) -> serde_json::Result<Ring<T>> {
-        serde_json::from_str(json_ring)
+    fn deserialize(json_ring: &str) -> serde_yaml::Result<Ring<T>> {
+        serde_yaml::from_str(json_ring)
     }
 }
 
 impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> Drop for DHT<T> {
     fn drop(&mut self) {
-        self.inner.write().unwrap().running = false;
+        let _ = self.inner.write().map(|mut inner| inner.running = false);
     }
 }
 
@@ -267,9 +280,14 @@ mod tests {
     fn test_new() {
         let node = 0;
         let addr = "127.0.0.1:9000".parse().unwrap();
-        let dht = DHT::new(node, addr, Some(((), 256)));
-        assert_eq!(dht.nodes_for_vnode(0, 1, true), &[node]);
-        assert_eq!(dht.nodes_for_vnode(0, 3, true), &[node]);
-        assert_eq!(dht.members(), &[(node, addr)]);
+        for rf in 0..3 {
+            let dht = DHT::new(rf, node, addr, Some(((), 256)));
+            assert_eq!(dht.nodes_for_vnode(0, 1, true), &[node]);
+            assert_eq!(dht.nodes_for_vnode(0, 3, true), &[node]);
+            assert_eq!(dht.members(), &[(node, addr)]);
+        }
     }
+
+    #[test]
+    fn test_claim() {}
 }

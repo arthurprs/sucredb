@@ -19,8 +19,8 @@ pub enum VNodeStatus {
 
 pub struct VNode {
     state: VNodeState,
-    migrations: LinearMap<(NodeId, u64), Migration>,
-    syncs: LinearMap<(NodeId, u64), Synchronization>,
+    pub migrations: LinearMap<(NodeId, u64), Migration>,
+    pub syncs: LinearMap<(NodeId, u64), Synchronization>,
     inflight: HashMap<u64, ReqState>,
 }
 
@@ -48,7 +48,7 @@ pub struct ReqState {
     token: u64,
 }
 
-enum Migration {
+pub enum Migration {
     Outgoing {
         vnode: u16,
         cookie: u64,
@@ -64,7 +64,7 @@ enum Migration {
     },
 }
 
-enum Synchronization {
+pub enum Synchronization {
     Outgoing {
         clock_in_peer: BitmappedVersion,
         clock_snapshot: BitmappedVersion,
@@ -216,7 +216,7 @@ impl VNode {
     // OTHER
 
     fn process_get(&mut self, db: &Database, cookie: u64,
-                    container_opt: Option<DottedCausalContainer<Vec<u8>>>) {
+                   container_opt: Option<DottedCausalContainer<Vec<u8>>>) {
         if {
             let state = self.inflight.get_mut(&cookie).unwrap();
             state.replies += 1;
@@ -224,6 +224,7 @@ impl VNode {
                 state.container.sync(container);
                 state.succesfull += 1;
             }
+            debug!("process_get c:{} t:{} tl:{} - {} ({}) of {}", cookie, state.token, state.total, state.succesfull, state.replies, state.required);
             if state.succesfull == state.required {
                 // return to client & remove state
                 true
@@ -425,6 +426,15 @@ impl VNode {
                 assert!(p.is_none());
                 return;
             });
+    }
+}
+
+impl Drop for VNode {
+    fn drop(&mut self) {
+        // clean up any references to the storage
+        self.inflight.clear();
+        self.migrations.clear();
+        self.syncs.clear();
     }
 }
 
