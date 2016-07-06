@@ -16,7 +16,7 @@ pub struct BitmappedVersion {
     bitmap: ramp::Int,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BitmappedVersionVector(LinearMap<Id, BitmappedVersion>);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,7 +36,7 @@ impl BitmappedVersion {
         }
     }
 
-    fn join(&mut self, other: &Self) {
+    pub fn join(&mut self, other: &Self) {
         if self.base >= other.base {
             self.bitmap |= other.bitmap.clone() >> (self.base - other.base) as usize;
         } else {
@@ -152,16 +152,11 @@ pub fn deserialize_ramp<D>(deserializer: &mut D) -> Result<ramp::Int, D::Error>
     struct StringVisitor;
     impl serde::de::Visitor for StringVisitor {
         type Value = String;
-
-        fn visit_str<E>(&mut self, v: &str) -> Result<Self::Value, E> where E: Error {
-            Ok(v.to_owned())
-        }
-
         fn visit_string<E>(&mut self, v: String) -> Result<Self::Value, E> where E: Error {
             Ok(v)
         }
     }
-    deserializer.deserialize_map(StringVisitor)
+    deserializer.deserialize_string(StringVisitor)
         .and_then(|s| ramp::Int::from_str_radix(&s, 36).map_err(|e| Error::custom(e.to_string())))
 }
 
@@ -172,6 +167,10 @@ impl BitmappedVersionVector {
 
     pub fn add(&mut self, id: Id, version: Version) {
         self.0.entry(id).or_insert_with(|| BitmappedVersion::new(0, 0)).add(version);
+    }
+
+    pub fn get_mut(&mut self, id: Id) -> Option<&mut BitmappedVersion> {
+        self.0.get_mut(&id)
     }
 
     pub fn get(&self, id: Id) -> Option<&BitmappedVersion> {

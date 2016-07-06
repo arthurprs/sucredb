@@ -1,7 +1,5 @@
-use version_vector::{Version, VersionVector, DottedCausalContainer, BitmappedVersion};
+use version_vector::*;
 
-// TODO: have only a few toplevel types
-// like Gossip, KV, Boostrap, etc..
 // TODO: error support
 #[derive(Debug, Copy, Clone)]
 pub enum FabricMsgType {
@@ -122,7 +120,7 @@ pub struct MsgBootstrapStart {
 pub struct MsgBootstrapFin {
     pub vnode: u16,
     pub cookie: u64,
-    pub result: Result<(), FabricMsgError>,
+    pub result: Result<BitmappedVersionVector, FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -150,7 +148,7 @@ pub struct MsgSyncStart {
 pub struct MsgSyncFin {
     pub vnode: u16,
     pub cookie: u64,
-    pub result: Result<Version, FabricMsgError>,
+    pub result: Result<BitmappedVersion, FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -176,7 +174,6 @@ macro_rules! impl_into {
         }
     );
 }
-
 
 impl_into!(GetRemote, MsgGetRemote);
 impl_into!(GetRemoteAck, MsgGetRemoteAck);

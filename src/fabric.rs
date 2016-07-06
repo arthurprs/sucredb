@@ -167,7 +167,7 @@ fn read_msg<T: Deserialize + fmt::Debug>(transport: &mut Transport<TcpStream>) -
                         trace!("read msg {:?} ({} bytes)", msg, msg_len);
                         de_msg = Some(msg);
                     }
-                    Err(e) => error!("Error deserializing msg: {:?}", e),
+                    Err(e) => panic!("Error deserializing msg: {:?} from: {:?}", e, &buf[..msg_len]),
                 }
                 consumed += 4 + msg_len;
             } else {

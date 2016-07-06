@@ -335,16 +335,21 @@ mod tests {
                 db2.start_migration(i);
             }
         }
-        // warn!("will check data in db2 during balancing");
-        // for i in 0..100 {
-        //     db2.get(i, i.to_string().as_bytes());
-        //     thread::sleep_ms(100);
-        //     assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
-        // }
+        warn!("will check data in db2 during balancing");
+        for i in 0..100 {
+            db2.get(i, i.to_string().as_bytes());
+            let result = (0..100).filter_map(|_| {
+                thread::sleep_ms(10);
+                db2.response(i)
+            }).next();
+            assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
+        }
 
         while db1.migrations() + db2.migrations() > 0 {
-            thread::sleep_ms(100);
+            warn!("waiting for migrations to finish");
+            thread::sleep_ms(1000);
         }
+
         warn!("will check data in db2 after balancing");
         for i in 0..100 {
             db2.get(i, i.to_string().as_bytes());
