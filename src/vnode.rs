@@ -112,6 +112,7 @@ impl VNodePeer {
 
 macro_rules! forward {
     ($this: expr, $db: expr, $from: expr, $msg: expr, $emsg: ident, $col: ident, $f: ident) => {
+        // FIXME: use entry api
         let cookie = $msg.cookie;
         if {
             match $this.$col.get_mut(&($from, cookie)) {
@@ -169,7 +170,7 @@ impl VNode {
 
     // CLIENT CRUD
     pub fn do_get(&mut self, db: &Database, token: u64, key: &[u8]) {
-        let nodes = db.dht.nodes_for_vnode(self.state.num, db.replication_factor, false);
+        let nodes = db.dht.nodes_for_vnode(self.state.num, false);
         let cookie = self.cookie();
         assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len())).is_none());
 
@@ -192,7 +193,7 @@ impl VNode {
 
     pub fn do_set(&mut self, db: &Database, token: u64, key: &[u8], value_opt: Option<&[u8]>,
                   vv: VersionVector) {
-        let nodes = db.dht.nodes_for_vnode(self.state.num, db.replication_factor, true);
+        let nodes = db.dht.nodes_for_vnode(self.state.num, true);
         let cookie = self.cookie();
         assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len())).is_none());
 
@@ -215,7 +216,6 @@ impl VNode {
     }
 
     // OTHER
-
     fn process_get(&mut self, db: &Database, cookie: u64,
                    container_opt: Option<DottedCausalContainer<Vec<u8>>>) {
         if {
@@ -225,7 +225,13 @@ impl VNode {
                 state.container.sync(container);
                 state.succesfull += 1;
             }
-            debug!("process_get c:{} t:{} tl:{} - {} ({}) of {}", cookie, state.token, state.total, state.succesfull, state.replies, state.required);
+            debug!("process_get c:{} t:{} tl:{} - {} ({}) of {}",
+                   cookie,
+                   state.token,
+                   state.total,
+                   state.succesfull,
+                   state.replies,
+                   state.required);
             if state.succesfull == state.required {
                 // return to client & remove state
                 true
@@ -359,7 +365,7 @@ impl VNode {
     /// //////
     pub fn start_migration(&mut self, db: &Database) {
         let cookie = self.cookie();
-        let mut nodes = db.dht.nodes_for_vnode(self.state.num, db.replication_factor, false);
+        let mut nodes = db.dht.nodes_for_vnode(self.state.num, false);
         thread_rng().shuffle(&mut nodes);
         for node in nodes {
             if node == db.dht.node() {
@@ -614,7 +620,12 @@ impl Synchronization {
 impl Migration {
     fn outgoing_send(&mut self, db: &Database) -> bool {
         match *self {
-            Migration::Outgoing { peer, cookie, vnode, ref mut iterator, ref mut count, ref clocks_snapshot } => {
+            Migration::Outgoing { peer,
+                                  cookie,
+                                  vnode,
+                                  ref mut iterator,
+                                  ref mut count,
+                                  ref clocks_snapshot } => {
                 let done = !iterator.iter(|k, v| {
                     db.fabric
                         .send_message(peer,

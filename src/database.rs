@@ -1,4 +1,5 @@
 use std::{net, path};
+use std::time::Duration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use dht::DHT;
@@ -6,13 +7,14 @@ use version_vector::*;
 use fabric::*;
 use rand::{Rng, thread_rng};
 use vnode::*;
-
+use workers::{WorkerMsg, WorkerManager};
 
 pub struct Database {
     pub dht: DHT<()>,
     pub fabric: Fabric,
     pub replication_factor: usize,
     storage_dir: path::PathBuf,
+    workers: Mutex<WorkerManager>,
     vnodes: RwLock<HashMap<u16, Mutex<VNode>>>,
     // TODO: create a thread to walk inflight and handle timeouts
     inflight: Mutex<HashMap<u64, ProxyReqState>>,
@@ -58,9 +60,30 @@ impl Database {
                               None
                           }),
             storage_dir: storage_dir.into(),
-            inflight: Mutex::new(Default::default()),
-            responses: Mutex::new(Default::default()),
-            vnodes: RwLock::new(Default::default()),
+            inflight: Default::default(),
+            responses: Default::default(),
+            vnodes: Default::default(),
+            workers: Mutex::new(WorkerManager::new(8, Duration::new(0, 200))),
+        });
+
+        db.workers.lock().unwrap().start(|| {
+            let cdb = Arc::downgrade(&db);
+            Box::new(move |chan| {
+                for wm in chan {
+                    let db = if let Some(db) = cdb.upgrade() {
+                        db
+                    } else {
+                        break;
+                    };
+                    match wm {
+                        WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
+                        WorkerMsg::Tick(time) => (),
+                        WorkerMsg::Request => (),
+                        WorkerMsg::Exit => break,
+                    }
+                }
+                info!("Exiting worker")
+            })
         });
 
         db.dht.members().into_iter().map(|(n, a)| db.fabric.register_node(n, a)).count();
@@ -72,20 +95,20 @@ impl Database {
             });
         }));
 
-        let cdb = Arc::downgrade(&db);
+        let mut workers = db.workers.lock().unwrap().sender();
         db.fabric.register_msg_handler(FabricMsgType::Crud,
                                        Box::new(move |f, m| {
-                                           cdb.upgrade().map(|db| db.handler_fabric_crud(f, m));
+                                           workers.send(WorkerMsg::Fabric(f, m));
                                        }));
-        let cdb = Arc::downgrade(&db);
+        let mut workers = db.workers.lock().unwrap().sender();
         db.fabric.register_msg_handler(FabricMsgType::Bootstrap,
                                        Box::new(move |f, m| {
-                                           cdb.upgrade().map(|db| db.handler_fabric_boostrap(f, m));
+                                           workers.send(WorkerMsg::Fabric(f, m));
                                        }));
         db
     }
 
-    pub fn handler_fabric_crud(&self, from: NodeId, msg: FabricMsg) {
+    pub fn handler_fabric_msg(&self, from: NodeId, msg: FabricMsg) {
         match msg {
             FabricMsg::GetRemote(m) => self.handler_get_remote(from, m),
             FabricMsg::GetRemoteAck(m) => self.handler_get_remote_ack(from, m),
@@ -93,30 +116,19 @@ impl Database {
             FabricMsg::SetAck(m) => self.handler_set_ack(from, m),
             FabricMsg::SetRemote(m) => self.handler_set_remote(from, m),
             FabricMsg::SetRemoteAck(m) => self.handler_set_remote_ack(from, m),
-            _ => unreachable!("Can't handle {:?}", msg),
-        }
-    }
-
-    pub fn handler_fabric_boostrap(&self, from: NodeId, msg: FabricMsg) {
-        let vnodes = self.vnodes.read().unwrap();
-        match msg {
             FabricMsg::BootstrapStart(m) => {
-                vnodes.get(&m.vnode)
-                    .map(|vn| vn.lock().unwrap().handler_bootstrap_start(self, from, m))
+                vnode!(self, m.vnode, |mut vn| vn.handler_bootstrap_start(self, from, m))
             }
             FabricMsg::BootstrapSend(m) => {
-                vnodes.get(&m.vnode)
-                    .map(|vn| vn.lock().unwrap().handler_bootstrap_send(self, from, m))
+                vnode!(self, m.vnode, |mut vn| vn.handler_bootstrap_send(self, from, m))
             }
             FabricMsg::BootstrapAck(m) => {
-                vnodes.get(&m.vnode)
-                    .map(|vn| vn.lock().unwrap().handler_bootstrap_ack(self, from, m))
+                vnode!(self, m.vnode, |mut vn| vn.handler_bootstrap_ack(self, from, m))
             }
             FabricMsg::BootstrapFin(m) => {
-                vnodes.get(&m.vnode)
-                    .map(|vn| vn.lock().unwrap().handler_bootstrap_fin(self, from, m))
+                vnode!(self, m.vnode, |mut vn| vn.handler_bootstrap_fin(self, from, m))
             }
-            _ => unreachable!("Can't handle {:?}", msg),
+            msg @ _ => unreachable!("Can't handle {:?}", msg),
         };
     }
 
@@ -331,17 +343,19 @@ mod tests {
 
         db2.dht.claim(db2.dht.node(), ());
         for i in 0u16..64 {
-            if db2.dht.nodes_for_vnode(i, db1.replication_factor, true).contains(&db2.dht.node()) {
+            if db2.dht.nodes_for_vnode(i, true).contains(&db2.dht.node()) {
                 db2.start_migration(i);
             }
         }
         warn!("will check data in db2 during balancing");
         for i in 0..100 {
             db2.get(i, i.to_string().as_bytes());
-            let result = (0..100).filter_map(|_| {
-                thread::sleep_ms(10);
-                db2.response(i)
-            }).next();
+            let result = (0..100)
+                .filter_map(|_| {
+                    thread::sleep_ms(10);
+                    db2.response(i)
+                })
+                .next();
             assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 

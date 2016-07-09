@@ -1,7 +1,8 @@
 use std::{fmt, thread, net};
 use std::error::Error;
-use std::sync::{Arc, RwLock, atomic};
+use std::sync::{Arc, RwLock, Mutex, atomic};
 use std::collections::HashMap;
+use linear_map::LinearMap;
 use rotor::{self, Machine, Scope, Response, Void};
 use rotor::mio::{EventSet, PollOpt};
 use rotor::mio::util::BoundedQueue;
@@ -17,7 +18,7 @@ use utils::GenericError;
 
 pub type NodeId = u64;
 
-pub type FabricHandlerFn = Box<Fn(NodeId, FabricMsg) + Send + Sync>;
+pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
 
 pub type FabricResult<T> = Result<T, GenericError>;
 
@@ -31,8 +32,8 @@ pub struct Fabric {
 struct SharedContext {
     node: NodeId,
     outgoing: RwLock<HashMap<NodeId, (BoundedQueue<FabricMsg>, Vec<rotor::Notifier>)>>,
-    nodes_addr: RwLock<HashMap<NodeId, net::SocketAddr>>,
-    msg_handlers: RwLock<HashMap<u8, FabricHandlerFn>>,
+    nodes_addr: Mutex<HashMap<NodeId, net::SocketAddr>>,
+    msg_handlers: Mutex<LinearMap<u8, FabricHandlerFn>>,
     connector_notifier: rotor::Notifier,
     connector_queue: BoundedQueue<FabricId>,
     running: atomic::AtomicBool,
@@ -80,9 +81,9 @@ impl SharedContext {
            -> Self {
         SharedContext {
             node: node,
-            outgoing: RwLock::new(Default::default()),
-            nodes_addr: RwLock::new(Default::default()),
-            msg_handlers: RwLock::new(Default::default()),
+            outgoing: Default::default(),
+            nodes_addr: Default::default(),
+            msg_handlers: Default::default(),
             connector_notifier: connector_notifier,
             connector_queue: connector_queue,
             running: atomic::AtomicBool::new(false),
@@ -167,7 +168,9 @@ fn read_msg<T: Deserialize + fmt::Debug>(transport: &mut Transport<TcpStream>) -
                         trace!("read msg {:?} ({} bytes)", msg, msg_len);
                         de_msg = Some(msg);
                     }
-                    Err(e) => panic!("Error deserializing msg: {:?} from: {:?}", e, &buf[..msg_len]),
+                    Err(e) => {
+                        panic!("Error deserializing msg: {:?} from: {:?}", e, &buf[..msg_len])
+                    }
                 }
                 consumed += 4 + msg_len;
             } else {
@@ -308,9 +311,9 @@ impl Protocol for InConnection {
                 let msg_type = msg.get_type();
                 if let Some(handler) = scope.shared
                     .msg_handlers
-                    .read()
+                    .lock()
                     .unwrap()
-                    .get(&(msg_type as u8)) {
+                    .get_mut(&(msg_type as u8)) {
                     handler(self.other.unwrap().0, msg);
                 } else {
                     error!("No handler for msg type {:?}", msg_type);
@@ -393,15 +396,15 @@ impl Fabric {
                 return Ok(());
             };
         }
-        let addr = self.shared_context.nodes_addr.read().unwrap().get(&recipient).cloned().unwrap();
+        let addr = self.shared_context.nodes_addr.lock().unwrap().get(&recipient).cloned().unwrap();
         let mut outgoing = self.shared_context.outgoing.write().unwrap();
         let node = outgoing.entry(recipient)
             .or_insert_with(|| (BoundedQueue::with_capacity(1024), Vec::new()));
         // push the message
         node.0.push(msg.into()).unwrap();
-        // we might have raced, so only create new conn if necessary
+        // FIXME: we might have raced, so only create new conn if necessary
         if let Some(n) = thread_rng().choose(&node.1) {
-            n.wakeup().unwrap()
+            n.wakeup().unwrap();
         } else {
             self.shared_context.connector_queue.push((recipient, addr)).unwrap();
             self.shared_context.connector_notifier.wakeup().unwrap();
@@ -411,11 +414,11 @@ impl Fabric {
     }
 
     pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: FabricHandlerFn) {
-        self.shared_context.msg_handlers.write().unwrap().insert(msg_type as u8, handler);
+        self.shared_context.msg_handlers.lock().unwrap().insert(msg_type as u8, handler);
     }
 
     pub fn register_node(&self, node: NodeId, addr: net::SocketAddr) {
-        self.shared_context.nodes_addr.write().unwrap().insert(node, addr);
+        self.shared_context.nodes_addr.lock().unwrap().insert(node, addr);
     }
 }
 
@@ -426,7 +429,9 @@ impl Drop for Fabric {
         self.shared_context.running.store(false, atomic::Ordering::Relaxed);
         self.shared_context.connector_notifier.wakeup().unwrap();
         // join the loop thread
-        let _ = self.loop_thread.take().map(|t| t.join());
+        if let Some(t) = self.loop_thread.take() {
+            t.join().unwrap();
+        }
     }
 }
 

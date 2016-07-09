@@ -1,4 +1,4 @@
-use std::{thread, net, cmp};
+use std::{thread, net, cmp, time};
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
 use linear_map::LinearMap;
@@ -34,6 +34,21 @@ struct Inner<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
     etcd: etcd::Client,
     callback: Option<DHTChangeFn>,
     running: bool,
+}
+
+macro_rules! try_cas {
+    ($s: ident, $e: block) => (
+        loop {
+            let (ring_version, new_ring) = $e;
+            match $s.propose(ring_version, new_ring){
+                Ok(()) => break,
+                Err(e) => {
+                    error!("Proposing new ring failed with: {}", e);
+                    $s.wait_new_version(ring_version);
+                }
+            }
+        }
+    );
 }
 
 impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
@@ -148,17 +163,19 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         self.node
     }
 
+    fn wait_new_version(&self, old_version: u64) {
+        while self.inner.read().unwrap().ring_version <= old_version {
+            thread::sleep(time::Duration::from_millis(1));
+        }
+    }
+
     pub fn key_vnode(&self, key: &[u8]) -> u16 {
+        // FIXME: this should be lock free
         let inner = self.inner.read().unwrap();
         (hash(key) % inner.ring.vnodes.len() as u64) as u16
     }
 
-    // pub fn nodes_for_key(&self, key: &[u8], n: usize, include_pending: bool) -> (u16, Vec<NodeId>) {
-    //     let vnode = self.key_vnode(key);
-    //     (vnode, self.nodes_for_vnode(vnode, n, include_pending))
-    // }
-
-    pub fn nodes_for_vnode(&self, vnode: u16, n: usize, include_pending: bool) -> Vec<NodeId> {
+    pub fn nodes_for_vnode(&self, vnode: u16, include_pending: bool) -> Vec<NodeId> {
         let mut result = Vec::new();
         let inner = self.inner.read().unwrap();
         result.extend(inner.ring.vnodes[vnode as usize].iter().map(|(&n, _)| n));
@@ -180,63 +197,73 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         (inner.ring.clone(), inner.ring_version)
     }
 
-    pub fn claim(&self, node: NodeId, meta: T) -> Vec<u16> {
-        let (mut ring, ring_version) = self.ring_clone();
-        let mut moves = Vec::new();
-        let members = self.members().len() + 1;
-        let partitions = ring.vnodes.len();
-        if members <= ring.replication_factor {
-            for i in 0..ring.vnodes.len() as u16 {
-                ring.pending.entry(i).or_insert(Default::default()).insert(node, meta.clone());
-                moves.push(i);
-            }
-        } else {
-            for _ in 0..partitions * ring.replication_factor / members {
-                loop {
-                    let r = (rand::thread_rng().gen::<usize>() % partitions) as u16;
-                    if let Some(pending) = ring.pending.get(&r) {
-                        if pending.contains_key(&node) {
-                            continue;
+    pub fn claim(&self, node: NodeId, meta: T) -> Result<(), GenericError> {
+        try_cas!(self, {
+            let (mut ring, ring_version) = self.ring_clone();
+            let members = self.members().len() + 1;
+            let partitions = ring.vnodes.len();
+            if members <= ring.replication_factor {
+                for i in 0..ring.vnodes.len() as u16 {
+                    ring.pending.entry(i).or_insert(Default::default()).insert(node, meta.clone());
+                }
+            } else {
+                for _ in 0..partitions * ring.replication_factor / members {
+                    loop {
+                        let r = (rand::thread_rng().gen::<usize>() % partitions) as u16;
+                        if let Some(pending) = ring.pending.get(&r) {
+                            if pending.contains_key(&node) {
+                                continue;
+                            }
                         }
+                        ring.pending
+                            .entry(r)
+                            .or_insert(Default::default())
+                            .insert(node, meta.clone());
+                        break;
                     }
-                    ring.pending.entry(r).or_insert(Default::default()).insert(node, meta.clone());
-                    moves.push(r);
-                    break;
                 }
             }
-        }
-        self.propose(ring_version, ring).unwrap();
-        moves
+            (ring_version, ring)
+        });
+        Ok(())
     }
 
-    pub fn add_pending_node(&self, vnode: u16, node: NodeId, meta: T) {
-        let (mut ring, ring_version) = self.ring_clone();
-        {
-            let pending = ring.pending.entry(vnode).or_insert(Default::default());
-            assert!(pending.insert(node, meta).is_none());
-        }
-        self.propose(ring_version, ring).unwrap();
+    pub fn add_pending_node(&self, vnode: u16, node: NodeId, meta: T) -> Result<(), GenericError> {
+        try_cas!(self, {
+            let (mut ring, ring_version) = self.ring_clone();
+            {
+                let pending = ring.pending.entry(vnode).or_insert(Default::default());
+                assert!(pending.insert(node, meta.clone()).is_none());
+            }
+            (ring_version, ring)
+        });
+        Ok(())
     }
 
-    pub fn remove_pending_node(&self, vnode: u16, node: NodeId) {
-        let (mut ring, ring_version) = self.ring_clone();
-        {
-            let pending = ring.pending.entry(vnode).or_insert(Default::default());
-            pending.remove(&node).unwrap();
-        }
-        self.propose(ring_version, ring).unwrap();
+    pub fn remove_pending_node(&self, vnode: u16, node: NodeId) -> Result<(), GenericError> {
+        try_cas!(self, {
+            let (mut ring, ring_version) = self.ring_clone();
+            {
+                let pending = ring.pending.entry(vnode).or_insert(Default::default());
+                pending.remove(&node).unwrap();
+            }
+            (ring_version, ring)
+        });
+        Ok(())
     }
 
-    pub fn promote_pending_node(&self, vnode: u16, node: NodeId) {
-        let (mut ring, ring_version) = self.ring_clone();
+    pub fn promote_pending_node(&self, vnode: u16, node: NodeId) -> Result<(), GenericError> {
+        try_cas!(self, {
+            let (mut ring, ring_version) = self.ring_clone();
+            let new_meta = {
+                let pending = ring.pending.entry(vnode).or_insert(Default::default());
+                pending.remove(&node).unwrap()
+            };
 
-        let new_meta = {
-            let pending = ring.pending.entry(vnode).or_insert(Default::default());
-            pending.remove(&node).unwrap()
-        };
-
-        assert!(ring.vnodes[vnode as usize].insert(node, new_meta).is_none());
-        self.propose(ring_version, ring).unwrap();
+            assert!(ring.vnodes[vnode as usize].insert(node, new_meta).is_none());
+            (ring_version, ring)
+        });
+        Ok(())
     }
 
     fn propose(&self, old_version: u64, new_ring: Ring<T>) -> Result<(), GenericError> {
@@ -282,8 +309,8 @@ mod tests {
         let addr = "127.0.0.1:9000".parse().unwrap();
         for rf in 0..3 {
             let dht = DHT::new(rf, node, addr, Some(((), 256)));
-            assert_eq!(dht.nodes_for_vnode(0, 1, true), &[node]);
-            assert_eq!(dht.nodes_for_vnode(0, 3, true), &[node]);
+            assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
+            assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
             assert_eq!(dht.members(), &[(node, addr)]);
         }
     }
