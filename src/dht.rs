@@ -42,9 +42,12 @@ macro_rules! try_cas {
             let (ring_version, new_ring) = $e;
             match $s.propose(ring_version, new_ring){
                 Ok(()) => break,
+                Err(etcd::Error::Api(ref e)) if e.error_code == 101 => {
+                    $s.wait_new_version(ring_version);
+                }
                 Err(e) => {
                     error!("Proposing new ring failed with: {}", e);
-                    $s.wait_new_version(ring_version);
+                    return Err(e.into());
                 }
             }
         }
@@ -266,7 +269,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         Ok(())
     }
 
-    fn propose(&self, old_version: u64, new_ring: Ring<T>) -> Result<(), GenericError> {
+    fn propose(&self, old_version: u64, new_ring: Ring<T>) -> Result<(), etcd::Error> {
         // self.inner.write().unwrap().ring = new_ring;
         debug!("proposing new ring");
         let new = Self::serialize(&new_ring).unwrap();

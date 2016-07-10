@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time;
 use std::collections::{BTreeMap, HashMap};
 use linear_map::LinearMap;
 use version_vector::*;
@@ -19,8 +20,8 @@ pub enum VNodeStatus {
 
 pub struct VNode {
     state: VNodeState,
-    pub migrations: LinearMap<(NodeId, u64), Migration>,
-    pub syncs: LinearMap<(NodeId, u64), Synchronization>,
+    migrations: LinearMap<(NodeId, u64), Migration>,
+    syncs: LinearMap<(NodeId, u64), Synchronization>,
     inflight: HashMap<u64, ReqState>,
 }
 
@@ -164,8 +165,21 @@ impl VNode {
         }
     }
 
+    pub fn syncs_inflight(&self) -> usize {
+        self.syncs.len()
+    }
+
+    pub fn migrations_inflight(&self) -> usize {
+        self.migrations.len()
+    }
+
     fn cookie(&mut self) -> u64 {
         thread_rng().gen()
+    }
+
+    // TICK
+    pub fn handler_tick(&mut self, time: time::SystemTime) {
+        //
     }
 
     // CLIENT CRUD

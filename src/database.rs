@@ -1,5 +1,4 @@
-use std::{net, path};
-use std::time::Duration;
+use std::{net, path, time};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use dht::DHT;
@@ -28,12 +27,6 @@ struct ProxyReqState {
 }
 
 macro_rules! vnode {
-    ($s: expr, k: $k: expr, $ok: expr) => ({
-        vnode!($s, $s.dht.key_vnode(&$k), $ok);
-    });
-    ($s: expr, k: $k: expr, $ok: expr, $el: expr) => ({
-        vnode!($s, $s.dht.key_vnode(&$k), $ok, $el);
-    });
     ($s: expr, $k: expr, $ok: expr) => ({
         let vnodes = $s.vnodes.read().unwrap();
         vnodes.get(&$k).map(|vn| vn.lock().unwrap()).map($ok);
@@ -63,7 +56,7 @@ impl Database {
             inflight: Default::default(),
             responses: Default::default(),
             vnodes: Default::default(),
-            workers: Mutex::new(WorkerManager::new(8, Duration::new(0, 200))),
+            workers: Mutex::new(WorkerManager::new(8, time::Duration::from_millis(200))),
         });
 
         db.workers.lock().unwrap().start(|| {
@@ -77,7 +70,7 @@ impl Database {
                     };
                     match wm {
                         WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
-                        WorkerMsg::Tick(time) => (),
+                        WorkerMsg::Tick(time) => db.handler_tick(time),
                         WorkerMsg::Request => (),
                         WorkerMsg::Exit => break,
                     }
@@ -91,7 +84,11 @@ impl Database {
         let cdb = Arc::downgrade(&db);
         db.dht.set_callback(Box::new(move || {
             cdb.upgrade().map(|db| {
-                db.dht.members().into_iter().map(|(n, a)| db.fabric.register_node(n, a)).count()
+                db.dht
+                    .members()
+                    .into_iter()
+                    .map(|(n, a)| db.fabric.register_node(n, a))
+                    .count()
             });
         }));
 
@@ -108,7 +105,13 @@ impl Database {
         db
     }
 
-    pub fn handler_fabric_msg(&self, from: NodeId, msg: FabricMsg) {
+    fn handler_tick(&self, time: time::SystemTime) {
+        for vn in self.vnodes.read().unwrap().values() {
+            vn.lock().unwrap().handler_tick(time);
+        }
+    }
+
+    fn handler_fabric_msg(&self, from: NodeId, msg: FabricMsg) {
         match msg {
             FabricMsg::GetRemote(m) => self.handler_get_remote(from, m),
             FabricMsg::GetRemoteAck(m) => self.handler_get_remote_ack(from, m),
@@ -132,15 +135,15 @@ impl Database {
         };
     }
 
-    fn migrations(&self) -> usize {
-        self.vnodes.read().unwrap().values().map(|vn| vn.lock().unwrap().migrations.len()).sum()
+    fn migrations_inflight(&self) -> usize {
+        self.vnodes.read().unwrap().values().map(|vn| vn.lock().unwrap().migrations_inflight()).sum()
     }
 
-    fn synchronizations(&self) -> usize {
-        self.vnodes.read().unwrap().values().map(|vn| vn.lock().unwrap().syncs.len()).sum()
+    fn syncs_inflight(&self) -> usize {
+        self.vnodes.read().unwrap().values().map(|vn| vn.lock().unwrap().syncs_inflight()).sum()
     }
 
-    pub fn init_vnode(&self, vnode_n: u16) {
+    fn init_vnode(&self, vnode_n: u16) {
         self.vnodes
             .write()
             .unwrap()
@@ -148,7 +151,7 @@ impl Database {
             .or_insert_with(|| Mutex::new(VNode::new(&self.storage_dir, vnode_n)));
     }
 
-    pub fn remove_vnode(&self, vnode_n: u16) {
+    fn remove_vnode(&self, vnode_n: u16) {
         self.vnodes.write().unwrap().remove(&vnode_n);
     }
 
@@ -157,7 +160,7 @@ impl Database {
         vnodes.get(&vnode).unwrap().lock().unwrap().start_migration(self);
     }
 
-    pub fn send_set(&self, addr: NodeId, vnode: u16, cookie: u64, key: &[u8],
+    fn send_set(&self, addr: NodeId, vnode: u16, cookie: u64, key: &[u8],
                     value_opt: Option<&[u8]>, vv: VersionVector) {
         self.fabric
             .send_message(addr,
@@ -173,13 +176,15 @@ impl Database {
 
     // CLIENT CRUD
     fn set(&self, token: u64, key: &[u8], value: Option<&[u8]>, vv: VersionVector) {
-        vnode!(self, k: key, |mut vn| {
+        let vnode = self.dht.key_vnode(key);
+        vnode!(self, vnode, |mut vn| {
             vn.do_set(self, token, key, value, vv);
         });
     }
 
     fn get(&self, token: u64, key: &[u8]) {
-        vnode!(self, k: key, |mut vn| {
+        let vnode = self.dht.key_vnode(key);
+        vnode!(self, vnode, |mut vn| {
             vn.do_get(self, token, key);
         });
     }
@@ -359,7 +364,7 @@ mod tests {
             assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
-        while db1.migrations() + db2.migrations() > 0 {
+        while db1.migrations_inflight() + db2.migrations_inflight() > 0 {
             warn!("waiting for migrations to finish");
             thread::sleep_ms(1000);
         }

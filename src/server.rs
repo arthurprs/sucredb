@@ -1,4 +1,4 @@
-use std::io::{Write, stderr};
+use std::io::Write;
 use std::str;
 use std::error::Error;
 use database::Database;
@@ -61,9 +61,10 @@ impl Protocol for RespConnection {
         debug!("bytes_flushed");
         Intent::done()
     }
+
     fn timeout(self, _transport: &mut Transport<TcpStream>, _scope: &mut Scope<Context>)
                -> Intent<Self> {
-        writeln!(&mut stderr(), "Timeout happened").ok();
+        debug!("Timeout happened");
         Intent::done()
     }
 
@@ -71,15 +72,16 @@ impl Protocol for RespConnection {
               -> Intent<Self> {
         unreachable!();
     }
+
     fn exception(self, _transport: &mut Transport<Self::Socket>, reason: Exception,
                  _scope: &mut Scope<Self::Context>)
                  -> Intent<Self> {
-        writeln!(&mut stderr(), "Error: {}", reason).ok();
+        error!("exception: {}", reason);
         Intent::done()
     }
 
     fn fatal(self, reason: Exception, _scope: &mut Scope<Self::Context>) -> Option<Box<Error>> {
-        writeln!(&mut stderr(), "Error: {}", reason).ok();
+        error!("fatal: {}", reason);
         None
     }
 }
@@ -91,7 +93,8 @@ impl Server {
     pub fn run(&self) {
         let mut event_loop = rotor::Loop::new(&rotor::Config::new()).unwrap();
         let lst = TcpListener::bind(&"127.0.0.1:6379".parse().unwrap()).unwrap();
-        event_loop.add_machine_with(|scope| Accept::<Stream<RespConnection>, _>::new(lst, (), scope))
+        event_loop
+            .add_machine_with(|scope| Accept::<Stream<RespConnection>, _>::new(lst, (), scope))
             .unwrap();
         event_loop.run(Context {}).unwrap();
     }
