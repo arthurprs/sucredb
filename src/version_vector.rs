@@ -9,7 +9,7 @@ pub type Id = u64;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VersionVector(LinearMap<Id, Version>);
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BitmappedVersion {
     base: Version,
     #[serde(serialize_with="serialize_ramp", deserialize_with="deserialize_ramp")]
@@ -166,7 +166,7 @@ impl BitmappedVersionVector {
     }
 
     pub fn add(&mut self, id: Id, version: Version) {
-        self.0.entry(id).or_insert_with(|| BitmappedVersion::new(0, 0)).add(version);
+        self.0.entry(id).or_insert_with(|| Default::default()).add(version);
     }
 
     pub fn get_mut(&mut self, id: Id) -> Option<&mut BitmappedVersion> {
@@ -175,6 +175,10 @@ impl BitmappedVersionVector {
 
     pub fn get(&self, id: Id) -> Option<&BitmappedVersion> {
         self.0.get(&id)
+    }
+
+    pub fn entry_or_default(&mut self, id: Id) -> &mut BitmappedVersion {
+        self.0.entry(id).or_insert_with(|| Default::default())
     }
 
     pub fn join(&mut self, other: &Self) {

@@ -34,6 +34,7 @@ pub struct VNodeState {
     unflushed_coord_writes: usize,
 }
 
+#[derive(Default)]
 struct VNodePeer {
     knowledge: u64,
     log: BTreeMap<u64, Vec<u8>>,
@@ -93,7 +94,7 @@ impl VNodePeer {
     }
 
     fn advance_knowledge(&mut self, until: u64) {
-        debug_assert!(until > self.knowledge);
+        debug_assert!(until >= self.knowledge);
         self.knowledge = until;
     }
 
@@ -239,7 +240,7 @@ impl VNode {
                 state.container.sync(container);
                 state.succesfull += 1;
             }
-            debug!("process_get c:{} t:{} tl:{} - {} ({}) of {}",
+            trace!("process_get c:{} tk:{} tl:{} - r:{} s:{} r:{}",
                    cookie,
                    state.token,
                    state.total,
@@ -265,6 +266,13 @@ impl VNode {
             if succesfull {
                 state.succesfull += 1;
             }
+            trace!("process_set c:{} tk:{} tl:{} - r:{} s:{} r:{}",
+                   cookie,
+                   state.token,
+                   state.total,
+                   state.succesfull,
+                   state.replies,
+                   state.required);
             if state.succesfull == state.required {
                 // return to client & remove state
                 true
@@ -347,7 +355,7 @@ impl VNode {
 
     pub fn handler_sync_start(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
         let cookie = msg.cookie;
-        let clock_snapshot = self.state.clocks.get(from).unwrap().clone();
+        let clock_snapshot = self.state.clocks.get(db.dht.node()).cloned().unwrap_or_default();
         let clock_in_peer = msg.clock_in_peer.clone();
         let mut sync = Synchronization::Outgoing {
             cookie: cookie,
@@ -421,33 +429,34 @@ impl VNode {
             return;
         }
 
-        self.state
-            .peers
-            .keys()
-            .nth(thread_rng().gen_range(0, self.state.peers.len()))
-            .cloned()
-            .map(|n| {
-                let cookie = self.cookie();
-                let clock_in_peer = self.state.clocks.get(n).cloned().unwrap();
-                let sync = Synchronization::Incomming {
-                    peer: n,
-                    cookie: cookie,
-                    vnode: self.state.num,
-                    count: 0,
-                };
-
-                db.fabric
-                    .send_message(n,
-                                  MsgSyncStart {
-                                      cookie: cookie,
-                                      vnode: self.state.num,
-                                      clock_in_peer: clock_in_peer,
-                                  })
-                    .unwrap();
-                let p = self.syncs.insert((n, cookie), sync);
-                assert!(p.is_none());
+        let peer = {
+            let mut peers = db.dht.nodes_for_vnode(self.state.num, false);
+            peers.retain(|&i| i != db.dht.node());
+            if let Some(&peer) = thread_rng().choose(&peers) {
+                peer
+            } else {
                 return;
-            });
+            }
+        };
+        let cookie = self.cookie();
+        let clock_in_peer = self.state.clocks.get(peer).cloned().unwrap_or_default();
+        let sync = Synchronization::Incomming {
+            peer: peer,
+            cookie: cookie,
+            vnode: self.state.num,
+            count: 0,
+        };
+
+        db.fabric
+            .send_message(peer,
+                          MsgSyncStart {
+                              cookie: cookie,
+                              vnode: self.state.num,
+                              clock_in_peer: clock_in_peer,
+                          })
+            .unwrap();
+        let p = self.syncs.insert((peer, cookie), sync);
+        assert!(p.is_none());
     }
 }
 
@@ -522,7 +531,7 @@ impl VNodeState {
         if let Some(peer_id) = log {
             self.peers
                 .entry(peer_id)
-                .or_insert_with(|| VNodePeer::new())
+                .or_insert_with(|| Default::default())
                 .log(self.clocks.get(peer_id).unwrap().base(), key.into());
         }
     }
@@ -539,9 +548,9 @@ impl Synchronization {
                                         ref mut count,
                                         ref clock_snapshot,
                                         .. } => {
-                let vnpeer = state.peers.get(&peer).unwrap();
+                let log = &state.log;
                 let kv_opt = missing_dots.next()
-                    .and_then(|dot| vnpeer.get(dot))
+                    .and_then(|dot| log.get(&dot))
                     .and_then(|k| state.storage.get_vec(&k).map(|v| (k, v)));
                 if let Some((k, v)) = kv_opt {
                     db.fabric
@@ -549,7 +558,7 @@ impl Synchronization {
                                       MsgSyncSend {
                                           cookie: cookie,
                                           vnode: vnode,
-                                          key: k.into(),
+                                          key: k.clone(),
                                           container: bincode_serde::deserialize(&v).unwrap(),
                                       })
                         .unwrap();
@@ -607,16 +616,19 @@ impl Synchronization {
         match *self {
             Synchronization::Incomming { peer, .. } => {
                 if msg.result.is_ok() {
-                    state.clocks.get_mut(db.dht.node()).unwrap().join(msg.result.as_ref().unwrap());
+                    let bvv = BitmappedVersionVector::new();
+                    state.clocks.entry_or_default(db.dht.node()).join(msg.result.as_ref().unwrap());
                     state.storage.sync();
                     // send it back as a form of ack-ack
                     db.fabric.send_message(peer, msg).unwrap();
                 }
             }
             Synchronization::Outgoing { ref clock_in_peer, peer, .. } => {
-                // advance to the snapshot base?
-                let vnpeer = state.peers.get_mut(&peer).unwrap();
-                vnpeer.advance_knowledge(clock_in_peer.base());
+                // TODO: advance to the snapshot base instead? Is it safe to do so?
+                state.peers
+                    .entry(peer)
+                    .or_insert_with(|| Default::default())
+                    .advance_knowledge(clock_in_peer.base());
             }
         }
         true
@@ -702,7 +714,7 @@ impl Migration {
                 if msg.result.is_ok() {
                     state.clocks.merge(msg.result.as_ref().unwrap());
                     state.storage.sync();
-                    db.dht.promote_pending_node(state.num, db.dht.node());
+                    db.dht.promote_pending_node(state.num, db.dht.node()).unwrap();
                     // send it back as a form of ack-ack
                     db.fabric.send_message(peer, msg).unwrap();
                 }

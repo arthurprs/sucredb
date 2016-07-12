@@ -11,7 +11,6 @@ use workers::{WorkerMsg, WorkerManager};
 pub struct Database {
     pub dht: DHT<()>,
     pub fabric: Fabric,
-    pub replication_factor: usize,
     storage_dir: path::PathBuf,
     workers: Mutex<WorkerManager>,
     vnodes: RwLock<HashMap<u16, Mutex<VNode>>>,
@@ -42,7 +41,6 @@ impl Database {
         // FIXME: save to storage
         let node = thread_rng().gen::<i64>().abs() as NodeId;
         let db = Arc::new(Database {
-            replication_factor: 3,
             fabric: Fabric::new(node, bind_addr).unwrap(),
             dht: DHT::new(3,
                           node,
@@ -92,16 +90,13 @@ impl Database {
             });
         }));
 
-        let mut workers = db.workers.lock().unwrap().sender();
-        db.fabric.register_msg_handler(FabricMsgType::Crud,
-                                       Box::new(move |f, m| {
-                                           workers.send(WorkerMsg::Fabric(f, m));
-                                       }));
-        let mut workers = db.workers.lock().unwrap().sender();
-        db.fabric.register_msg_handler(FabricMsgType::Bootstrap,
-                                       Box::new(move |f, m| {
-                                           workers.send(WorkerMsg::Fabric(f, m));
-                                       }));
+        for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch, FabricMsgType::Bootstrap] {
+            let mut workers = db.workers.lock().unwrap().sender();
+            db.fabric.register_msg_handler(msg_type,
+                                           Box::new(move |f, m| {
+                                               workers.send(WorkerMsg::Fabric(f, m));
+                                           }));
+        }
         db
     }
 
@@ -131,12 +126,29 @@ impl Database {
             FabricMsg::BootstrapFin(m) => {
                 vnode!(self, m.vnode, |mut vn| vn.handler_bootstrap_fin(self, from, m))
             }
+            FabricMsg::SyncStart(m) => {
+                vnode!(self, m.vnode, |mut vn| vn.handler_sync_start(self, from, m))
+            }
+            FabricMsg::SyncSend(m) => {
+                vnode!(self, m.vnode, |mut vn| vn.handler_sync_send(self, from, m))
+            }
+            FabricMsg::SyncAck(m) => {
+                vnode!(self, m.vnode, |mut vn| vn.handler_sync_ack(self, from, m))
+            }
+            FabricMsg::SyncFin(m) => {
+                vnode!(self, m.vnode, |mut vn| vn.handler_sync_fin(self, from, m))
+            }
             msg @ _ => unreachable!("Can't handle {:?}", msg),
         };
     }
 
     fn migrations_inflight(&self) -> usize {
-        self.vnodes.read().unwrap().values().map(|vn| vn.lock().unwrap().migrations_inflight()).sum()
+        self.vnodes
+            .read()
+            .unwrap()
+            .values()
+            .map(|vn| vn.lock().unwrap().migrations_inflight())
+            .sum()
     }
 
     fn syncs_inflight(&self) -> usize {
@@ -160,8 +172,13 @@ impl Database {
         vnodes.get(&vnode).unwrap().lock().unwrap().start_migration(self);
     }
 
-    fn send_set(&self, addr: NodeId, vnode: u16, cookie: u64, key: &[u8],
-                    value_opt: Option<&[u8]>, vv: VersionVector) {
+    fn start_sync(&self, vnode: u16) {
+        let vnodes = self.vnodes.read().unwrap();
+        vnodes.get(&vnode).unwrap().lock().unwrap().start_sync(self);
+    }
+
+    fn send_set(&self, addr: NodeId, vnode: u16, cookie: u64, key: &[u8], value_opt: Option<&[u8]>,
+                vv: VersionVector) {
         self.fabric
             .send_message(addr,
                           FabricMsg::Set(MsgSet {
@@ -223,7 +240,6 @@ impl Database {
     }
 
     // UTILITIES
-
     fn inflight(&self, token: u64) -> Option<ProxyReqState> {
         self.inflight.lock().unwrap().remove(&token)
     }
@@ -315,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn test_join() {
+    fn test_join_migrate() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
         let db1 = Database::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
@@ -371,6 +387,73 @@ mod tests {
 
         warn!("will check data in db2 after balancing");
         for i in 0..100 {
+            db2.get(i, i.to_string().as_bytes());
+            thread::sleep_ms(10);
+            assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+        }
+    }
+
+    #[test]
+    fn test_join_sync() {
+        let _ = fs::remove_dir_all("./t");
+        let _ = env_logger::init();
+        let db1 = Database::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        for i in 0u16..64 {
+            db1.init_vnode(i);
+        }
+        for i in 0..100 {
+            db1.set(i,
+                    i.to_string().as_bytes(),
+                    Some(i.to_string().as_bytes()),
+                    VersionVector::new());
+            db1.response(i).unwrap();
+        }
+        for i in 0..100 {
+            db1.get(i, i.to_string().as_bytes());
+            assert!(db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+        }
+
+        let db2 = Database::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+
+        for i in 0u16..64 {
+            db2.init_vnode(i);
+        }
+        // warn!("will check data in db2 before balancing");
+        // for i in 0..100 {
+        //     db2.get(i, i.to_string().as_bytes());
+        //     thread::sleep_ms(10);
+        //     assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+        // }
+
+        db2.dht.claim(db2.dht.node(), ());
+        for i in 0u16..64 {
+            if db2.dht.nodes_for_vnode(i, true).contains(&db2.dht.node()) {
+                db2.start_sync(i);
+            }
+        }
+        warn!("will check data in db2 during balancing");
+        for i in 0..10 {
+            db2.get(i, i.to_string().as_bytes());
+            let result = (0..100)
+                .filter_map(|_| {
+                    thread::sleep_ms(10);
+                    db2.response(i)
+                })
+                .next();
+            assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
+        }
+
+        while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
+            warn!("waiting for migrations to finish");
+            thread::sleep_ms(1000);
+        }
+
+        for i in db2.vnodes.read().unwrap().keys().cloned() {
+            db2.dht.promote_pending_node(i, db2.dht.node());
+        }
+
+        warn!("will check data in db2 after balancing");
+        for i in 0..10 {
             db2.get(i, i.to_string().as_bytes());
             thread::sleep_ms(10);
             assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
