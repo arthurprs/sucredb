@@ -10,11 +10,10 @@ extern crate rand;
 extern crate ramp;
 extern crate linear_map;
 extern crate serde;
-extern crate serde_json;
 extern crate serde_yaml;
-extern crate lmdb_rs;
-extern crate tendril;
 extern crate bincode;
+extern crate tendril;
+extern crate lmdb_rs;
 #[macro_use]
 extern crate rotor;
 extern crate rotor_stream;
@@ -26,7 +25,6 @@ extern crate nodrop;
 #[macro_use]
 mod utils;
 mod version_vector;
-#[cfg(not(test))]
 mod gossip;
 mod inflightmap;
 mod dht;
@@ -37,9 +35,7 @@ mod storage;
 mod hash;
 mod database;
 mod vnode;
-#[cfg(not(test))]
 mod resp;
-#[cfg(not(test))]
 mod server;
 mod workers;
 

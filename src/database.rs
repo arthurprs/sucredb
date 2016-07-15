@@ -1,17 +1,18 @@
-use std::{net, path, time};
+use std::{net, time};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use dht::DHT;
 use version_vector::*;
 use fabric::*;
-use rand::{Rng, thread_rng};
 use vnode::*;
-use workers::{WorkerMsg, WorkerManager};
+use workers::*;
+use storage::{StorageManager, Storage};
 
 pub struct Database {
     pub dht: DHT<()>,
     pub fabric: Fabric,
-    storage_dir: path::PathBuf,
+    pub meta_storage: Storage,
+    storage_manager: StorageManager,
     workers: Mutex<WorkerManager>,
     vnodes: RwLock<HashMap<u16, Mutex<VNode>>>,
     // TODO: create a thread to walk inflight and handle timeouts
@@ -37,9 +38,10 @@ macro_rules! vnode {
 }
 
 impl Database {
-    pub fn new(bind_addr: net::SocketAddr, storage_dir: &str, create: bool) -> Arc<Database> {
-        // FIXME: save to storage
-        let node = thread_rng().gen::<i64>().abs() as NodeId;
+    pub fn new(node: NodeId, bind_addr: net::SocketAddr, storage_dir: &str, create: bool)
+               -> Arc<Database> {
+        let storage_manager = StorageManager::new(storage_dir).unwrap();
+        let meta_storage = storage_manager.open(-1, true).unwrap();
         let db = Arc::new(Database {
             fabric: Fabric::new(node, bind_addr).unwrap(),
             dht: DHT::new(3,
@@ -50,12 +52,20 @@ impl Database {
                           } else {
                               None
                           }),
-            storage_dir: storage_dir.into(),
+            storage_manager: storage_manager,
+            meta_storage: meta_storage,
             inflight: Default::default(),
             responses: Default::default(),
             vnodes: Default::default(),
             workers: Mutex::new(WorkerManager::new(8, time::Duration::from_millis(200))),
         });
+
+        for i in 0..db.dht.partitions() as u16 {
+            if db.storage_manager.open(i as i32, false).is_ok() {
+                info!("existing vnode {}", i);
+                db.init_vnode(i);
+            }
+        }
 
         db.workers.lock().unwrap().start(|| {
             let cdb = Arc::downgrade(&db);
@@ -97,6 +107,7 @@ impl Database {
                                                workers.send(WorkerMsg::Fabric(f, m));
                                            }));
         }
+
         db
     }
 
@@ -160,7 +171,7 @@ impl Database {
             .write()
             .unwrap()
             .entry(vnode_n)
-            .or_insert_with(|| Mutex::new(VNode::new(&self.storage_dir, vnode_n)));
+            .or_insert_with(|| Mutex::new(VNode::new(&self.storage_manager, vnode_n)));
     }
 
     fn remove_vnode(&self, vnode_n: u16) {
@@ -254,6 +265,12 @@ impl Database {
     }
 }
 
+impl Drop for Database {
+    fn drop(&mut self) {
+        self.vnodes.write().unwrap().clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,7 +283,7 @@ mod tests {
     fn test_one() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db = Database::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
+        let db = Database::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db", true);
         for i in 0u16..64 {
             db.init_vnode(i);
         }
@@ -304,8 +321,8 @@ mod tests {
     fn test_two() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db1 = Database::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
-        let db2 = Database::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let db1 = Database::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let db2 = Database::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         for i in 0u16..64 {
             db1.init_vnode(i);
             db2.init_vnode(i);
@@ -334,7 +351,7 @@ mod tests {
     fn test_join_migrate() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db1 = Database::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let db1 = Database::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         for i in 0u16..64 {
             db1.init_vnode(i);
         }
@@ -350,7 +367,7 @@ mod tests {
             assert!(db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
-        let db2 = Database::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let db2 = Database::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
 
         for i in 0u16..64 {
             db2.init_vnode(i);
@@ -397,7 +414,7 @@ mod tests {
     fn test_join_sync() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db1 = Database::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let db1 = Database::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         for i in 0u16..64 {
             db1.init_vnode(i);
         }
@@ -413,17 +430,17 @@ mod tests {
             assert!(db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
-        let db2 = Database::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let db2 = Database::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
 
         for i in 0u16..64 {
             db2.init_vnode(i);
         }
-        // warn!("will check data in db2 before balancing");
-        // for i in 0..100 {
-        //     db2.get(i, i.to_string().as_bytes());
-        //     thread::sleep_ms(10);
-        //     assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
-        // }
+        warn!("will check data in db2 before balancing");
+        for i in 0..100 {
+            db2.get(i, i.to_string().as_bytes());
+            thread::sleep_ms(10);
+            assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+        }
 
         db2.dht.claim(db2.dht.node(), ());
         for i in 0u16..64 {
@@ -432,7 +449,7 @@ mod tests {
             }
         }
         warn!("will check data in db2 during balancing");
-        for i in 0..10 {
+        for i in 0..100 {
             db2.get(i, i.to_string().as_bytes());
             let result = (0..100)
                 .filter_map(|_| {
@@ -453,7 +470,7 @@ mod tests {
         }
 
         warn!("will check data in db2 after balancing");
-        for i in 0..10 {
+        for i in 0..100 {
             db2.get(i, i.to_string().as_bytes());
             thread::sleep_ms(10);
             assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));

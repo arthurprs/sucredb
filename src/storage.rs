@@ -1,10 +1,8 @@
 use std::path::{Path, PathBuf};
-use std::fs;
 use lmdb_rs;
-use std::collections::HashMap;
 use utils::*;
 use std::str;
-use std::sync::Arc;
+use std::sync::{Mutex, Arc};
 use nodrop::NoDrop;
 
 pub struct StorageIterator {
@@ -16,45 +14,56 @@ pub struct StorageIterator {
     iterators_handle: Arc<()>,
 }
 
-pub struct Storage {
+pub struct StorageManager {
     path: PathBuf,
     env: lmdb_rs::Environment,
+    storages_handle: Arc<Mutex<()>>,
+}
+
+pub struct Storage {
+    env: lmdb_rs::Environment,
     db_h: lmdb_rs::DbHandle,
+    storages_handle: Arc<Mutex<()>>,
     iterators_handle: Arc<()>,
 }
 
-impl Storage {
-    pub fn open_all<P: AsRef<Path>>(dir_path: P) -> Result<HashMap<i32, Storage>, GenericError> {
-        let mut result = HashMap::new();
-        for maybe_entry in try!(fs::read_dir(&dir_path)) {
-            let path = try!(maybe_entry).path();
-            let db_num = try!(path.file_name().unwrap().to_string_lossy().parse::<i32>());
-            result.insert(db_num, try!(Self::open(&dir_path, db_num, false)));
-        }
-        Ok(result)
-    }
-
-    pub fn open<P: AsRef<Path>>(path: P, db_num: i32, create: bool) -> Result<Storage, GenericError> {
-        let db_path = path.as_ref().to_owned().join(db_num.to_string());
+impl StorageManager {
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<StorageManager, GenericError> {
         let env = try!(lmdb_rs::Environment::new()
             .map_size(10 * 1024 * 1024)
             .flags(lmdb_rs::core::EnvCreateNoTls)
-            .autocreate_dir(create)
-            .open(&db_path, 0o777));
-        let db_h = try!(env.get_default_db(lmdb_rs::DbFlags::empty()));
-        Ok(Storage {
+            .autocreate_dir(true)
+            .max_dbs(256)
+            .open(path.as_ref(), 0o777));
+        Ok(StorageManager {
             path: path.as_ref().into(),
             env: env,
-            db_h: db_h,
-            iterators_handle: Arc::new(()),
+            storages_handle: Default::default(),
         })
     }
 
+    pub fn open(&self, db_num: i32, create: bool) -> Result<Storage, GenericError> {
+        let _wlock = self.storages_handle.lock().unwrap();
+        let db_name = db_num.to_string();
+        let db_h = try!(if create {
+            self.env.create_db(&db_name, lmdb_rs::DbFlags::empty())
+        } else {
+            self.env.get_db(&db_name, lmdb_rs::DbFlags::empty())
+        });
+        Ok(Storage {
+            env: self.env.clone(),
+            db_h: db_h,
+            storages_handle: self.storages_handle.clone(),
+            iterators_handle: Arc::new(()),
+        })
+    }
+}
+
+impl Storage {
     pub fn get<R, F: FnOnce(Option<&[u8]>) -> R>(&self, key: &[u8], callback: F) -> R {
-        let r1 = self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok();
-        let r2 = callback(r1);
-        debug!("get {:?} ({:?} bytes)", str::from_utf8(key), r1.map(|x| x.len()));
-        r2
+        let r: Option<&[u8]> = self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok();
+        debug!("get {:?} ({:?} bytes)", str::from_utf8(key), r.map(|x| x.len()));
+        callback(r)
     }
 
     pub fn iter(&self) -> StorageIterator {
@@ -82,38 +91,43 @@ impl Storage {
 
     pub fn set(&self, key: &[u8], value: &[u8]) {
         debug!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
+        let _wlock = self.storages_handle.lock().unwrap();
         let txn = self.env.new_transaction().unwrap();
         txn.bind(&self.db_h).set(&key, &value).unwrap();
         txn.commit().unwrap();
     }
 
     pub fn del(&self, key: &[u8]) {
+        let _wlock = self.storages_handle.lock().unwrap();
         let txn = self.env.new_transaction().unwrap();
         txn.bind(&self.db_h).del(&key).unwrap();
         txn.commit().unwrap();
     }
 
     pub fn clear(&self) {
+        let _wlock = self.storages_handle.lock().unwrap();
         let txn = self.env.new_transaction().unwrap();
         txn.bind(&self.db_h).clear().unwrap();
         txn.commit().unwrap();
     }
 
-    pub fn purge(self) {
-        self.env.new_transaction().unwrap().bind(&self.db_h).del_db().unwrap();
-        let path = self.path.clone();
-        drop(self);
-        let _ = fs::remove_dir_all(path);
-    }
-
     pub fn sync(&self) {
+        let _wlock = self.storages_handle.lock().unwrap();
         self.env.sync(true).unwrap();
+    }
+}
+
+impl Drop for StorageManager {
+    fn drop(&mut self) {
+        let c = Arc::strong_count(&self.storages_handle);
+        assert!(c == 1, "{} pending databases", c - 1);
     }
 }
 
 impl Drop for Storage {
     fn drop(&mut self) {
-        assert_eq!(Arc::strong_count(&self.iterators_handle), 1);
+        let c = Arc::strong_count(&self.iterators_handle);
+        assert!(c == 1, "{} pending iterators", c - 1);
     }
 }
 
@@ -156,19 +170,21 @@ mod tests {
     #[test]
     fn test_simple() {
         let _ = fs::remove_dir_all("t/test_simple");
-        let storage = Storage::open(Path::new("t/test_simple"), 1, true).unwrap();
+        let sm = StorageManager::new("t/test_simple").unwrap();
+        let storage = sm.open(1, true).unwrap();
         assert_eq!(storage.get_vec(b"sample"), None);
         storage.set(b"sample", b"sample_value");
         assert_eq!(storage.get_vec(b"sample").unwrap(), b"sample_value");
         storage.del(b"sample");
         assert_eq!(storage.get_vec(b"sample"), None);
-        storage.purge();
+        drop(storage);
     }
 
     #[test]
     fn test_iter() {
         let _ = fs::remove_dir_all("t/test_simple");
-        let storage = Storage::open(Path::new("t/test_simple"), 1, true).unwrap();
+        let sm = StorageManager::new("t/test_simple").unwrap();
+        let storage = sm.open(1, true).unwrap();
         storage.set(b"1", b"1");
         storage.set(b"2", b"2");
         storage.set(b"3", b"3");
@@ -184,15 +200,19 @@ mod tests {
             true
         });
         assert_eq!(results, &[b"1", b"2", b"3"]);
+        drop(storage);
     }
 
     #[test]
     fn test_open_all() {
         let _ = fs::remove_dir_all("t/test_open_all");
-        Storage::open(Path::new("t/test_open_all"), 1, true).unwrap();
-        Storage::open(Path::new("t/test_open_all"), 2, true).unwrap();
-        Storage::open(Path::new("t/test_open_all"), 3, true).unwrap();
-        assert_eq!(Storage::open_all(Path::new("t/test_open_all")).unwrap().len(), 3);
+        let sm = StorageManager::new("t/test_open_all").unwrap();
+        sm.open(1, true).unwrap();
+        sm.open(2, true).unwrap();
+        sm.open(3, true).unwrap();
+        sm.open(1, false).unwrap();
+        sm.open(2, false).unwrap();
+        sm.open(3, false).unwrap();
     }
 
 }

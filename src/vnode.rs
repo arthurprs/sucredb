@@ -1,9 +1,8 @@
-use std::path::Path;
 use std::time;
 use std::collections::{BTreeMap, HashMap};
 use linear_map::LinearMap;
 use version_vector::*;
-use storage::{Storage, StorageIterator};
+use storage::*;
 use database::Database;
 use bincode::{self, serde as bincode_serde};
 use fabric::*;
@@ -150,14 +149,14 @@ impl ReqState {
 }
 
 impl VNode {
-    pub fn new(storage_dir: &Path, num: u16) -> VNode {
+    pub fn new(storage_manager: &StorageManager, num: u16) -> VNode {
         VNode {
             state: VNodeState {
                 num: num,
                 clocks: BitmappedVersionVector::new(),
                 peers: Default::default(),
                 log: Default::default(),
-                storage: Storage::open(storage_dir, num as i32, true).unwrap(),
+                storage: storage_manager.open(num as i32, true).unwrap(),
                 unflushed_coord_writes: 0,
             },
             inflight: Default::default(),

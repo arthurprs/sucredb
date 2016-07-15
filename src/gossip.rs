@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use rand::{thread_rng, Rng};
 use inflightmap::InFlightMap;
 use serde::{Serialize, Deserialize};
-use serde_json;
+use serde_yaml;
 
 const PACKET_SIZE: usize = 1400;
 const SUSPECT_TIMEOUT_MS: u64 = 1000;
@@ -65,9 +65,9 @@ enum Message<T: Metadata> {
 }
 
 impl<T: Metadata> Message<T> {
-    fn encode(&self, mut buffer: &mut [u8]) -> Result<usize, serde_json::Error> {
+    fn encode(&self, mut buffer: &mut [u8]) -> Result<usize, serde_yaml::Error> {
         let buffer_len = buffer.len();
-        match serde_json::to_writer(&mut buffer, &self) {
+        match serde_yaml::to_writer(&mut buffer, &self) {
             Ok(_) => Ok(buffer_len - buffer.len()),
             Err(err) => {
                 warn!("json encode err: {:?}", err);
@@ -76,9 +76,9 @@ impl<T: Metadata> Message<T> {
         }
     }
 
-    fn decode(buffer: &[u8]) -> Result<Message<T>, serde_json::Error> {
+    fn decode(buffer: &[u8]) -> Result<Message<T>, serde_yaml::Error> {
         warn!("decoding {:?}", buffer);
-        match serde_json::from_slice(buffer) {
+        match serde_yaml::from_slice(buffer) {
             Ok(msg) => Ok(msg),
             Err(err) => {
                 warn!("json decode err: {:?}", err);

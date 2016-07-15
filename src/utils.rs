@@ -1,62 +1,48 @@
-use std::{hash, cmp};
-use std::str::FromStr;
-use std::string::ToString;
-use std::collections::HashMap;
+use std::{path, fs};
 use std::error::Error;
 use serde;
+use serde_yaml;
 
 pub type GenericError = Box<Error + Send + Sync + 'static>;
 
-pub fn json_serialize_map<K, T, S>(value: &HashMap<K, T>, serializer: &mut S) -> Result<(), S::Error>
-    where K: cmp::Eq + hash::Hash + ToString,
-          T: serde::Serialize,
-          S: serde::Serializer
-{
-    let iter = value.iter().map(|(key, value)| (key.to_string(), value));
-    let visitor = serde::ser::impls::MapIteratorVisitor::new(iter, Some(value.len()));
-    serializer.serialize_map(visitor)
+pub fn get_or_gen_node_id() -> u64 {
+    use std::io;
+    use rand::{thread_rng, Rng};
+    let the_path = "_nodeid.yaml";
+    let res = read_yaml_from_file(the_path);
+    let err = match res {
+        Ok(node_id) => return node_id,
+        Err(e) => e,
+    };
+    match err.downcast_ref::<io::Error>() {
+        Some(e) if e.kind() == io::ErrorKind::NotFound => {
+            let id = thread_rng().gen::<i64>().abs() as u64;
+            write_yaml_to_file(&id, the_path).unwrap();
+            return id;
+        }
+        _ => panic!("{}", err),
+    }
 }
 
-pub fn json_deserialize_map<K, T, D>(deserializer: &mut D) -> Result<HashMap<K, T>, D::Error>
-    where K: cmp::Eq + hash::Hash + FromStr + serde::Deserialize,
-          T: serde::Deserialize,
-          D: serde::Deserializer
-{
+pub fn write_yaml_to_file<T: serde::Serialize, P: AsRef<path::Path>>
+    (data: &T, path: P)
+     -> Result<(), GenericError> {
+    let mut tmp_ext = path.as_ref().extension().unwrap().to_owned();
+    tmp_ext.push(".tmp");
+    let tmp_path = path.as_ref().with_extension(tmp_ext);
+    let mut tmp_file = try!(fs::File::create(&tmp_path));
+    try!(serde_yaml::to_writer(&mut tmp_file, data));
+    drop(tmp_file);
+    try!(fs::rename(&tmp_path, path));
+    Ok(())
+}
 
-    use std::marker::PhantomData;
-    use serde::de::Error;
-
-    struct MapVisitor<K, T>(PhantomData<(K, T)>);
-
-    impl<K, T> serde::de::Visitor for MapVisitor<K, T>
-        where K: cmp::Eq + hash::Hash + FromStr + serde::Deserialize,
-              T: serde::Deserialize
-    {
-        type Value = HashMap<K, T>;
-
-        #[inline]
-        fn visit_map<V>(&mut self, mut visitor: V) -> Result<Self::Value, V::Error>
-            where V: serde::de::MapVisitor
-        {
-            let mut map = HashMap::new();
-
-            while let Some((key, value)) = try!(visitor.visit::<String, _>()) {
-                let key = match K::from_str(&key) {
-                    Ok(key) => key,
-                    Err(_) => {
-                        return Err(V::Error::invalid_value("key must be parseable"));
-                    }
-                };
-
-                map.insert(key, value);
-            }
-
-            try!(visitor.end());
-            Ok(map)
-        }
-    }
-
-    deserializer.deserialize_map(MapVisitor(PhantomData))
+pub fn read_yaml_from_file<T: serde::Deserialize, P: AsRef<path::Path>>
+    (path: P)
+     -> Result<T, GenericError> {
+    let file = try!(fs::File::open(path));
+    let result = try!(serde_yaml::from_reader(&file));
+    Ok(result)
 }
 
 macro_rules! assert_eq_repr {
