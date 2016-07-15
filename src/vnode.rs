@@ -8,7 +8,9 @@ use bincode::{self, serde as bincode_serde};
 use fabric::*;
 use rand::{Rng, thread_rng};
 
-const PEER_LOG_SIZE: usize = 1000;
+// FIXME: use a more efficient ring buffer
+// 1MB of storage considering key avg length of 32B and 16B overhead
+const PEER_LOG_SIZE: usize = 1024 * 1024 / (32 + 16);
 
 #[repr(u8)]
 pub enum VNodeStatus {
@@ -24,13 +26,20 @@ pub struct VNode {
     inflight: HashMap<u64, ReqState>,
 }
 
-pub struct VNodeState {
+struct VNodeState {
     num: u16,
     peers: LinearMap<u64, VNodePeer>,
     clocks: BitmappedVersionVector,
     log: BTreeMap<u64, Vec<u8>>,
     storage: Storage,
     unflushed_coord_writes: usize,
+}
+
+struct SavedVNodeState {
+    peers: LinearMap<u64, VNodePeer>,
+    clocks: BitmappedVersionVector,
+    log: BTreeMap<u64, Vec<u8>>,
+    clean_shutdown: bool,
 }
 
 #[derive(Default)]
@@ -49,9 +58,8 @@ pub struct ReqState {
     token: u64,
 }
 
-pub enum Migration {
+enum Migration {
     Outgoing {
-        vnode: u16,
         cookie: u64,
         peer: NodeId,
         clocks_snapshot: BitmappedVersionVector,
@@ -59,25 +67,22 @@ pub enum Migration {
         count: u64,
     },
     Incomming {
-        vnode: u16,
         cookie: u64,
         peer: NodeId,
         count: u64,
     },
 }
 
-pub enum Synchronization {
+enum Synchronization {
     Outgoing {
         clock_in_peer: BitmappedVersion,
         clock_snapshot: BitmappedVersion,
         missing_dots: BitmappedVersionDelta,
-        vnode: u16,
         cookie: u64,
         peer: NodeId,
         count: u64,
     },
     Incomming {
-        vnode: u16,
         cookie: u64,
         peer: NodeId,
         count: u64,
@@ -99,6 +104,7 @@ impl VNodePeer {
 
     fn log(&mut self, dot: u64, key: Vec<u8>) {
         let prev = self.log.insert(dot, key);
+        // FIXME: if present keys should match, use entry api for this
         debug_assert!(prev.is_none());
         while self.log.len() > PEER_LOG_SIZE {
             let min = self.log.keys().next().cloned().unwrap();
@@ -173,7 +179,8 @@ impl VNode {
         self.migrations.len()
     }
 
-    fn cookie(&mut self) -> u64 {
+    fn gen_cookie(&mut self) -> u64 {
+        // FIXME: make cookie really unique
         thread_rng().gen()
     }
 
@@ -185,7 +192,7 @@ impl VNode {
     // CLIENT CRUD
     pub fn do_get(&mut self, db: &Database, token: u64, key: &[u8]) {
         let nodes = db.dht.nodes_for_vnode(self.state.num, false);
-        let cookie = self.cookie();
+        let cookie = self.gen_cookie();
         assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len())).is_none());
 
         for node in nodes {
@@ -208,7 +215,7 @@ impl VNode {
     pub fn do_set(&mut self, db: &Database, token: u64, key: &[u8], value_opt: Option<&[u8]>,
                   vv: VersionVector) {
         let nodes = db.dht.nodes_for_vnode(self.state.num, true);
-        let cookie = self.cookie();
+        let cookie = self.gen_cookie();
         assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len())).is_none());
 
         let dcc = self.state
@@ -232,6 +239,7 @@ impl VNode {
     // OTHER
     fn process_get(&mut self, db: &Database, cookie: u64,
                    container_opt: Option<DottedCausalContainer<Vec<u8>>>) {
+        // FIXME: entry API to avoid double fetch
         if {
             let state = self.inflight.get_mut(&cookie).unwrap();
             state.replies += 1;
@@ -259,6 +267,7 @@ impl VNode {
     }
 
     fn process_set(&mut self, db: &Database, cookie: u64, succesfull: bool) {
+        // FIXME: entry API to avoid double fetch
         if {
             let state = self.inflight.get_mut(&cookie).unwrap();
             state.replies += 1;
@@ -327,7 +336,6 @@ impl VNode {
     pub fn handler_bootstrap_start(&mut self, db: &Database, from: NodeId, msg: MsgBootstrapStart) {
         let cookie = msg.cookie;
         let mut migration = Migration::Outgoing {
-            vnode: self.state.num,
             cookie: cookie,
             clocks_snapshot: self.state.clocks.clone(),
             iterator: self.state.storage.iter(),
@@ -362,7 +370,6 @@ impl VNode {
             clock_in_peer: clock_in_peer,
             clock_snapshot: clock_snapshot,
             peer: from,
-            vnode: self.state.num,
             count: 0,
         };
         sync.on_start(db, &mut self.state, msg);
@@ -385,7 +392,7 @@ impl VNode {
 
     /// //////
     pub fn start_migration(&mut self, db: &Database) {
-        let cookie = self.cookie();
+        let cookie = self.gen_cookie();
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false);
         thread_rng().shuffle(&mut nodes);
         for node in nodes {
@@ -393,7 +400,6 @@ impl VNode {
                 continue;
             }
             let migration = Migration::Incomming {
-                vnode: self.state.num,
                 cookie: cookie,
                 peer: node,
                 count: 0,
@@ -437,12 +443,11 @@ impl VNode {
                 return;
             }
         };
-        let cookie = self.cookie();
+        let cookie = self.gen_cookie();
         let clock_in_peer = self.state.clocks.get(peer).cloned().unwrap_or_default();
         let sync = Synchronization::Incomming {
             peer: peer,
             cookie: cookie,
-            vnode: self.state.num,
             count: 0,
         };
 
@@ -542,7 +547,6 @@ impl Synchronization {
         match *self {
             Synchronization::Outgoing { peer,
                                         cookie,
-                                        vnode,
                                         ref mut missing_dots,
                                         ref mut count,
                                         ref clock_snapshot,
@@ -556,19 +560,19 @@ impl Synchronization {
                         .send_message(peer,
                                       MsgSyncSend {
                                           cookie: cookie,
-                                          vnode: vnode,
+                                          vnode: state.num,
                                           key: k.clone(),
                                           container: bincode_serde::deserialize(&v).unwrap(),
                                       })
                         .unwrap();
                     *count += 1;
                 } else {
-                    debug!("[{}] synchronization of {} is done", db.dht.node(), vnode);
+                    debug!("[{}] synchronization of {} is done", db.dht.node(), state.num);
                     db.fabric
                         .send_message(peer,
                                       MsgSyncFin {
                                           cookie: cookie,
-                                          vnode: vnode,
+                                          vnode: state.num,
                                           result: Ok(clock_snapshot.clone()),
                                       })
                         .unwrap();
@@ -588,7 +592,7 @@ impl Synchronization {
 
     fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncSend) -> bool {
         match *self {
-            Synchronization::Incomming { peer, vnode, ref mut count, .. } => {
+            Synchronization::Incomming { peer, ref mut count, .. } => {
                 let mut bytes = Vec::new();
                 bincode_serde::serialize_into(&mut bytes,
                                               &msg.container,
@@ -600,7 +604,7 @@ impl Synchronization {
                     .send_message(peer,
                                   MsgSyncAck {
                                       cookie: msg.cookie,
-                                      vnode: vnode,
+                                      vnode: state.num,
                                   })
                     .unwrap();
 
@@ -643,11 +647,10 @@ impl Synchronization {
 
 #[allow(unused_variables)]
 impl Migration {
-    fn outgoing_send(&mut self, db: &Database) -> bool {
+    fn outgoing_send(&mut self, db: &Database, state: &mut VNodeState) -> bool {
         match *self {
             Migration::Outgoing { peer,
                                   cookie,
-                                  vnode,
                                   ref mut iterator,
                                   ref mut count,
                                   ref clocks_snapshot } => {
@@ -656,7 +659,7 @@ impl Migration {
                         .send_message(peer,
                                       MsgBootstrapSend {
                                           cookie: cookie,
-                                          vnode: vnode,
+                                          vnode: state.num,
                                           key: k.into(),
                                           container: bincode_serde::deserialize(v).unwrap(),
                                       })
@@ -665,12 +668,12 @@ impl Migration {
                     false
                 });
                 if done {
-                    debug!("[{}] sync of {} is done", db.dht.node(), vnode);
+                    debug!("[{}] sync of {} is done", db.dht.node(), state.num);
                     db.fabric
                         .send_message(peer,
                                       MsgBootstrapFin {
                                           cookie: cookie,
-                                          vnode: vnode,
+                                          vnode: state.num,
                                           result: Ok(clocks_snapshot.clone()),
                                       })
                         .unwrap();
@@ -683,20 +686,20 @@ impl Migration {
 
     fn on_start(&mut self, db: &Database, state: &mut VNodeState, msg: MsgBootstrapStart) -> bool {
         match *self {
-            Migration::Outgoing { .. } => self.outgoing_send(db),
+            Migration::Outgoing { .. } => self.outgoing_send(db, state),
             _ => unreachable!(),
         }
     }
 
     fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgBootstrapSend) -> bool {
         match *self {
-            Migration::Incomming { vnode, peer, ref mut count, .. } => {
+            Migration::Incomming { peer, ref mut count, .. } => {
                 state.storage_set_remote(&msg.key, msg.container, None);
                 db.fabric
                     .send_message(peer,
                                   MsgBootstrapAck {
                                       cookie: msg.cookie,
-                                      vnode: vnode,
+                                      vnode: state.num,
                                   })
                     .unwrap();
 
@@ -725,7 +728,7 @@ impl Migration {
 
     fn on_ack(&mut self, db: &Database, state: &mut VNodeState, msg: MsgBootstrapAck) -> bool {
         match *self {
-            Migration::Outgoing { .. } => self.outgoing_send(db),
+            Migration::Outgoing { .. } => self.outgoing_send(db, state),
             _ => unreachable!(),
         }
     }
