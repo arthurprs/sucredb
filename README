@@ -1,0 +1,18 @@
+
+# TODO
+
+* [x] store node id
+* [ ] store vnode state (skip logs unless it's shutting down)
+* [ ] rebuild vnode state on startup (after crash)
+* [ ] when joining ask nodes for their version of the log
+* [ ] as an alternative to the previous, when node re-joins send our log to it (as in hinted handoff)
+* [ ] to support the previous, dht metadata could be an incarnation number?
+* [x] resp server
+* [ ] convert resp into commands to the database
+* [ ] send responses to the resp server
+* [x] worker threads
+* [ ] handling timeouts for crud
+* [ ] resending sync/bootstrap/recover data
+* [ ] generic sync/bootstrap/recover code?
+* [ ] when log isn't enough to satisfy sync, iter the database sending necessary dots
+* [ ] propagate dht notifications to vnodes and take actions

@@ -25,7 +25,7 @@ extern crate nodrop;
 #[macro_use]
 mod utils;
 mod version_vector;
-mod gossip;
+// mod gossip;
 mod inflightmap;
 mod dht;
 #[macro_use]
