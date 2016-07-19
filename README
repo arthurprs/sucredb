@@ -8,7 +8,7 @@
 * [ ] as an alternative to the previous, when node re-joins send our log to it (as in hinted handoff)
 * [ ] to support the previous, dht metadata could be an incarnation number?
 * [x] resp server
-* [ ] convert resp into commands to the database
+* [x] convert resp into commands to the database
 * [ ] send responses to the resp server
 * [x] worker threads
 * [ ] handling timeouts for crud

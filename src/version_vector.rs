@@ -162,7 +162,7 @@ pub fn deserialize_ramp<D>(deserializer: &mut D) -> Result<ramp::Int, D::Error>
 
 impl BitmappedVersionVector {
     pub fn new() -> Self {
-        BitmappedVersionVector(LinearMap::new())
+        BitmappedVersionVector(Default::default())
     }
 
     pub fn add(&mut self, id: Id, version: Version) {
@@ -235,7 +235,7 @@ impl BitmappedVersionVector {
 
 impl VersionVector {
     pub fn new() -> Self {
-        VersionVector(LinearMap::new())
+        VersionVector(Default::default())
     }
 
     pub fn get(&self, id: Id) -> Option<Version> {

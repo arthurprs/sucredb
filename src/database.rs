@@ -8,6 +8,9 @@ use vnode::*;
 use workers::*;
 use storage::{StorageManager, Storage};
 
+pub type Token = u64;
+pub type Cookie = u64;
+
 pub struct Database {
     pub dht: DHT<()>,
     pub fabric: Fabric,
@@ -15,15 +18,14 @@ pub struct Database {
     storage_manager: StorageManager,
     workers: Mutex<WorkerManager>,
     vnodes: RwLock<HashMap<u16, Mutex<VNode>>>,
-    // TODO: create a thread to walk inflight and handle timeouts
     inflight: Mutex<HashMap<u64, ProxyReqState>>,
     // FIXME: here just to add dev/debug
-    responses: Mutex<HashMap<u64, DottedCausalContainer<Vec<u8>>>>,
+    responses: Mutex<HashMap<Cookie, DottedCausalContainer<Vec<u8>>>>,
 }
 
 struct ProxyReqState {
     from: NodeId,
-    cookie: u64,
+    cookie: Cookie,
 }
 
 macro_rules! vnode {
@@ -79,7 +81,7 @@ impl Database {
                     match wm {
                         WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
                         WorkerMsg::Tick(time) => db.handler_tick(time),
-                        WorkerMsg::Request => (),
+                        WorkerMsg::Command(token, cmd) => db.handler_cmd(token, cmd),
                         WorkerMsg::Exit => break,
                     }
                 }
@@ -188,7 +190,7 @@ impl Database {
         vnodes.get(&vnode).unwrap().lock().unwrap().start_sync(self);
     }
 
-    fn send_set(&self, addr: NodeId, vnode: u16, cookie: u64, key: &[u8], value_opt: Option<&[u8]>,
+    fn send_set(&self, addr: NodeId, vnode: u16, cookie: Cookie, key: &[u8], value_opt: Option<&[u8]>,
                 vv: VersionVector) {
         self.fabric
             .send_message(addr,
@@ -203,14 +205,14 @@ impl Database {
     }
 
     // CLIENT CRUD
-    fn set(&self, token: u64, key: &[u8], value: Option<&[u8]>, vv: VersionVector) {
+    pub fn set(&self, token: Token, key: &[u8], value: Option<&[u8]>, vv: VersionVector) {
         let vnode = self.dht.key_vnode(key);
         vnode!(self, vnode, |mut vn| {
             vn.do_set(self, token, key, value, vv);
         });
     }
 
-    fn get(&self, token: u64, key: &[u8]) {
+    pub fn get(&self, token: Token, key: &[u8]) {
         let vnode = self.dht.key_vnode(key);
         vnode!(self, vnode, |mut vn| {
             vn.do_get(self, token, key);
@@ -251,16 +253,16 @@ impl Database {
     }
 
     // UTILITIES
-    fn inflight(&self, token: u64) -> Option<ProxyReqState> {
+    fn inflight(&self, token: Token) -> Option<ProxyReqState> {
         self.inflight.lock().unwrap().remove(&token)
     }
 
-    pub fn set_response(&self, token: u64, response: DottedCausalContainer<Vec<u8>>) {
+    pub fn set_response(&self, token: Token, response: DottedCausalContainer<Vec<u8>>) {
         debug!("set_response {} to {:?}", token, response);
         self.responses.lock().unwrap().insert(token, response);
     }
 
-    fn response(&self, token: u64) -> Option<DottedCausalContainer<Vec<u8>>> {
+    fn response(&self, token: Token) -> Option<DottedCausalContainer<Vec<u8>>> {
         self.responses.lock().unwrap().remove(&token)
     }
 }

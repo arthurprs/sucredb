@@ -1,4 +1,5 @@
 use version_vector::*;
+use database::*;
 
 // TODO: error support
 #[derive(Debug, Copy, Clone)]

@@ -1,17 +1,20 @@
 use std::{time, thread};
 use std::sync::mpsc;
+use std::boxed::FnBox;
 use fabric::{NodeId, FabricMsg};
-use rand::{weak_rng, Rng, XorShiftRng};
+use database::Token;
+use rand::{thread_rng, Rng};
+use resp::RespValue;
 
 pub enum WorkerMsg {
     Fabric(NodeId, FabricMsg),
     Tick(time::SystemTime),
-    Request,
+    Command(Token, RespValue),
     Exit,
 }
 
 pub struct WorkerSender {
-    rng: XorShiftRng,
+    cursor: usize,
     channels: Vec<mpsc::Sender<WorkerMsg>>,
 }
 
@@ -37,12 +40,12 @@ impl WorkerManager {
         }
     }
 
-    pub fn start<F>(&mut self, fun: F) where F: Fn() -> Box<FnMut(mpsc::Receiver<WorkerMsg>) + Send> {
+    pub fn start<F>(&mut self, mut worker_fn_gen: F) where F: FnMut() -> Box<FnBox(mpsc::Receiver<WorkerMsg>) + Send> {
         assert!(self.channels.is_empty());
         for _ in 0..self.thread_count {
-            let mut fun_cloned = fun();
+            let worker_fn = worker_fn_gen();
             let (tx, rx) = mpsc::channel();
-            self.threads.push(thread::spawn(move || fun_cloned(rx)));
+            self.threads.push(thread::spawn(move || worker_fn(rx)));
             self.channels.push(tx);
         }
         let channels = self.channels.clone();
@@ -68,7 +71,7 @@ impl WorkerManager {
     pub fn sender(&self) -> WorkerSender {
         assert!(!self.channels.is_empty());
         WorkerSender {
-            rng: weak_rng(),
+            cursor: thread_rng().gen(),
             channels: self.channels.clone(),
         }
     }
@@ -76,7 +79,9 @@ impl WorkerManager {
 
 impl WorkerSender {
     pub fn send(&mut self, msg: WorkerMsg) {
-        self.rng.choose(&self.channels).unwrap().send(msg).unwrap();
+        let i = self.cursor % self.channels.len();
+        self.cursor.wrapping_add(1);
+        self.channels[i].send(msg).unwrap();
     }
 }
 
@@ -91,8 +96,8 @@ impl Drop for WorkerManager {
         if let Some(t) = self.ticker_thread.take() {
             t.join().unwrap();
         }
-        for to in self.threads.drain(..) {
-            to.join().unwrap();
+        for t in self.threads.drain(..) {
+            t.join().unwrap();
         }
     }
 }

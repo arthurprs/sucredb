@@ -1,5 +1,6 @@
 #![feature(custom_derive, plugin)]
 #![feature(question_mark)]
+#![feature(fnbox)]
 #![allow(dead_code)]
 #![feature(arc_counts)]
 #![plugin(serde_macros)]
@@ -33,11 +34,13 @@ mod fabric_msg;
 mod fabric;
 mod storage;
 mod hash;
+#[macro_use]
 mod database;
 mod vnode;
 mod resp;
 mod server;
 mod workers;
+mod commands;
 
 #[cfg(not(test))]
 fn main() {

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use linear_map::LinearMap;
 use version_vector::*;
 use storage::*;
-use database::Database;
+use database::*;
 use bincode::{self, serde as bincode_serde};
 use fabric::*;
 use rand::{Rng, thread_rng};
@@ -55,19 +55,19 @@ pub struct ReqState {
     total: u8,
     // only used for get
     container: DottedCausalContainer<Vec<u8>>,
-    token: u64,
+    token: Token,
 }
 
 enum Migration {
     Outgoing {
-        cookie: u64,
+        cookie: Cookie,
         peer: NodeId,
         clocks_snapshot: BitmappedVersionVector,
         iterator: StorageIterator,
         count: u64,
     },
     Incomming {
-        cookie: u64,
+        cookie: Cookie,
         peer: NodeId,
         count: u64,
     },
@@ -78,12 +78,12 @@ enum Synchronization {
         clock_in_peer: BitmappedVersion,
         clock_snapshot: BitmappedVersion,
         missing_dots: BitmappedVersionDelta,
-        cookie: u64,
+        cookie: Cookie,
         peer: NodeId,
         count: u64,
     },
     Incomming {
-        cookie: u64,
+        cookie: Cookie,
         peer: NodeId,
         count: u64,
     },
@@ -142,7 +142,7 @@ macro_rules! forward {
 }
 
 impl ReqState {
-    fn new(token: u64, nodes: usize) -> Self {
+    fn new(token: Token, nodes: usize) -> Self {
         ReqState {
             required: (nodes as u8) / 2 + 1,
             total: nodes as u8,
@@ -190,7 +190,7 @@ impl VNode {
     }
 
     // CLIENT CRUD
-    pub fn do_get(&mut self, db: &Database, token: u64, key: &[u8]) {
+    pub fn do_get(&mut self, db: &Database, token: Token, key: &[u8]) {
         let nodes = db.dht.nodes_for_vnode(self.state.num, false);
         let cookie = self.gen_cookie();
         assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len())).is_none());
@@ -212,7 +212,7 @@ impl VNode {
         }
     }
 
-    pub fn do_set(&mut self, db: &Database, token: u64, key: &[u8], value_opt: Option<&[u8]>,
+    pub fn do_set(&mut self, db: &Database, token: Token, key: &[u8], value_opt: Option<&[u8]>,
                   vv: VersionVector) {
         let nodes = db.dht.nodes_for_vnode(self.state.num, true);
         let cookie = self.gen_cookie();
@@ -237,7 +237,7 @@ impl VNode {
     }
 
     // OTHER
-    fn process_get(&mut self, db: &Database, cookie: u64,
+    fn process_get(&mut self, db: &Database, cookie: Cookie,
                    container_opt: Option<DottedCausalContainer<Vec<u8>>>) {
         // FIXME: entry API to avoid double fetch
         if {
@@ -266,7 +266,7 @@ impl VNode {
         }
     }
 
-    fn process_set(&mut self, db: &Database, cookie: u64, succesfull: bool) {
+    fn process_set(&mut self, db: &Database, cookie: Cookie, succesfull: bool) {
         // FIXME: entry API to avoid double fetch
         if {
             let state = self.inflight.get_mut(&cookie).unwrap();
