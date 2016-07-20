@@ -1,6 +1,7 @@
-use resp::RespValue;
-use database::Database;
+use resp::{ByteTendril, RespValue};
+use database::{Token, Database};
 use version_vector::*;
+use bincode::{serde as bincode_serde, SizeLimit};
 
 impl Database {
     pub fn handler_cmd(&self, token: u64, cmd: RespValue) {
@@ -49,4 +50,18 @@ impl Database {
             self.set(token, w[0], None, VersionVector::new());
         }
     }
+
+    pub fn respond_get(&self, token: Token, dcc: DottedCausalContainer<Vec<u8>>) {
+        (&self.response_fn)(token, dcc_to_resp(dcc));
+    }
+
+    pub fn respond_set(&self, token: Token, dcc: DottedCausalContainer<Vec<u8>>) {
+        (&self.response_fn)(token, dcc_to_resp(dcc));
+    }
+}
+
+fn dcc_to_resp(dcc: DottedCausalContainer<Vec<u8>>) -> RespValue {
+    let mut buffer = ByteTendril::with_capacity(1024 + dcc.values().map(|v| v.len()).sum::<usize>() as u32);
+    bincode_serde::serialize_into(&mut buffer, &dcc, SizeLimit::Infinite).unwrap();
+    RespValue::Data(buffer)
 }

@@ -262,7 +262,7 @@ impl VNode {
             }
         } {
             let state = self.inflight.remove(&cookie).unwrap();
-            db.set_response(state.token, state.container);
+            db.respond_get(state.token, state.container);
         }
     }
 
@@ -289,7 +289,7 @@ impl VNode {
             }
         } {
             let state = self.inflight.remove(&cookie).unwrap();
-            db.set_response(state.token, state.container);
+            db.respond_set(state.token, state.container);
         }
     }
 

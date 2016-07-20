@@ -6,10 +6,13 @@ use version_vector::*;
 use fabric::*;
 use vnode::*;
 use workers::*;
+use resp::RespValue;
 use storage::{StorageManager, Storage};
 
 pub type Token = u64;
 pub type Cookie = u64;
+
+pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;
 
 pub struct Database {
     pub dht: DHT<()>,
@@ -19,8 +22,7 @@ pub struct Database {
     workers: Mutex<WorkerManager>,
     vnodes: RwLock<HashMap<u16, Mutex<VNode>>>,
     inflight: Mutex<HashMap<u64, ProxyReqState>>,
-    // FIXME: here just to add dev/debug
-    responses: Mutex<HashMap<Cookie, DottedCausalContainer<Vec<u8>>>>,
+    pub response_fn: DatabaseResponseFn,
 }
 
 struct ProxyReqState {
@@ -40,7 +42,7 @@ macro_rules! vnode {
 }
 
 impl Database {
-    pub fn new(node: NodeId, bind_addr: net::SocketAddr, storage_dir: &str, create: bool)
+    pub fn new(node: NodeId, bind_addr: net::SocketAddr, storage_dir: &str, create: bool, response_fn: DatabaseResponseFn)
                -> Arc<Database> {
         let storage_manager = StorageManager::new(storage_dir).unwrap();
         let meta_storage = storage_manager.open(-1, true).unwrap();
@@ -57,7 +59,7 @@ impl Database {
             storage_manager: storage_manager,
             meta_storage: meta_storage,
             inflight: Default::default(),
-            responses: Default::default(),
+            response_fn: response_fn,
             vnodes: Default::default(),
             workers: Mutex::new(WorkerManager::new(8, time::Duration::from_millis(200))),
         });
@@ -257,14 +259,6 @@ impl Database {
         self.inflight.lock().unwrap().remove(&token)
     }
 
-    pub fn set_response(&self, token: Token, response: DottedCausalContainer<Vec<u8>>) {
-        debug!("set_response {} to {:?}", token, response);
-        self.responses.lock().unwrap().insert(token, response);
-    }
-
-    fn response(&self, token: Token) -> Option<DottedCausalContainer<Vec<u8>>> {
-        self.responses.lock().unwrap().remove(&token)
-    }
 }
 
 impl Drop for Database {
@@ -275,17 +269,59 @@ impl Drop for Database {
 
 #[cfg(test)]
 mod tests {
+    use std::{thread, net, fs, ops};
+    use std::sync::{Mutex, Arc};
+    use std::collections::HashMap;
     use super::*;
-    use std::fs;
-    use std::thread;
+    use version_vector::{DottedCausalContainer, VersionVector};
+    use fabric::NodeId;
     use env_logger;
-    use version_vector::VersionVector;
+    use bincode::{serde as bincode_serde, SizeLimit};
+    use resp::RespValue;
+
+    struct TestDatabase {
+        db: Arc<Database>,
+        responses: Arc<Mutex<HashMap<Token, RespValue>>>,
+    }
+
+    impl TestDatabase {
+        fn new(node: NodeId, bind_addr: net::SocketAddr, storage_dir: &str, create: bool) -> Self {
+            let responses1 = Arc::new(Mutex::new(HashMap::new()));
+            let responses2 = responses1.clone();
+            let db = Database::new(node, bind_addr, storage_dir, create, Box::new(move |t, v| {
+                let r = responses1.lock().unwrap().insert(t, v);
+                assert!(r.is_none(), "replaced a result");
+            }));
+            TestDatabase {
+                db: db,
+                responses: responses2,
+            }
+        }
+
+        fn response(&self, token: Token) -> Option<DottedCausalContainer<Vec<u8>>> {
+            self.responses.lock().unwrap().remove(&token).and_then(|v|resp_to_dcc(v))
+        }
+    }
+
+    impl ops::Deref for TestDatabase {
+        type Target = Database;
+        fn deref(&self) -> &Self::Target {
+            &self.db
+        }
+    }
+
+    fn resp_to_dcc(value: RespValue) -> Option<DottedCausalContainer<Vec<u8>>> {
+        match value {
+            RespValue::Data(bytes) => bincode_serde::deserialize(&bytes).ok(),
+            _ => None
+        }
+    }
 
     #[test]
     fn test_one() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db = Database::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db", true);
+        let db = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db", true);
         for i in 0u16..64 {
             db.init_vnode(i);
         }
@@ -323,8 +359,8 @@ mod tests {
     fn test_two() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db1 = Database::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
-        let db2 = Database::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         for i in 0u16..64 {
             db1.init_vnode(i);
             db2.init_vnode(i);
@@ -353,7 +389,7 @@ mod tests {
     fn test_join_migrate() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db1 = Database::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         for i in 0u16..64 {
             db1.init_vnode(i);
         }
@@ -369,7 +405,7 @@ mod tests {
             assert!(db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
-        let db2 = Database::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
 
         for i in 0u16..64 {
             db2.init_vnode(i);
@@ -416,7 +452,7 @@ mod tests {
     fn test_join_sync() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db1 = Database::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         for i in 0u16..64 {
             db1.init_vnode(i);
         }
@@ -432,7 +468,7 @@ mod tests {
             assert!(db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
-        let db2 = Database::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
 
         for i in 0u16..64 {
             db2.init_vnode(i);
