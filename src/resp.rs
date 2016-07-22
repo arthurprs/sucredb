@@ -30,7 +30,7 @@ pub enum RespValue {
 }
 
 impl RespValue {
-    fn serialize_to<W: Write>(self, f: &mut W) {
+    pub fn serialize_to<W: Write>(self, f: &mut W) {
         match self {
                 RespValue::Nil => write!(f, "$-1\r\n"),
                 RespValue::Int(v) => write!(f, ":{}\r\n", v),

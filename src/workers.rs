@@ -40,7 +40,9 @@ impl WorkerManager {
         }
     }
 
-    pub fn start<F>(&mut self, mut worker_fn_gen: F) where F: FnMut() -> Box<FnBox(mpsc::Receiver<WorkerMsg>) + Send> {
+    pub fn start<F>(&mut self, mut worker_fn_gen: F)
+        where F: FnMut() -> Box<FnBox(mpsc::Receiver<WorkerMsg>) + Send>
+    {
         assert!(self.channels.is_empty());
         for _ in 0..self.thread_count {
             let worker_fn = worker_fn_gen();
@@ -80,7 +82,7 @@ impl WorkerManager {
 impl WorkerSender {
     pub fn send(&mut self, msg: WorkerMsg) {
         let i = self.cursor % self.channels.len();
-        self.cursor.wrapping_add(1);
+        self.cursor = self.cursor.wrapping_add(1);
         self.channels[i].send(msg).unwrap();
     }
 }

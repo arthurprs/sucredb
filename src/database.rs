@@ -42,10 +42,12 @@ macro_rules! vnode {
 }
 
 impl Database {
-    pub fn new(node: NodeId, bind_addr: net::SocketAddr, storage_dir: &str, create: bool, response_fn: DatabaseResponseFn)
+    pub fn new(node: NodeId, bind_addr: net::SocketAddr, storage_dir: &str, create: bool,
+               response_fn: DatabaseResponseFn)
                -> Arc<Database> {
         let storage_manager = StorageManager::new(storage_dir).unwrap();
         let meta_storage = storage_manager.open(-1, true).unwrap();
+        let workers = WorkerManager::new(8, time::Duration::from_millis(200));
         let db = Arc::new(Database {
             fabric: Fabric::new(node, bind_addr).unwrap(),
             dht: DHT::new(3,
@@ -61,7 +63,7 @@ impl Database {
             inflight: Default::default(),
             response_fn: response_fn,
             vnodes: Default::default(),
-            workers: Mutex::new(WorkerManager::new(8, time::Duration::from_millis(200))),
+            workers: Mutex::new(workers),
         });
 
         for i in 0..db.dht.partitions() as u16 {
@@ -96,23 +98,26 @@ impl Database {
         let cdb = Arc::downgrade(&db);
         db.dht.set_callback(Box::new(move || {
             cdb.upgrade().map(|db| {
-                db.dht
-                    .members()
-                    .into_iter()
-                    .map(|(n, a)| db.fabric.register_node(n, a))
-                    .count()
+                for (node, meta) in db.dht.members() {
+                    db.fabric.register_node(node, meta);
+                }
             });
         }));
 
         for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch, FabricMsgType::Bootstrap] {
-            let mut workers = db.workers.lock().unwrap().sender();
+            let mut sender = db.sender();
             db.fabric.register_msg_handler(msg_type,
                                            Box::new(move |f, m| {
-                                               workers.send(WorkerMsg::Fabric(f, m));
+                                               sender.send(WorkerMsg::Fabric(f, m));
                                            }));
         }
 
         db
+    }
+
+    // FIXME: leaky abstraction
+    pub fn sender(&self) -> WorkerSender {
+        self.workers.lock().unwrap().sender()
     }
 
     fn handler_tick(&self, time: time::SystemTime) {
@@ -192,8 +197,8 @@ impl Database {
         vnodes.get(&vnode).unwrap().lock().unwrap().start_sync(self);
     }
 
-    fn send_set(&self, addr: NodeId, vnode: u16, cookie: Cookie, key: &[u8], value_opt: Option<&[u8]>,
-                vv: VersionVector) {
+    fn send_set(&self, addr: NodeId, vnode: u16, cookie: Cookie, key: &[u8],
+                value_opt: Option<&[u8]>, vv: VersionVector) {
         self.fabric
             .send_message(addr,
                           FabricMsg::Set(MsgSet {
@@ -258,7 +263,6 @@ impl Database {
     fn inflight(&self, token: Token) -> Option<ProxyReqState> {
         self.inflight.lock().unwrap().remove(&token)
     }
-
 }
 
 impl Drop for Database {
@@ -288,10 +292,14 @@ mod tests {
         fn new(node: NodeId, bind_addr: net::SocketAddr, storage_dir: &str, create: bool) -> Self {
             let responses1 = Arc::new(Mutex::new(HashMap::new()));
             let responses2 = responses1.clone();
-            let db = Database::new(node, bind_addr, storage_dir, create, Box::new(move |t, v| {
-                let r = responses1.lock().unwrap().insert(t, v);
-                assert!(r.is_none(), "replaced a result");
-            }));
+            let db = Database::new(node,
+                                   bind_addr,
+                                   storage_dir,
+                                   create,
+                                   Box::new(move |t, v| {
+                                       let r = responses1.lock().unwrap().insert(t, v);
+                                       assert!(r.is_none(), "replaced a result");
+                                   }));
             TestDatabase {
                 db: db,
                 responses: responses2,
@@ -299,7 +307,7 @@ mod tests {
         }
 
         fn response(&self, token: Token) -> Option<DottedCausalContainer<Vec<u8>>> {
-            self.responses.lock().unwrap().remove(&token).and_then(|v|resp_to_dcc(v))
+            self.responses.lock().unwrap().remove(&token).and_then(|v| resp_to_dcc(v))
         }
     }
 
@@ -313,7 +321,7 @@ mod tests {
     fn resp_to_dcc(value: RespValue) -> Option<DottedCausalContainer<Vec<u8>>> {
         match value {
             RespValue::Data(bytes) => bincode_serde::deserialize(&bytes).ok(),
-            _ => None
+            _ => None,
         }
     }
 
