@@ -1,5 +1,6 @@
 use std::{mem, str, fmt};
 use std::io::Write;
+use std::error::Error;
 use tendril;
 
 pub type ByteTendril = tendril::Tendril<tendril::fmt::Bytes, tendril::Atomic>;
@@ -50,6 +51,12 @@ impl RespValue {
                 RespValue::Error(v) => write!(f, "-{}\r\n", v.as_ref()),
             }
             .unwrap()
+    }
+}
+
+impl<T: Error> From<T> for RespValue {
+    fn from(from: T) -> Self {
+        RespValue::Error(StrTendril::format(format_args!("{}", from)))
     }
 }
 

@@ -21,14 +21,14 @@ pub enum VNodeStatus {
 
 pub struct VNode {
     state: VNodeState,
-    migrations: LinearMap<(NodeId, u64), Migration>,
-    syncs: LinearMap<(NodeId, u64), Synchronization>,
-    inflight: HashMap<u64, ReqState>,
+    migrations: LinearMap<Cookie, Migration>,
+    syncs: LinearMap<Cookie, Synchronization>,
+    inflight: HashMap<Cookie, ReqState>,
 }
 
 struct VNodeState {
     num: u16,
-    peers: LinearMap<u64, VNodePeer>,
+    peers: LinearMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
     log: BTreeMap<u64, Vec<u8>>,
     storage: Storage,
@@ -36,7 +36,7 @@ struct VNodeState {
 }
 
 struct SavedVNodeState {
-    peers: LinearMap<u64, VNodePeer>,
+    peers: LinearMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
     log: BTreeMap<u64, Vec<u8>>,
     clean_shutdown: bool,
@@ -122,10 +122,10 @@ macro_rules! forward {
         // FIXME: use entry api
         let cookie = $msg.cookie;
         if {
-            match $this.$col.get_mut(&($from, cookie)) {
+            match $this.$col.get_mut(&cookie) {
                 Some(x) => x.$f($db, &mut $this.state, $msg),
                 None => {
-                    debug!("NotFound {}[{:?}]", stringify!($col), ($from, cookie));
+                    debug!("NotFound {}[{:?}]", stringify!($col), cookie);
                     $db.fabric.send_message($from,  $emsg {
                         cookie: $msg.cookie,
                         vnode: $msg.vnode,
@@ -136,7 +136,7 @@ macro_rules! forward {
             }
         } {
             info!("Removing {}[{:?}]", stringify!($col), ($from, cookie));
-            $this.$col.remove(&($from, cookie)).unwrap();
+            $this.$col.remove(&cookie).unwrap();
         }
     }
 }
@@ -157,6 +157,12 @@ impl ReqState {
 impl VNode {
     pub fn new(db: &Database, num: u16, create: bool) -> VNode {
         let storage = db.storage_manager.open(num as i32, true).unwrap();
+        if create {
+            db.meta_storage.del(num.to_string().as_bytes());
+            storage.clear();
+        } else {
+            // TODO: load state :)
+        }
         VNode {
             state: VNodeState {
                 num: num,
@@ -170,10 +176,14 @@ impl VNode {
             migrations: Default::default(),
             syncs: Default::default(),
         }
+
     }
 
     pub fn clear(db: &Database, num: u16) {
-
+        db.meta_storage.del(num.to_string().as_bytes());
+        if let Ok(storage) = db.storage_manager.open(num as i32, false) {
+            storage.clear();
+        }
     }
 
     pub fn syncs_inflight(&self) -> usize {
@@ -349,7 +359,7 @@ impl VNode {
         };
         migration.on_start(db, &mut self.state, msg);
 
-        let p = self.migrations.insert((from, cookie), migration);
+        let p = self.migrations.insert(cookie, migration);
         assert!(p.is_none());
     }
 
@@ -379,7 +389,7 @@ impl VNode {
         };
         sync.on_start(db, &mut self.state, msg);
 
-        let p = self.syncs.insert((from, cookie), sync);
+        let p = self.syncs.insert(cookie, sync);
         assert!(p.is_none());
     }
 
@@ -418,7 +428,7 @@ impl VNode {
                               })
                 .unwrap();
 
-            let p = self.migrations.insert((node, cookie), migration);
+            let p = self.migrations.insert(cookie, migration);
             assert!(p.is_none());
             return;
         }
@@ -464,7 +474,7 @@ impl VNode {
                               clock_in_peer: clock_in_peer,
                           })
             .unwrap();
-        let p = self.syncs.insert((peer, cookie), sync);
+        let p = self.syncs.insert(cookie, sync);
         assert!(p.is_none());
     }
 }
