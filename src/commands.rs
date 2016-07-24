@@ -19,18 +19,18 @@ impl Database {
                     };
                 }
             }
-            _ => unimplemented!()
+            _ => unimplemented!(),
         }
 
         let arg0 = args[0];
         let args = &args[1..argc];
 
         match arg0 {
-                b"GET" | b"MGET" => self.cmd_get(token, args),
-                b"SET" | b"MSET" => self.cmd_set(token, args),
-                b"DEL" | b"MDEL" => self.cmd_del(token, args),
-                b"CONFIG" => unimplemented!(),
-                _ => unimplemented!(),
+            b"GET" | b"MGET" => self.cmd_get(token, args),
+            b"SET" | b"MSET" => self.cmd_set(token, args),
+            b"DEL" | b"MDEL" => self.cmd_del(token, args),
+            b"CONFIG" => unimplemented!(),
+            _ => unimplemented!(),
         };
     }
 
@@ -62,7 +62,8 @@ impl Database {
 }
 
 fn dcc_to_resp(dcc: DottedCausalContainer<Vec<u8>>) -> RespValue {
-    let mut buffer = ByteTendril::with_capacity(1024 + dcc.values().map(|v| v.len()).sum::<usize>() as u32);
+    let mut buffer =
+        ByteTendril::with_capacity(1024 + dcc.values().map(|v| v.len()).sum::<usize>() as u32);
     bincode_serde::serialize_into(&mut buffer, &dcc, SizeLimit::Infinite).unwrap();
     RespValue::Data(buffer)
 }

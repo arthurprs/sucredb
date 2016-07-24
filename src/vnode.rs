@@ -35,6 +35,7 @@ struct VNodeState {
     unflushed_coord_writes: usize,
 }
 
+#[derive(Serialize, Deserialize)]
 struct SavedVNodeState {
     peers: LinearMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
@@ -42,7 +43,7 @@ struct SavedVNodeState {
     clean_shutdown: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 struct VNodePeer {
     knowledge: u64,
     log: BTreeMap<u64, Vec<u8>>,
@@ -156,22 +157,13 @@ impl ReqState {
 
 impl VNode {
     pub fn new(db: &Database, num: u16, create: bool) -> VNode {
-        let storage = db.storage_manager.open(num as i32, true).unwrap();
-        if create {
-            db.meta_storage.del(num.to_string().as_bytes());
-            storage.clear();
+        let state = if create {
+            VNodeState::new(num, db)
         } else {
-            // TODO: load state :)
-        }
+            VNodeState::load(num, db)
+        };
         VNode {
-            state: VNodeState {
-                num: num,
-                clocks: BitmappedVersionVector::new(),
-                peers: Default::default(),
-                log: Default::default(),
-                storage: storage,
-                unflushed_coord_writes: 0,
-            },
+            state: state,
             inflight: Default::default(),
             migrations: Default::default(),
             syncs: Default::default(),
@@ -234,7 +226,7 @@ impl VNode {
         assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len())).is_none());
 
         let dcc = self.state
-            .storage_set_local(db.dht.node(), key, value_opt, &vv);
+            .storage_set_local(db, key, value_opt, &vv);
         self.process_set(db, cookie, true);
         for node in nodes {
             if node != db.dht.node() {
@@ -490,6 +482,62 @@ impl Drop for VNode {
 
 
 impl VNodeState {
+    fn new(num: u16, db: &Database) -> Self {
+        let storage = db.storage_manager.open(num as i32, true).unwrap();
+        db.meta_storage.del(num.to_string().as_bytes());
+        storage.clear();
+
+        VNodeState {
+            num: num,
+            clocks: BitmappedVersionVector::new(),
+            peers: Default::default(),
+            log: Default::default(),
+            storage: storage,
+            unflushed_coord_writes: 0,
+        }
+    }
+
+    fn load(num: u16, db: &Database) -> Self {
+        let saved_state_opt = db.meta_storage
+            .get(num.to_string().as_bytes(), |bytes| bincode_serde::deserialize(bytes).unwrap());
+        if saved_state_opt.is_none() {
+            return Self::new(num, db);
+        };
+        let SavedVNodeState { clocks, log, peers, clean_shutdown } = saved_state_opt.unwrap();
+        let storage = db.storage_manager.open(num as i32, true).unwrap();
+
+        if !clean_shutdown {
+            unimplemented!();
+        }
+
+        VNodeState {
+            num: num,
+            clocks: clocks,
+            storage: storage,
+            unflushed_coord_writes: 0,
+            log: log,
+            peers: peers,
+        }
+    }
+
+    fn save(&self, db: &Database, shutdown: bool) {
+        let (peers, log) = if shutdown {
+            (self.peers.clone(), self.log.clone())
+        } else {
+            (Default::default(), Default::default())
+        };
+
+        let saved_state = SavedVNodeState {
+            peers: peers,
+            clocks: self.clocks.clone(),
+            log: log,
+            clean_shutdown: shutdown,
+        };
+        let serialized_saved_state =
+            bincode_serde::serialize(&saved_state, bincode::SizeLimit::Infinite).unwrap();
+        db.meta_storage.set(self.num.to_string().as_bytes(), &serialized_saved_state);
+    }
+
     // STORAGE
     pub fn storage_get(&self, key: &[u8]) -> DottedCausalContainer<Vec<u8>> {
         let mut dcc = if let Some(bytes) = self.storage.get_vec(key) {
@@ -501,22 +549,22 @@ impl VNodeState {
         dcc
     }
 
-    pub fn storage_set_local(&mut self, id: u64, key: &[u8], value_opt: Option<&[u8]>,
+    pub fn storage_set_local(&mut self, db: &Database, key: &[u8], value_opt: Option<&[u8]>,
                              vv: &VersionVector)
                              -> DottedCausalContainer<Vec<u8>> {
         let mut dcc = self.storage_get(key);
         dcc.discard(vv);
-        let dot = self.clocks.event(id);
+        let node = db.dht.node();
+        let dot = self.clocks.event(node);
         if let Some(value) = value_opt {
-            dcc.add(id, dot, value.into());
+            dcc.add(node, dot, value.into());
         }
         dcc.strip(&self.clocks);
 
         if dcc.is_empty() {
             self.storage.del(key);
         } else {
-            let mut bytes = Vec::new();
-            bincode_serde::serialize_into(&mut bytes, &dcc, bincode::SizeLimit::Infinite).unwrap();
+            let bytes = bincode_serde::serialize(&dcc, bincode::SizeLimit::Infinite).unwrap();
             self.storage.set(key, &bytes);
         }
 
@@ -524,8 +572,8 @@ impl VNodeState {
 
         self.unflushed_coord_writes += 1;
         if self.unflushed_coord_writes >= PEER_LOG_SIZE {
+            self.save(db, false);
             self.unflushed_coord_writes = 0;
-            self.storage.sync();
         }
 
         dcc
@@ -541,9 +589,7 @@ impl VNodeState {
         if new_dcc.is_empty() {
             self.storage.del(key);
         } else {
-            let mut bytes = Vec::new();
-            bincode_serde::serialize_into(&mut bytes, &new_dcc, bincode::SizeLimit::Infinite)
-                .unwrap();
+            let bytes = bincode_serde::serialize(&new_dcc, bincode::SizeLimit::Infinite).unwrap();
             self.storage.set(key, &bytes);
         }
 
@@ -608,10 +654,7 @@ impl Synchronization {
     fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncSend) -> bool {
         match *self {
             Synchronization::Incomming { peer, ref mut count, .. } => {
-                let mut bytes = Vec::new();
-                bincode_serde::serialize_into(&mut bytes,
-                                              &msg.container,
-                                              bincode::SizeLimit::Infinite)
+                let bytes = bincode_serde::serialize(&msg.container, bincode::SizeLimit::Infinite)
                     .unwrap();
                 state.storage.set(&msg.key, &bytes);
 

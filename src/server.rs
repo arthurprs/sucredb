@@ -91,12 +91,13 @@ impl Protocol for RespConnection {
                 }
                 Err(resp::RespError::Incomplete) => {
                     let buf_len = transport.input().len();
-                    return Intent::of(self).expect_delimiter_after(buf_len.saturating_sub(1), b"\r\n", 64 * 1024)
+                    return Intent::of(self)
+                        .expect_delimiter_after(buf_len.saturating_sub(1), b"\r\n", 64 * 1024);
                 }
                 Err(resp::RespError::Invalid(err_str)) => {
                     warn!("protocol error {}", err_str);
                     self.cleanup(scope);
-                    return Intent::done()
+                    return Intent::done();
                 }
             }
         }
@@ -115,7 +116,8 @@ impl Protocol for RespConnection {
         Intent::done()
     }
 
-    fn wakeup(mut self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>) -> Intent<Self> {
+    fn wakeup(mut self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
+              -> Intent<Self> {
         debug_assert!(self.inflight);
         let rv = scope.shared
             .queues

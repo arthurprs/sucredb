@@ -60,10 +60,10 @@ impl StorageManager {
 }
 
 impl Storage {
-    pub fn get<R, F: FnOnce(Option<&[u8]>) -> R>(&self, key: &[u8], callback: F) -> R {
+    pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
         let r: Option<&[u8]> = self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok();
         debug!("get {:?} ({:?} bytes)", str::from_utf8(key), r.map(|x| x.len()));
-        callback(r)
+        r.map(|r| callback(r))
     }
 
     pub fn iter(&self) -> StorageIterator {
@@ -86,7 +86,7 @@ impl Storage {
     }
 
     pub fn get_vec(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.get(key, |v| v.map(|v| v.to_owned()))
+        self.get(key, |v| v.to_owned())
     }
 
     pub fn set(&self, key: &[u8], value: &[u8]) {
