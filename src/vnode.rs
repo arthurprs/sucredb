@@ -155,20 +155,25 @@ impl ReqState {
 }
 
 impl VNode {
-    pub fn new(storage_manager: &StorageManager, num: u16) -> VNode {
+    pub fn new(db: &Database, num: u16, create: bool) -> VNode {
+        let storage = db.storage_manager.open(num as i32, true).unwrap();
         VNode {
             state: VNodeState {
                 num: num,
                 clocks: BitmappedVersionVector::new(),
                 peers: Default::default(),
                 log: Default::default(),
-                storage: storage_manager.open(num as i32, true).unwrap(),
+                storage: storage,
                 unflushed_coord_writes: 0,
             },
             inflight: Default::default(),
             migrations: Default::default(),
             syncs: Default::default(),
         }
+    }
+
+    pub fn clear(db: &Database, num: u16) {
+
     }
 
     pub fn syncs_inflight(&self) -> usize {

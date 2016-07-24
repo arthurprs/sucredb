@@ -2,7 +2,7 @@ use std::{thread, net, time};
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
 use linear_map::LinearMap;
-use rand::{self, Rng};
+use rand::{thread_rng, Rng};
 use serde::{Serialize, Deserialize};
 use serde_yaml;
 use hash::hash;
@@ -186,19 +186,33 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         (hash(key) % inner.ring.vnodes.len() as u64) as u16
     }
 
+    pub fn vnodes_for_node(&self, node: NodeId) -> (Vec<u16>, Vec<u16>) {
+        let mut insync = Vec::new();
+        let mut pending = Vec::new();
+        let inner = self.inner.read().unwrap();
+        for (i, (v, p)) in inner.ring.vnodes.iter().zip(inner.ring.pending.iter()).enumerate() {
+            if v.contains_key(&node) {
+                insync.push(i as u16);
+            }
+            if p.contains_key(&node) {
+                pending.push(i as u16);
+            }
+        }
+        (insync, pending)
+    }
+
     pub fn nodes_for_vnode(&self, vnode: u16, include_pending: bool) -> Vec<NodeId> {
+        // FIXME: this shouldn't alloc
         let mut result = Vec::new();
         let inner = self.inner.read().unwrap();
-        result.extend(inner.ring.vnodes[vnode as usize].iter().map(|(&n, _)| n));
+        result.extend(inner.ring.vnodes[vnode as usize].keys());
         if include_pending {
-            if let Some(pending) = inner.ring.pending.get(vnode as usize) {
-                result.extend(pending.iter().map(|(&n, _)| n));
-            }
+            result.extend(inner.ring.pending[vnode as usize].keys());
         }
         result
     }
 
-    pub fn members(&self) -> Vec<(NodeId, net::SocketAddr)> {
+    pub fn members(&self) -> HashMap<NodeId, net::SocketAddr> {
         let inner = self.inner.read().unwrap();
         inner.ring.nodes.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
@@ -208,32 +222,36 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         (inner.ring.clone(), inner.ring_version)
     }
 
-    pub fn claim(&self, node: NodeId, meta: T) -> Result<(), GenericError> {
+    pub fn claim(&self, node: NodeId, meta: T) -> Result<Vec<u16>, GenericError> {
+        let mut changes = Vec::new();
         try_cas!(self, {
+            changes.clear();
             let (mut ring, ring_version) = self.ring_clone();
             let members = self.members().len() + 1;
             let partitions = ring.vnodes.len();
             if members <= ring.replication_factor {
                 for i in 0..ring.vnodes.len() {
                     ring.pending[i].insert(node, meta.clone());
+                    changes.push(i as u16);
                 }
             } else {
                 for _ in 0..partitions * ring.replication_factor / members {
                     loop {
-                        let r = rand::thread_rng().gen::<usize>() % partitions;
+                        let r = thread_rng().gen::<usize>() % partitions;
                         if let Some(pending) = ring.pending.get(r) {
                             if pending.contains_key(&node) {
                                 continue;
                             }
                         }
                         ring.pending[r].insert(node, meta.clone());
+                        changes.push(r as u16);
                         break;
                     }
                 }
             }
             (ring_version, ring)
         });
-        Ok(())
+        Ok(changes)
     }
 
     pub fn add_pending_node(&self, vnode: u16, node: NodeId, meta: T) -> Result<(), GenericError> {

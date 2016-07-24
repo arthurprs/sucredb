@@ -9,7 +9,7 @@
 * [ ] to support the previous, dht metadata could be an incarnation number?
 * [x] resp server
 * [x] convert resp into commands to the database
-* [ ] send responses to the resp server
+* [x] send responses to the resp server
 * [x] worker threads
 * [ ] handling timeouts for crud
 * [ ] resending sync/bootstrap/recover data

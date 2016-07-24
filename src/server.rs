@@ -45,7 +45,7 @@ impl RespConnection {
     }
 
     fn dispatch(&self, scope: &mut Scope<Context>, req: RespValue) {
-        // scope.shared.database.
+        scope.sender.send(WorkerMsg::Command(self.token, req));
     }
 }
 
@@ -66,7 +66,7 @@ impl Protocol for RespConnection {
         assert!(r.is_none());
         let con = RespConnection {
             token: token,
-            inflight: true,
+            inflight: false,
             requests: Default::default(),
         };
         Intent::of(con).expect_delimiter(b"\r\n", 1024)
@@ -76,27 +76,28 @@ impl Protocol for RespConnection {
                   scope: &mut Scope<Context>)
                   -> Intent<Self> {
         let mut parser = resp::Parser::new(&transport.input()[..]);
-        match parser.parse() {
-            Ok(req) => {
-                transport.input().consume(parser.bytes_consumed());
-                // parse it and send to correct worker thread?
-                debug!("received request {:?}", req);
-                if self.inflight {
-                    self.requests.push_back(req);
-                } else {
-                    self.inflight = true;
-                    self.dispatch(scope, req);
+        loop {
+            match parser.parse() {
+                Ok(req) => {
+                    transport.input().consume(parser.bytes_consumed());
+                    // parse it and send to correct worker thread?
+                    debug!("received request {:?}", req);
+                    if self.inflight {
+                        self.requests.push_back(req);
+                    } else {
+                        self.inflight = true;
+                        self.dispatch(scope, req);
+                    }
                 }
-                Intent::of(self).expect_delimiter(b"\r\n", 1024)
-            }
-            Err(resp::RespError::Incomplete) => {
-                let buf_len = transport.input().len();
-                Intent::of(self).expect_delimiter_after(buf_len - 1, b"\r\n", 64 * 1024)
-            }
-            Err(resp::RespError::Invalid(err_str)) => {
-                warn!("protocol error {}", err_str);
-                self.cleanup(scope);
-                Intent::done()
+                Err(resp::RespError::Incomplete) => {
+                    let buf_len = transport.input().len();
+                    return Intent::of(self).expect_delimiter_after(buf_len.saturating_sub(1), b"\r\n", 64 * 1024)
+                }
+                Err(resp::RespError::Invalid(err_str)) => {
+                    warn!("protocol error {}", err_str);
+                    self.cleanup(scope);
+                    return Intent::done()
+                }
             }
         }
     }
@@ -133,7 +134,7 @@ impl Protocol for RespConnection {
             self.inflight = false;
         }
         let buf_len = transport.input().len();
-        Intent::of(self).expect_delimiter_after(buf_len - 1, b"\r\n", 64 * 1024)
+        Intent::of(self).expect_delimiter_after(buf_len.saturating_sub(1), b"\r\n", 64 * 1024)
     }
 
     fn exception(self, _transport: &mut Transport<Self::Socket>, reason: Exception,
@@ -176,7 +177,7 @@ impl Server {
         });
 
         let database = Database::new(utils::get_or_gen_node_id(),
-                                     "127.0.0.1:6379".parse().unwrap(),
+                                     "127.0.0.1:9000".parse().unwrap(),
                                      "./run/",
                                      true,
                                      response_fn);

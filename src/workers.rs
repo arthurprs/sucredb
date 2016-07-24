@@ -6,6 +6,7 @@ use database::Token;
 use rand::{thread_rng, Rng};
 use resp::RespValue;
 
+#[derive(Debug)]
 pub enum WorkerMsg {
     Fabric(NodeId, FabricMsg),
     Tick(time::SystemTime),
@@ -50,22 +51,18 @@ impl WorkerManager {
             self.threads.push(thread::spawn(move || worker_fn(rx)));
             self.channels.push(tx);
         }
-        let channels = self.channels.clone();
 
         let (ticker_tx, ticker_rx) = mpsc::channel();
         self.ticker_chan = Some(ticker_tx);
         let ticker_interval = self.ticker_interval;
-
+        let mut sender = self.sender();
         self.ticker_thread = Some(thread::spawn(move || {
             loop {
                 thread::sleep(ticker_interval);
                 if ticker_rx.try_recv().is_ok() {
                     break;
                 }
-                let now = time::SystemTime::now();
-                for chan in &channels {
-                    let _ = chan.send(WorkerMsg::Tick(now));
-                }
+                let _ = sender.try_send(WorkerMsg::Tick(time::SystemTime::now()));
             }
         }));
     }
@@ -81,9 +78,12 @@ impl WorkerManager {
 
 impl WorkerSender {
     pub fn send(&mut self, msg: WorkerMsg) {
+        self.try_send(msg).unwrap();
+    }
+    pub fn try_send(&mut self, msg: WorkerMsg) -> Result<(), ()> {
         let i = self.cursor % self.channels.len();
         self.cursor = self.cursor.wrapping_add(1);
-        self.channels[i].send(msg).unwrap();
+        self.channels[i].send(msg).map_err(|_| ())
     }
 }
 

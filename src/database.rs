@@ -18,7 +18,7 @@ pub struct Database {
     pub dht: DHT<()>,
     pub fabric: Fabric,
     pub meta_storage: Storage,
-    storage_manager: StorageManager,
+    pub storage_manager: StorageManager,
     workers: Mutex<WorkerManager>,
     vnodes: RwLock<HashMap<u16, Mutex<VNode>>>,
     inflight: Mutex<HashMap<u64, ProxyReqState>>,
@@ -47,7 +47,7 @@ impl Database {
                -> Arc<Database> {
         let storage_manager = StorageManager::new(storage_dir).unwrap();
         let meta_storage = storage_manager.open(-1, true).unwrap();
-        let workers = WorkerManager::new(8, time::Duration::from_millis(200));
+        let workers = WorkerManager::new(8, time::Duration::from_millis(1000));
         let db = Arc::new(Database {
             fabric: Fabric::new(node, bind_addr).unwrap(),
             dht: DHT::new(3,
@@ -66,10 +66,28 @@ impl Database {
             workers: Mutex::new(workers),
         });
 
+        // register callback and then current nodes into fabric
+        let cdb = Arc::downgrade(&db);
+        db.dht.set_callback(Box::new(move || {
+            cdb.upgrade().map(|db| {
+                for (node, meta) in db.dht.members() {
+                    db.fabric.register_node(node, meta);
+                }
+            });
+        }));
+        // current nodes
+        db.dht.members().into_iter().map(|(n, a)| db.fabric.register_node(n, a)).count();
+
+        let (sync_vnodes, pending_vnodes) = db.dht.vnodes_for_node(db.dht.node());
+        // create storages, possibly clearing them
         for i in 0..db.dht.partitions() as u16 {
-            if db.storage_manager.open(i as i32, false).is_ok() {
-                info!("existing vnode {}", i);
-                db.init_vnode(i);
+            if sync_vnodes.contains(&i) {
+                db.init_vnode(i, false);
+            } else if pending_vnodes.contains(&i) {
+                db.init_vnode(i, false);
+                db.start_migration(i);
+            } else {
+                db.remove_vnode(i);
             }
         }
 
@@ -77,6 +95,7 @@ impl Database {
             let cdb = Arc::downgrade(&db);
             Box::new(move |chan| {
                 for wm in chan {
+                    trace!("worker got msg {:?}", wm);
                     let db = if let Some(db) = cdb.upgrade() {
                         db
                     } else {
@@ -93,17 +112,8 @@ impl Database {
             })
         });
 
-        db.dht.members().into_iter().map(|(n, a)| db.fabric.register_node(n, a)).count();
-
-        let cdb = Arc::downgrade(&db);
-        db.dht.set_callback(Box::new(move || {
-            cdb.upgrade().map(|db| {
-                for (node, meta) in db.dht.members() {
-                    db.fabric.register_node(node, meta);
-                }
-            });
-        }));
-
+        // FIXME: fabric should have a start method
+        // set fabric callbacks
         for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch, FabricMsgType::Bootstrap] {
             let mut sender = db.sender();
             db.fabric.register_msg_handler(msg_type,
@@ -113,6 +123,20 @@ impl Database {
         }
 
         db
+    }
+
+    fn init_vnode(&self, vnode_n: u16, create: bool) {
+        self.vnodes
+            .write()
+            .unwrap()
+            .entry(vnode_n)
+            .or_insert_with(|| Mutex::new(VNode::new(self, vnode_n, create)));
+    }
+
+    fn remove_vnode(&self, vnode_n: u16) {
+        let mut vnodes = self.vnodes.write().unwrap();
+        vnodes.remove(&vnode_n);
+        VNode::clear(self, vnode_n);
     }
 
     // FIXME: leaky abstraction
@@ -173,18 +197,6 @@ impl Database {
 
     fn syncs_inflight(&self) -> usize {
         self.vnodes.read().unwrap().values().map(|vn| vn.lock().unwrap().syncs_inflight()).sum()
-    }
-
-    fn init_vnode(&self, vnode_n: u16) {
-        self.vnodes
-            .write()
-            .unwrap()
-            .entry(vnode_n)
-            .or_insert_with(|| Mutex::new(VNode::new(&self.storage_manager, vnode_n)));
-    }
-
-    fn remove_vnode(&self, vnode_n: u16) {
-        self.vnodes.write().unwrap().remove(&vnode_n);
     }
 
     fn start_migration(&self, vnode: u16) {
