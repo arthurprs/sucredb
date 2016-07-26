@@ -68,37 +68,37 @@ impl FabricMsg {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgGetRemote {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
     pub key: Vec<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgGetRemoteAck {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
     pub result: Result<DottedCausalContainer<Vec<u8>>, FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSetRemote {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
     pub key: Vec<u8>,
     pub container: DottedCausalContainer<Vec<u8>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSetRemoteAck {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
     pub result: Result<(), FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSet {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
     pub key: Vec<u8>,
     pub value: Option<Vec<u8>>,
     pub version_vector: VersionVector,
@@ -106,64 +106,64 @@ pub struct MsgSet {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSetAck {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
     pub result: Result<(), FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgBootstrapStart {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgBootstrapFin {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
     pub result: Result<BitmappedVersionVector, FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgBootstrapSend {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
     pub key: Vec<u8>,
     pub container: DottedCausalContainer<Vec<u8>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgBootstrapAck {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSyncStart {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
     pub clock_in_peer: BitmappedVersion,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSyncFin {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
     pub result: Result<BitmappedVersion, FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSyncSend {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
     pub key: Vec<u8>,
     pub container: DottedCausalContainer<Vec<u8>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSyncAck {
-    pub vnode: u16,
-    pub cookie: u64,
+    pub vnode: VNodeId,
+    pub cookie: Cookie,
 }
 
 macro_rules! impl_into {

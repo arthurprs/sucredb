@@ -10,7 +10,8 @@ use resp::RespValue;
 use storage::{StorageManager, Storage};
 
 pub type Token = u64;
-pub type Cookie = u64;
+pub type Cookie = (u64, u64);
+pub type VNodeId = u16;
 
 pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;
 
@@ -20,8 +21,8 @@ pub struct Database {
     pub meta_storage: Storage,
     pub storage_manager: StorageManager,
     workers: Mutex<WorkerManager>,
-    vnodes: RwLock<HashMap<u16, Mutex<VNode>>>,
-    inflight: Mutex<HashMap<u64, ProxyReqState>>,
+    vnodes: RwLock<HashMap<VNodeId, Mutex<VNode>>>,
+    inflight: Mutex<HashMap<Cookie, ProxyReqState>>,
     pub response_fn: DatabaseResponseFn,
 }
 
@@ -80,7 +81,7 @@ impl Database {
 
         let (sync_vnodes, pending_vnodes) = db.dht.vnodes_for_node(db.dht.node());
         // create storages, possibly clearing them
-        for i in 0..db.dht.partitions() as u16 {
+        for i in 0..db.dht.partitions() as VNodeId {
             if sync_vnodes.contains(&i) {
                 db.init_vnode(i, false);
             } else if pending_vnodes.contains(&i) {
@@ -125,7 +126,7 @@ impl Database {
         db
     }
 
-    fn init_vnode(&self, vnode_n: u16, create: bool) {
+    fn init_vnode(&self, vnode_n: VNodeId, create: bool) {
         self.vnodes
             .write()
             .unwrap()
@@ -133,7 +134,7 @@ impl Database {
             .or_insert_with(|| Mutex::new(VNode::new(self, vnode_n, create)));
     }
 
-    fn remove_vnode(&self, vnode_n: u16) {
+    fn remove_vnode(&self, vnode_n: VNodeId) {
         let mut vnodes = self.vnodes.write().unwrap();
         vnodes.remove(&vnode_n);
         VNode::clear(self, vnode_n);
@@ -199,17 +200,17 @@ impl Database {
         self.vnodes.read().unwrap().values().map(|vn| vn.lock().unwrap().syncs_inflight()).sum()
     }
 
-    fn start_migration(&self, vnode: u16) {
+    fn start_migration(&self, vnode: VNodeId) {
         let vnodes = self.vnodes.read().unwrap();
         vnodes.get(&vnode).unwrap().lock().unwrap().start_migration(self);
     }
 
-    fn start_sync(&self, vnode: u16) {
+    fn start_sync(&self, vnode: VNodeId) {
         let vnodes = self.vnodes.read().unwrap();
         vnodes.get(&vnode).unwrap().lock().unwrap().start_sync(self);
     }
 
-    fn send_set(&self, addr: NodeId, vnode: u16, cookie: Cookie, key: &[u8],
+    fn send_set(&self, addr: NodeId, vnode: VNodeId, cookie: Cookie, key: &[u8],
                 value_opt: Option<&[u8]>, vv: VersionVector) {
         self.fabric
             .send_message(addr,
@@ -269,11 +270,6 @@ impl Database {
         vnode!(self, msg.vnode, |mut vn| {
             vn.handler_get_remote_ack(self, from, msg);
         });
-    }
-
-    // UTILITIES
-    fn inflight(&self, token: Token) -> Option<ProxyReqState> {
-        self.inflight.lock().unwrap().remove(&token)
     }
 }
 
@@ -343,7 +339,7 @@ mod tests {
         let _ = env_logger::init();
         let db = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db", true);
         for i in 0u16..64 {
-            db.init_vnode(i);
+            db.init_vnode(i, true);
         }
         db.get(1, b"test");
         assert!(db.response(1).unwrap().is_empty());
@@ -382,8 +378,8 @@ mod tests {
         let db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         for i in 0u16..64 {
-            db1.init_vnode(i);
-            db2.init_vnode(i);
+            db1.init_vnode(i, true);
+            db2.init_vnode(i, true);
         }
         for i in 0u16..32 {
             db1.dht.add_pending_node(i * 2 + 1, db2.dht.node(), ());
@@ -405,22 +401,24 @@ mod tests {
         }
     }
 
+    const TEST_JOIN_SIZE: u64 = 10;
+
     #[test]
     fn test_join_migrate() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
         let db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         for i in 0u16..64 {
-            db1.init_vnode(i);
+            db1.init_vnode(i, true);
         }
-        for i in 0..100 {
+        for i in 0..TEST_JOIN_SIZE {
             db1.set(i,
                     i.to_string().as_bytes(),
                     Some(i.to_string().as_bytes()),
                     VersionVector::new());
             db1.response(i).unwrap();
         }
-        for i in 0..100 {
+        for i in 0..TEST_JOIN_SIZE {
             db1.get(i, i.to_string().as_bytes());
             assert!(db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
@@ -428,10 +426,10 @@ mod tests {
         let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
 
         for i in 0u16..64 {
-            db2.init_vnode(i);
+            db2.init_vnode(i, true);
         }
         warn!("will check data in db2 before balancing");
-        for i in 0..100 {
+        for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
             thread::sleep_ms(10);
             assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
@@ -444,7 +442,7 @@ mod tests {
             }
         }
         warn!("will check data in db2 during balancing");
-        for i in 0..100 {
+        for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
             let result = (0..100)
                 .filter_map(|_| {
@@ -461,7 +459,7 @@ mod tests {
         }
 
         warn!("will check data in db2 after balancing");
-        for i in 0..100 {
+        for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
             thread::sleep_ms(10);
             assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
@@ -474,16 +472,16 @@ mod tests {
         let _ = env_logger::init();
         let db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         for i in 0u16..64 {
-            db1.init_vnode(i);
+            db1.init_vnode(i, true);
         }
-        for i in 0..100 {
+        for i in 0..TEST_JOIN_SIZE {
             db1.set(i,
                     i.to_string().as_bytes(),
                     Some(i.to_string().as_bytes()),
                     VersionVector::new());
             db1.response(i).unwrap();
         }
-        for i in 0..100 {
+        for i in 0..TEST_JOIN_SIZE {
             db1.get(i, i.to_string().as_bytes());
             assert!(db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
@@ -491,10 +489,10 @@ mod tests {
         let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
 
         for i in 0u16..64 {
-            db2.init_vnode(i);
+            db2.init_vnode(i, true);
         }
         warn!("will check data in db2 before balancing");
-        for i in 0..100 {
+        for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
             thread::sleep_ms(10);
             assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
@@ -507,7 +505,7 @@ mod tests {
             }
         }
         warn!("will check data in db2 during balancing");
-        for i in 0..100 {
+        for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
             let result = (0..100)
                 .filter_map(|_| {
@@ -528,7 +526,7 @@ mod tests {
         }
 
         warn!("will check data in db2 after balancing");
-        for i in 0..100 {
+        for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
             thread::sleep_ms(10);
             assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));

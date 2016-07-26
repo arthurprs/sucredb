@@ -62,7 +62,7 @@ impl StorageManager {
 impl Storage {
     pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
         let r: Option<&[u8]> = self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok();
-        debug!("get {:?} ({:?} bytes)", str::from_utf8(key), r.map(|x| x.len()));
+        trace!("get {:?} ({:?} bytes)", str::from_utf8(key), r.map(|x| x.len()));
         r.map(|r| callback(r))
     }
 
@@ -90,7 +90,7 @@ impl Storage {
     }
 
     pub fn set(&self, key: &[u8], value: &[u8]) {
-        debug!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
+        trace!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
         let _wlock = self.storages_handle.lock().unwrap();
         let txn = self.env.new_transaction().unwrap();
         txn.bind(&self.db_h).set(&key, &value).unwrap();
@@ -98,10 +98,18 @@ impl Storage {
     }
 
     pub fn del(&self, key: &[u8]) {
-        let _wlock = self.storages_handle.lock().unwrap();
-        let txn = self.env.new_transaction().unwrap();
-        txn.bind(&self.db_h).del(&key).unwrap();
-        txn.commit().unwrap();
+        let r = {
+            let _wlock = self.storages_handle.lock().unwrap();
+            let txn = self.env.new_transaction().unwrap();
+            let r = match txn.bind(&self.db_h).del(&key) {
+                Ok(_) => true,
+                Err(lmdb_rs::MdbError::NotFound) => false,
+                Err(e) => panic!("del error {:?}", e),
+            };
+            txn.commit().unwrap();
+            r
+        };
+        trace!("del {:?} ({})", key, r);
     }
 
     pub fn clear(&self) {

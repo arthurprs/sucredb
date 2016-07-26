@@ -7,6 +7,7 @@ use serde::{Serialize, Deserialize};
 use serde_yaml;
 use hash::hash;
 use fabric::NodeId;
+use database::VNodeId;
 use etcd;
 use utils::GenericError;
 
@@ -180,28 +181,28 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         }
     }
 
-    pub fn key_vnode(&self, key: &[u8]) -> u16 {
+    pub fn key_vnode(&self, key: &[u8]) -> VNodeId {
         // FIXME: this should be lock free
         let inner = self.inner.read().unwrap();
-        (hash(key) % inner.ring.vnodes.len() as u64) as u16
+        (hash(key) % inner.ring.vnodes.len() as u64) as VNodeId
     }
 
-    pub fn vnodes_for_node(&self, node: NodeId) -> (Vec<u16>, Vec<u16>) {
+    pub fn vnodes_for_node(&self, node: NodeId) -> (Vec<VNodeId>, Vec<VNodeId>) {
         let mut insync = Vec::new();
         let mut pending = Vec::new();
         let inner = self.inner.read().unwrap();
         for (i, (v, p)) in inner.ring.vnodes.iter().zip(inner.ring.pending.iter()).enumerate() {
             if v.contains_key(&node) {
-                insync.push(i as u16);
+                insync.push(i as VNodeId);
             }
             if p.contains_key(&node) {
-                pending.push(i as u16);
+                pending.push(i as VNodeId);
             }
         }
         (insync, pending)
     }
 
-    pub fn nodes_for_vnode(&self, vnode: u16, include_pending: bool) -> Vec<NodeId> {
+    pub fn nodes_for_vnode(&self, vnode: VNodeId, include_pending: bool) -> Vec<NodeId> {
         // FIXME: this shouldn't alloc
         let mut result = Vec::new();
         let inner = self.inner.read().unwrap();
@@ -222,7 +223,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         (inner.ring.clone(), inner.ring_version)
     }
 
-    pub fn claim(&self, node: NodeId, meta: T) -> Result<Vec<u16>, GenericError> {
+    pub fn claim(&self, node: NodeId, meta: T) -> Result<Vec<VNodeId>, GenericError> {
         let mut changes = Vec::new();
         try_cas!(self, {
             changes.clear();
@@ -232,7 +233,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             if members <= ring.replication_factor {
                 for i in 0..ring.vnodes.len() {
                     ring.pending[i].insert(node, meta.clone());
-                    changes.push(i as u16);
+                    changes.push(i as VNodeId);
                 }
             } else {
                 for _ in 0..partitions * ring.replication_factor / members {
@@ -244,7 +245,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
                             }
                         }
                         ring.pending[r].insert(node, meta.clone());
-                        changes.push(r as u16);
+                        changes.push(r as VNodeId);
                         break;
                     }
                 }
@@ -254,7 +255,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         Ok(changes)
     }
 
-    pub fn add_pending_node(&self, vnode: u16, node: NodeId, meta: T) -> Result<(), GenericError> {
+    pub fn add_pending_node(&self, vnode: VNodeId, node: NodeId, meta: T) -> Result<(), GenericError> {
         try_cas!(self, {
             let (mut ring, ring_version) = self.ring_clone();
             {
@@ -266,7 +267,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         Ok(())
     }
 
-    pub fn remove_pending_node(&self, vnode: u16, node: NodeId) -> Result<(), GenericError> {
+    pub fn remove_pending_node(&self, vnode: VNodeId, node: NodeId) -> Result<(), GenericError> {
         try_cas!(self, {
             let (mut ring, ring_version) = self.ring_clone();
             {
@@ -278,7 +279,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         Ok(())
     }
 
-    pub fn promote_pending_node(&self, vnode: u16, node: NodeId) -> Result<(), GenericError> {
+    pub fn promote_pending_node(&self, vnode: VNodeId, node: NodeId) -> Result<(), GenericError> {
         try_cas!(self, {
             let (mut ring, ring_version) = self.ring_clone();
             let new_meta = {
@@ -326,6 +327,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> Drop for DHT<T>
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use super::*;
     use std::net;
 
@@ -337,7 +339,7 @@ mod tests {
             let dht = DHT::new(rf, node, addr, Some(((), 256)));
             assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
             assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
-            assert_eq!(dht.members(), &[(node, addr)]);
+            assert_eq!(dht.members(), [(node, addr)].iter().cloned().collect::<HashMap<_, _>>());
         }
     }
 

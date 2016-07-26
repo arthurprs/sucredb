@@ -30,7 +30,7 @@ struct VNodeState {
     num: u16,
     peers: LinearMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
-    log: BTreeMap<u64, Vec<u8>>,
+    log: BTreeMap<Version, Vec<u8>>,
     storage: Storage,
     unflushed_coord_writes: usize,
 }
@@ -39,14 +39,14 @@ struct VNodeState {
 struct SavedVNodeState {
     peers: LinearMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
-    log: BTreeMap<u64, Vec<u8>>,
+    log: BTreeMap<Version, Vec<u8>>,
     clean_shutdown: bool,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 struct VNodePeer {
-    knowledge: u64,
-    log: BTreeMap<u64, Vec<u8>>,
+    knowledge: Version,
+    log: BTreeMap<Version, Vec<u8>>,
 }
 
 pub struct ReqState {
@@ -98,12 +98,12 @@ impl VNodePeer {
         }
     }
 
-    fn advance_knowledge(&mut self, until: u64) {
+    fn advance_knowledge(&mut self, until: Version) {
         debug_assert!(until >= self.knowledge);
         self.knowledge = until;
     }
 
-    fn log(&mut self, dot: u64, key: Vec<u8>) {
+    fn log(&mut self, dot: Version, key: Vec<u8>) {
         let prev = self.log.insert(dot, key);
         // FIXME: if present keys should match, use entry api for this
         debug_assert!(prev.is_none());
@@ -113,7 +113,7 @@ impl VNodePeer {
         }
     }
 
-    fn get(&self, dot: u64) -> Option<Vec<u8>> {
+    fn get(&self, dot: Version) -> Option<Vec<u8>> {
         self.log.get(&dot).cloned()
     }
 }
@@ -186,9 +186,9 @@ impl VNode {
         self.migrations.len()
     }
 
-    fn gen_cookie(&mut self) -> u64 {
+    fn gen_cookie(&mut self) -> Cookie {
         // FIXME: make cookie really unique
-        thread_rng().gen()
+        (thread_rng().gen(), thread_rng().gen())
     }
 
     // TICK
@@ -254,7 +254,7 @@ impl VNode {
                 state.container.sync(container);
                 state.succesfull += 1;
             }
-            trace!("process_get c:{} tk:{} tl:{} - r:{} s:{} r:{}",
+            trace!("process_get c:{:?} tk:{:?} tl:{} - r:{} s:{} r:{}",
                    cookie,
                    state.token,
                    state.total,
@@ -281,7 +281,7 @@ impl VNode {
             if succesfull {
                 state.succesfull += 1;
             }
-            trace!("process_set c:{} tk:{} tl:{} - r:{} s:{} r:{}",
+            trace!("process_set c:{:?} tk:{:?} tl:{} - r:{} s:{} r:{}",
                    cookie,
                    state.token,
                    state.total,
@@ -580,7 +580,7 @@ impl VNodeState {
     }
 
     pub fn storage_set_remote(&mut self, key: &[u8], mut new_dcc: DottedCausalContainer<Vec<u8>>,
-                              log: Option<u64>) {
+                              log: Option<Version>) {
         let old_dcc = self.storage_get(key);
         new_dcc.add_to_bvv(&mut self.clocks);
         new_dcc.sync(old_dcc);
