@@ -1,4 +1,4 @@
-use std::{net, time};
+use std::{net, time, mem, thread};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use dht::DHT;
@@ -124,6 +124,12 @@ impl Database {
         }
 
         db
+    }
+
+    pub fn save(&self, shutdown: bool) {
+        for vn in self.vnodes.write().unwrap().values() {
+            vn.lock().unwrap().save(self, shutdown);
+        }
     }
 
     fn init_vnode(&self, vnode_n: VNodeId, create: bool) {
@@ -275,7 +281,7 @@ impl Database {
 
 impl Drop for Database {
     fn drop(&mut self) {
-        self.vnodes.write().unwrap().clear();
+        let _ = self.vnodes.write().map(|mut vns| vns.clear());
     }
 }
 
@@ -331,6 +337,40 @@ mod tests {
             RespValue::Data(bytes) => bincode_serde::deserialize(&bytes).ok(),
             _ => None,
         }
+    }
+
+    fn test_reload_stub(shutdown: bool) {
+        let _ = fs::remove_dir_all("./t");
+        let _ = env_logger::init();
+        let mut db = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db", true);
+
+        db.get(1, b"test");
+        assert!(db.response(1).unwrap().is_empty());
+
+        db.set(1, b"test", Some(b"value1"), VersionVector::new());
+        assert!(db.response(1).unwrap().is_empty());
+
+        db.get(1, b"test");
+        assert!(db.response(1).unwrap().values().eq(vec![b"value1"]));
+
+        db.save(shutdown);
+        drop(db);
+        db = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db", false);
+
+        db.get(1, b"test");
+        assert!(db.response(1).unwrap().values().eq(vec![b"value1"]));
+
+        assert_eq!(1, db.vnodes.read().unwrap().values().map(|vn| vn.lock().unwrap()._log_len()).sum::<usize>());
+    }
+
+    #[test]
+    fn test_reload_shutdown() {
+        test_reload_stub(true);
+    }
+
+    #[test]
+    fn test_reload_dirty() {
+        test_reload_stub(false);
     }
 
     #[test]

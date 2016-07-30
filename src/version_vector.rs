@@ -73,19 +73,6 @@ impl BitmappedVersion {
         self.base
     }
 
-    // pub fn values(&self) -> Vec<Version> {
-    //     let mut values = Vec::with_capacity(self.base as usize);
-    //     for i in 1..self.base+1 {
-    //         values.push(i as Version);
-    //     }
-    //     for i in 0..self.bitmap.bit_length() {
-    //         if self.bitmap.bit(i) {
-    //             values.push(self.base + 1 + i as Version);
-    //         }
-    //     }
-    //     values
-    // }
-
     pub fn delta(&self, other: &Self) -> BitmappedVersionDelta {
         // impl is generic but let's restrict it just in case
         assert!(self.base >= other.base);
@@ -265,18 +252,14 @@ impl VersionVector {
         }
     }
 
-    pub fn min_version(&self) -> Option<Version> {
-        self.0.values().cloned().min()
-    }
-
-    pub fn min_id(&self) -> Option<Id> {
-        self.0.iter().min_by_key(|&(&i, &v)| (v, i)).map(|(&i, _)| i)
-    }
-
     pub fn reset(&mut self) {
         for (_, v) in &mut self.0 {
             *v = 0;
         }
+    }
+
+    pub fn iter(&self) -> linear_map::Iter<Id, Version> {
+        self.0.iter()
     }
 }
 
@@ -368,7 +351,7 @@ impl<T> DottedCausalContainer<T> {
         self.dots.0.values()
     }
 
-    pub fn versions(&self) -> linear_map::Iter<(Id, Version), T> {
+    pub fn value_versions(&self) -> linear_map::Iter<(Id, Version), T> {
         self.dots.0.iter()
     }
 
@@ -490,33 +473,6 @@ mod test_bvv {
 #[cfg(test)]
 mod test_vv {
     use super::*;
-
-    #[test]
-    fn min_id() {
-        let mut a0 = VersionVector::new();
-        a0.add(1, 2);
-        let mut a1 = VersionVector::new();
-        a1.add(1, 2);
-        a1.add(2, 4);
-        a1.add(3, 4);
-        let mut a2 = VersionVector::new();
-        a2.add(1, 5);
-        a2.add(2, 4);
-        a2.add(3, 4);
-        let mut a3 = VersionVector::new();
-        a3.add(1, 4);
-        a3.add(2, 4);
-        a3.add(3, 4);
-        let mut a4 = VersionVector::new();
-        a4.add(1, 5);
-        a4.add(2, 14);
-        a4.add(3, 4);
-        assert_eq!(a0.min_id(), Some(1));
-        assert_eq!(a1.min_id(), Some(1));
-        assert_eq!(a2.min_id(), Some(2));
-        assert_eq!(a3.min_id(), Some(1));
-        assert_eq!(a4.min_id(), Some(3));
-    }
 
     #[test]
     fn reset() {

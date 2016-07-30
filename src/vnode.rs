@@ -30,7 +30,7 @@ struct VNodeState {
     num: u16,
     peers: LinearMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
-    log: BTreeMap<Version, Vec<u8>>,
+    log: VNodePeer,
     storage: Storage,
     unflushed_coord_writes: usize,
 }
@@ -39,7 +39,7 @@ struct VNodeState {
 struct SavedVNodeState {
     peers: LinearMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
-    log: BTreeMap<Version, Vec<u8>>,
+    log: VNodePeer,
     clean_shutdown: bool,
 }
 
@@ -103,18 +103,24 @@ impl VNodePeer {
         self.knowledge = until;
     }
 
-    fn log(&mut self, dot: Version, key: Vec<u8>) {
-        let prev = self.log.insert(dot, key);
-        // FIXME: if present keys should match, use entry api for this
-        debug_assert!(prev.is_none());
-        while self.log.len() > PEER_LOG_SIZE {
-            let min = self.log.keys().next().cloned().unwrap();
-            self.log.remove(&min).unwrap();
+    fn log(&mut self, version: Version, key: Vec<u8>) {
+        let min = self.log.keys().next().cloned().unwrap_or(0);
+        if version > min {
+            if cfg!(debug) {
+                if let Some(removed) = self.log.insert(version, key.clone()) {
+                    debug_assert!(removed == key);
+                }
+            } else {
+                self.log.insert(version, key);
+            }
+            if self.log.len() > PEER_LOG_SIZE {
+                self.log.remove(&min).unwrap();
+            }
         }
     }
 
-    fn get(&self, dot: Version) -> Option<Vec<u8>> {
-        self.log.get(&dot).cloned()
+    fn get(&self, version: Version) -> Option<Vec<u8>> {
+        self.log.get(&version).cloned()
     }
 }
 
@@ -162,13 +168,13 @@ impl VNode {
         } else {
             VNodeState::load(num, db)
         };
+        state.save(db, false);
         VNode {
             state: state,
             inflight: Default::default(),
             migrations: Default::default(),
             syncs: Default::default(),
         }
-
     }
 
     pub fn clear(db: &Database, num: u16) {
@@ -176,6 +182,16 @@ impl VNode {
         if let Ok(storage) = db.storage_manager.open(num as i32, false) {
             storage.clear();
         }
+    }
+
+    pub fn save(&mut self, db: &Database, shutdown: bool) {
+        self.state.save(db, shutdown);
+    }
+
+
+    #[cfg(test)]
+    pub fn _log_len(&self) -> usize {
+        self.state.log.log.len()
     }
 
     pub fn syncs_inflight(&self) -> usize {
@@ -498,16 +514,44 @@ impl VNodeState {
     }
 
     fn load(num: u16, db: &Database) -> Self {
+        info!("Loading vnode {} state", num);
         let saved_state_opt = db.meta_storage
             .get(num.to_string().as_bytes(), |bytes| bincode_serde::deserialize(bytes).unwrap());
         if saved_state_opt.is_none() {
+            info!("No saved state falling back to default");
             return Self::new(num, db);
         };
-        let SavedVNodeState { clocks, log, peers, clean_shutdown } = saved_state_opt.unwrap();
+        let SavedVNodeState { mut clocks, mut log, mut peers, clean_shutdown } = saved_state_opt.unwrap();
         let storage = db.storage_manager.open(num as i32, true).unwrap();
 
         if !clean_shutdown {
-            unimplemented!();
+            info!("Unclean shutdown, recovering from the storage");
+            let this_node = db.dht.node();
+            let peer_nodes = db.dht.nodes_for_vnode(num, true);
+            let mut iter = storage.iter();
+            let mut count = 0;
+            while iter.iter(|k, v| {
+                // FIXME: optimize?
+                let dcc: DottedCausalContainer<Vec<u8>> = bincode_serde::deserialize(v).unwrap();
+                warn!("{:?}", dcc);
+                dcc.add_to_bvv(&mut clocks);
+                for (&node, &version) in dcc.version_vector().iter() {
+                    // FIXME: doesn't work due to vv stripping :(
+                    if node == this_node {
+                        log.log(version, k.into());
+                    } else if peer_nodes.contains(&node) {
+                        peers.entry(node).or_insert_with(|| Default::default()).log(version, k.into());
+                    }
+                }
+                count += 1;
+                if count % 1000 == 0 {
+                    debug!("Processed {} keys", count)
+                }
+                true
+            }) {}
+            if count % 1000 != 0 {
+                debug!("Processed {} keys", count)
+            }
         }
 
         VNodeState {
@@ -568,7 +612,7 @@ impl VNodeState {
             self.storage.set(key, &bytes);
         }
 
-        self.log.insert(dot, key.into());
+        self.log.log(dot, key.into());
 
         self.unflushed_coord_writes += 1;
         if self.unflushed_coord_writes >= PEER_LOG_SIZE {
@@ -614,7 +658,7 @@ impl Synchronization {
                                         .. } => {
                 let log = &state.log;
                 let kv_opt = missing_dots.next()
-                    .and_then(|dot| log.get(&dot))
+                    .and_then(|dot| log.get(dot))
                     .and_then(|k| state.storage.get_vec(&k).map(|v| (k, v)));
                 if let Some((k, v)) = kv_opt {
                     db.fabric

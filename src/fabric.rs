@@ -456,8 +456,8 @@ mod tests {
         for _ in 0..3 {
             fabric.send_message(0,
                               MsgSetRemoteAck {
-                                  cookie: 0,
-                                  vnode: 0,
+                                  cookie: Default::default(),
+                                  vnode: Default::default(),
                                   result: Ok(()),
                               })
                 .unwrap();

@@ -109,7 +109,7 @@ impl Storage {
             txn.commit().unwrap();
             r
         };
-        trace!("del {:?} ({})", key, r);
+        trace!("del {:?} ({})", str::from_utf8(key), r);
     }
 
     pub fn clear(&self) {
@@ -145,6 +145,7 @@ unsafe impl Sync for StorageIterator {}
 impl StorageIterator {
     pub fn iter<F: FnMut(&[u8], &[u8]) -> bool>(&mut self, mut callback: F) -> bool {
         while let Some(cv) = self.cursor.next() {
+            trace!("iter {:?}", str::from_utf8(cv.get_key()));
             if !callback(cv.get_key(), cv.get_value()) {
                 return true;
             }
@@ -155,7 +156,7 @@ impl StorageIterator {
 
 impl Drop for StorageIterator {
     fn drop(&mut self) {
-        info!("freeing StorageIterator");
+        // FIXME: super hack to make sure drops are done in the correct order
         unsafe {
             use std::mem::transmute_copy;
             transmute_copy::<_, NoDrop<lmdb_rs::core::CursorIterator<'static, lmdb_rs::CursorIter>>>(&self.cursor)
