@@ -1,4 +1,4 @@
-use std::{net, time, mem, thread};
+use std::{net, time};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use dht::DHT;
@@ -252,7 +252,7 @@ impl Database {
         });
     }
 
-    fn handler_set_ack(&self, from: NodeId, msg: MsgSetAck) {}
+    fn handler_set_ack(&self, _from: NodeId, _msg: MsgSetAck) {}
 
     fn handler_set_remote(&self, from: NodeId, msg: MsgSetRemote) {
         vnode!(self, msg.vnode, |mut vn| {

@@ -208,7 +208,7 @@ impl VNode {
     }
 
     // TICK
-    pub fn handler_tick(&mut self, time: time::SystemTime) {
+    pub fn handler_tick(&mut self, _time: time::SystemTime) {
         //
     }
 
@@ -334,7 +334,7 @@ impl VNode {
             .unwrap();
     }
 
-    pub fn handler_set(&mut self, db: &Database, from: NodeId, msg: MsgSet) {
+    pub fn handler_set(&mut self, _db: &Database, _from: NodeId, _msg: MsgSet) {
         unimplemented!()
     }
 
@@ -351,7 +351,7 @@ impl VNode {
             .unwrap();
     }
 
-    pub fn handler_set_remote_ack(&mut self, db: &Database, from: NodeId, msg: MsgSetRemoteAck) {
+    pub fn handler_set_remote_ack(&mut self, db: &Database, _from: NodeId, msg: MsgSetRemoteAck) {
         self.process_set(db, msg.cookie, msg.result.is_ok());
     }
 
