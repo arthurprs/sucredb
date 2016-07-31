@@ -277,7 +277,7 @@ impl VNode {
                    state.succesfull,
                    state.replies,
                    state.required);
-            if state.succesfull == state.required {
+            if state.succesfull == state.required || state.replies == state.total {
                 // return to client & remove state
                 true
             } else {
@@ -304,7 +304,7 @@ impl VNode {
                    state.succesfull,
                    state.replies,
                    state.required);
-            if state.succesfull == state.required {
+            if state.succesfull == state.required || state.replies == state.total {
                 // return to client & remove state
                 true
             } else {
@@ -585,7 +585,7 @@ impl VNodeState {
     // STORAGE
     pub fn storage_get(&self, key: &[u8]) -> DottedCausalContainer<Vec<u8>> {
         let mut dcc = if let Some(bytes) = self.storage.get_vec(key) {
-            bincode_serde::deserialize(&bytes).unwrap()
+            return bincode_serde::deserialize(&bytes).unwrap()
         } else {
             DottedCausalContainer::new()
         };
@@ -603,7 +603,8 @@ impl VNodeState {
         if let Some(value) = value_opt {
             dcc.add(node, dot, value.into());
         }
-        dcc.strip(&self.clocks);
+        // FIXME: interacts badly with recovery
+        // dcc.strip(&self.clocks);
 
         if dcc.is_empty() {
             self.storage.del(key);
@@ -628,7 +629,8 @@ impl VNodeState {
         let old_dcc = self.storage_get(key);
         new_dcc.add_to_bvv(&mut self.clocks);
         new_dcc.sync(old_dcc);
-        new_dcc.strip(&self.clocks);
+        // FIXME: interacts badly with recovery
+        // new_dcc.strip(&self.clocks);
 
         if new_dcc.is_empty() {
             self.storage.del(key);
