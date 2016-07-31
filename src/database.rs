@@ -211,9 +211,9 @@ impl Database {
         vnodes.get(&vnode).unwrap().lock().unwrap().start_migration(self);
     }
 
-    fn start_sync(&self, vnode: VNodeId) {
+    fn start_sync(&self, vnode: VNodeId, reverse: bool) {
         let vnodes = self.vnodes.read().unwrap();
-        vnodes.get(&vnode).unwrap().lock().unwrap().start_sync(self);
+        vnodes.get(&vnode).unwrap().lock().unwrap().start_sync(self, reverse);
     }
 
     fn send_set(&self, addr: NodeId, vnode: VNodeId, cookie: Cookie, key: &[u8],
@@ -541,7 +541,7 @@ mod tests {
         db2.dht.claim(db2.dht.node(), ());
         for i in 0u16..64 {
             if db2.dht.nodes_for_vnode(i, true).contains(&db2.dht.node()) {
-                db2.start_sync(i);
+                db2.start_sync(i, false);
             }
         }
         warn!("will check data in db2 during balancing");

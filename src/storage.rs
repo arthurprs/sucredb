@@ -66,7 +66,7 @@ impl Storage {
         r.map(|r| callback(r))
     }
 
-    pub fn iter(&self) -> StorageIterator {
+    pub fn iterator(&self) -> StorageIterator {
         let env = NoDrop::new(Box::new(self.env.clone()));
         let db_h = NoDrop::new(Box::new(self.db_h.clone()));
         let tx = NoDrop::new(Box::new(env.get_reader().unwrap()));
@@ -143,14 +143,19 @@ unsafe impl Send for StorageIterator {}
 unsafe impl Sync for StorageIterator {}
 
 impl StorageIterator {
-    pub fn iter<F: FnMut(&[u8], &[u8]) -> bool>(&mut self, mut callback: F) -> bool {
-        while let Some(cv) = self.cursor.next() {
-            trace!("iter {:?}", str::from_utf8(cv.get_key()));
-            if !callback(cv.get_key(), cv.get_value()) {
-                return true;
-            }
-        }
-        false
+    pub fn iter<'a>(&'a mut self) -> StorageIter<'a> {
+        StorageIter{it: self}
+    }
+}
+
+pub struct StorageIter<'a> {
+    it: &'a mut StorageIterator,
+}
+
+impl<'a> Iterator for StorageIter<'a> {
+    type Item = (&'a[u8], &'a[u8]);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.it.cursor.next().map(|cv| (cv.get_key(), cv.get_value()))
     }
 }
 
@@ -190,24 +195,14 @@ mod tests {
     }
 
     #[test]
-    fn test_iter() {
+    fn test_iter2() {
         let _ = fs::remove_dir_all("t/test_simple");
         let sm = StorageManager::new("t/test_simple").unwrap();
         let storage = sm.open(1, true).unwrap();
         storage.set(b"1", b"1");
         storage.set(b"2", b"2");
         storage.set(b"3", b"3");
-        let mut results: Vec<Vec<u8>> = Vec::new();
-        storage.iter().iter(|k, v| {
-            results.push(v.into());
-            results.len() < 2
-        });
-        assert_eq!(results, &[b"1", b"2"]);
-        results.clear();
-        storage.iter().iter(|k, v| {
-            results.push(v.into());
-            true
-        });
+        let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
         assert_eq!(results, &[b"1", b"2", b"3"]);
         drop(storage);
     }

@@ -3,13 +3,14 @@
 
 * [x] store node id
 * [x] store vnode state (skip logs unless it's shutting down)
-* [ ] rebuild vnode state on startup (after crash)
+* [x] rebuild vnode state on startup (after crash)
 * [ ] when joining ask nodes for their version of the log
 * [ ] as an alternative to the previous, when node re-joins send our log to it (as in hinted handoff)
 * [ ] to support the previous, dht metadata could be an incarnation number?
 * [x] resp server
 * [x] convert resp into commands to the database
 * [x] send responses to the resp server
+* [ ] design a proper resp protocol
 * [x] worker threads
 * [ ] handling timeouts for crud
 * [ ] resending sync/bootstrap/recover data

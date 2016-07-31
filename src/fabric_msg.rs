@@ -1,5 +1,6 @@
 use version_vector::*;
 use database::*;
+use fabric::NodeId;
 
 // TODO: error support
 #[derive(Debug, Copy, Clone)]
@@ -142,6 +143,7 @@ pub struct MsgBootstrapAck {
 pub struct MsgSyncStart {
     pub vnode: VNodeId,
     pub cookie: Cookie,
+    pub target: NodeId,
     pub clock_in_peer: BitmappedVersion,
 }
 
