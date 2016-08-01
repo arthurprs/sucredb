@@ -144,7 +144,7 @@ unsafe impl Sync for StorageIterator {}
 
 impl StorageIterator {
     pub fn iter<'a>(&'a mut self) -> StorageIter<'a> {
-        StorageIter{it: self}
+        StorageIter { it: self }
     }
 }
 
@@ -153,7 +153,7 @@ pub struct StorageIter<'a> {
 }
 
 impl<'a> Iterator for StorageIter<'a> {
-    type Item = (&'a[u8], &'a[u8]);
+    type Item = (&'a [u8], &'a [u8]);
     fn next(&mut self) -> Option<Self::Item> {
         self.it.cursor.next().map(|cv| (cv.get_key(), cv.get_value()))
     }

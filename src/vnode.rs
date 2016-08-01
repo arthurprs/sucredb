@@ -74,9 +74,9 @@ enum Migration {
     },
 }
 
-enum SyncIterator{
-    KeyLog(Box<Iterator<Item=Vec<u8>> + Send>),
-    Scan(Box<Iterator<Item=(Vec<u8>, DottedCausalContainer<Vec<u8>>)> + Send>),
+enum SyncIterator {
+    KeyLog(Box<Iterator<Item = Vec<u8>> + Send>),
+    Scan(Box<Iterator<Item = (Vec<u8>, DottedCausalContainer<Vec<u8>>)> + Send>),
 }
 
 enum Synchronization {
@@ -397,28 +397,33 @@ impl VNode {
 
     pub fn handler_sync_start(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
         let cookie = msg.cookie;
-        let clock_snapshot = self.state.clocks.get(db.dht.node()).cloned().unwrap_or_default();
+        let target = msg.target;
         let clock_in_peer = msg.clock_in_peer.clone();
+        let clock_snapshot = self.state.clocks.get(db.dht.node()).cloned().unwrap_or_default();
 
-        let log_snapshot =  if msg.target == db.dht.node() {
+        let log_snapshot = if msg.target == db.dht.node() {
             self.state.log.clone()
         } else {
             self.state.peers.get(&msg.target).cloned().unwrap_or_default()
         };
         let iterator = if log_snapshot.min_version() <= clock_in_peer.base() {
-            SyncIterator::KeyLog(Box::new(
-                clock_snapshot.delta(&clock_in_peer).filter_map(move |v| log_snapshot.get(v))
-            ))
+            SyncIterator::KeyLog(Box::new(clock_snapshot.delta(&clock_in_peer)
+                .filter_map(move |v| log_snapshot.get(v))))
         } else {
             let mut storage_iterator = self.state.storage.iterator();
-            SyncIterator::Scan(Box::new(
-                (0..)
-                    .map(move |_|{
-                        storage_iterator.iter().next().map(|(k, v)| (k.into(), bincode_serde::deserialize(&v).unwrap()))
+            let clock_in_peer_base = clock_in_peer.base();
+            SyncIterator::Scan(Box::new((0..)
+                .map(move |_| {
+                    storage_iterator.iter().next().map(|(k, v)| {
+                        (k.into(),
+                         bincode_serde::deserialize::<DottedCausalContainer<Vec<u8>>>(&v).unwrap())
                     })
-                    .take_while(|r| r.is_some())
-                    .map(|r| r.unwrap())
-            ))
+                })
+                .take_while(|o| o.is_some())
+                .map(|o| o.unwrap())
+                .filter(move |&(_, ref dcc)| {
+                    dcc.version_vector().get(target).unwrap_or(0) >= clock_in_peer_base
+                })))
         };
 
         let mut sync = Synchronization::Outgoing {
@@ -484,7 +489,11 @@ impl VNode {
         peers.retain(|&i| i != db.dht.node());
 
         for peer in peers {
-            let target = if reverse { peer } else { db.dht.node() };
+            let target = if reverse {
+                peer
+            } else {
+                db.dht.node()
+            };
             let cookie = self.gen_cookie();
             let clock_in_peer = self.state.clocks.get(peer).cloned().unwrap_or_default();
             let sync = Synchronization::Incomming {
@@ -543,7 +552,8 @@ impl VNodeState {
             info!("No saved state falling back to default");
             return Self::new(num, db);
         };
-        let SavedVNodeState { mut clocks, mut log, mut peers, clean_shutdown } = saved_state_opt.unwrap();
+        let SavedVNodeState { mut clocks, mut log, mut peers, clean_shutdown } =
+            saved_state_opt.unwrap();
         let storage = db.storage_manager.open(num as i32, true).unwrap();
 
         if !clean_shutdown {
@@ -562,7 +572,9 @@ impl VNodeState {
                     if node == this_node {
                         log.log(version, k.into());
                     } else if peer_nodes.contains(&node) {
-                        peers.entry(node).or_insert_with(|| Default::default()).log(version, k.into());
+                        peers.entry(node)
+                            .or_insert_with(|| Default::default())
+                            .log(version, k.into());
                     }
                 }
                 count += 1;
@@ -606,7 +618,7 @@ impl VNodeState {
     // STORAGE
     pub fn storage_get(&self, key: &[u8]) -> DottedCausalContainer<Vec<u8>> {
         let mut dcc = if let Some(bytes) = self.storage.get_vec(key) {
-            return bincode_serde::deserialize(&bytes).unwrap()
+            return bincode_serde::deserialize(&bytes).unwrap();
         } else {
             DottedCausalContainer::new()
         };
@@ -681,12 +693,13 @@ impl Synchronization {
                 let next = match *iterator {
                     SyncIterator::KeyLog(ref mut it) => {
                         it.filter_map(|k| {
-                            state.storage.get_vec(&k).map(|v| (k, bincode_serde::deserialize(&v).unwrap()))
-                        }).next()
+                                state.storage
+                                    .get_vec(&k)
+                                    .map(|v| (k, bincode_serde::deserialize(&v).unwrap()))
+                            })
+                            .next()
                     }
-                    SyncIterator::Scan(ref mut it) => {
-                        it.next()
-                    }
+                    SyncIterator::Scan(ref mut it) => it.next(),
                 };
                 if let Some((k, dcc)) = next {
                     db.fabric
@@ -794,8 +807,7 @@ impl Migration {
                                       })
                         .unwrap();
                     *count += 1;
-                }
-                else  {
+                } else {
                     debug!("[{}] sync of {} is done", db.dht.node(), state.num);
                     db.fabric
                         .send_message(peer,

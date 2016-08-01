@@ -360,7 +360,13 @@ mod tests {
         db.get(1, b"test");
         assert!(db.response(1).unwrap().values().eq(vec![b"value1"]));
 
-        assert_eq!(1, db.vnodes.read().unwrap().values().map(|vn| vn.lock().unwrap()._log_len()).sum::<usize>());
+        assert_eq!(1,
+                   db.vnodes
+                       .read()
+                       .unwrap()
+                       .values()
+                       .map(|vn| vn.lock().unwrap()._log_len())
+                       .sum::<usize>());
     }
 
     #[test]
@@ -484,7 +490,7 @@ mod tests {
         warn!("will check data in db2 during balancing");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
-            let result = (0..100)
+            let result = (0..250)
                 .filter_map(|_| {
                     thread::sleep_ms(10);
                     db2.response(i)
@@ -547,7 +553,7 @@ mod tests {
         warn!("will check data in db2 during balancing");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
-            let result = (0..100)
+            let result = (0..250)
                 .filter_map(|_| {
                     thread::sleep_ms(10);
                     db2.response(i)
