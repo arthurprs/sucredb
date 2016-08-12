@@ -15,8 +15,7 @@ use serde::{Serialize, Deserialize};
 use bincode::{self, serde as bincode_serde};
 pub use fabric_msg::*;
 use utils::GenericError;
-
-pub type NodeId = u64;
+use database::NodeId;
 
 pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
 

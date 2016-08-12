@@ -1,6 +1,5 @@
 use version_vector::*;
 use database::*;
-use fabric::NodeId;
 
 // TODO: error support
 #[derive(Debug, Copy, Clone)]

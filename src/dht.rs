@@ -6,8 +6,7 @@ use rand::{thread_rng, Rng};
 use serde::{Serialize, Deserialize};
 use serde_yaml;
 use hash::hash;
-use fabric::NodeId;
-use database::VNodeId;
+use database::{NodeId, VNodeId};
 use etcd;
 use utils::GenericError;
 

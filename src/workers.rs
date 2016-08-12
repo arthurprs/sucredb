@@ -1,8 +1,8 @@
 use std::{time, thread};
 use std::sync::mpsc;
 use std::boxed::FnBox;
-use fabric::{NodeId, FabricMsg};
-use database::Token;
+use fabric::FabricMsg;
+use database::{NodeId, Token};
 use rand::{thread_rng, Rng};
 use resp::RespValue;
 

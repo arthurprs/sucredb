@@ -9,6 +9,7 @@ use workers::*;
 use resp::RespValue;
 use storage::{StorageManager, Storage};
 
+pub type NodeId = u64;
 pub type Token = u64;
 pub type Cookie = (u64, u64);
 pub type VNodeId = u16;

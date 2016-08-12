@@ -17,14 +17,11 @@ rotor="*"
 rotor-tools="*"
 byteorder="*"
 nodrop="*"
+ramp="*"
 
 [dependencies.linear-map]
 git = "https://github.com/arthurprs/linear-map.git"
 features = ["serde_impl"]
-
-[dependencies.ramp]
-git = "https://github.com/arthurprs/ramp.git"
-branch="iter-step"
 
 [dependencies.bincode]
 version = "*"
