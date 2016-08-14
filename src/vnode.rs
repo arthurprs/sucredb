@@ -153,7 +153,7 @@ macro_rules! forward {
                 }
             }
         } {
-            info!("Removing {}[{:?}]", stringify!($col), ($from, cookie));
+            debug!("Removing {}[{:?}]", stringify!($col), ($from, cookie));
             $this.$col.remove(&cookie).unwrap();
         }
     }
@@ -352,7 +352,7 @@ impl VNode {
 
     pub fn handler_set_remote(&mut self, db: &Database, from: NodeId, msg: MsgSetRemote) {
         let MsgSetRemote { key, container, vnode, cookie } = msg;
-        let result = self.state.storage_set_remote(&key, container, Some(from));
+        let result = self.state.storage_set_remote(db, &key, container);
         db.fabric
             .send_message(from,
                           FabricMsg::SetRemoteAck(MsgSetRemoteAck {
@@ -422,7 +422,8 @@ impl VNode {
                 .take_while(|o| o.is_some())
                 .map(|o| o.unwrap())
                 .filter(move |&(_, ref dcc)| {
-                    dcc.version_vector().get(target).unwrap_or(0) >= clock_in_peer_base
+                    dcc.versions()
+                        .any(|&(node, version)| node == target && version > clock_in_peer_base)
                 })))
         };
 
@@ -490,9 +491,9 @@ impl VNode {
 
         for peer in peers {
             let target = if reverse {
-                peer
-            } else {
                 db.dht.node()
+            } else {
+                peer
             };
             let cookie = self.gen_cookie();
             let clock_in_peer = self.state.clocks.get(peer).cloned().unwrap_or_default();
@@ -567,7 +568,7 @@ impl VNodeState {
                 let dcc: DottedCausalContainer<Vec<u8>> = bincode_serde::deserialize(v).unwrap();
                 warn!("{:?}", dcc);
                 dcc.add_to_bvv(&mut clocks);
-                for (&node, &version) in dcc.version_vector().iter() {
+                for &(node, version) in dcc.versions() {
                     // FIXME: doesn't work due to vv stripping :(
                     if node == this_node {
                         log.log(version, k.into());
@@ -618,7 +619,7 @@ impl VNodeState {
     // STORAGE
     pub fn storage_get(&self, key: &[u8]) -> DottedCausalContainer<Vec<u8>> {
         let mut dcc = if let Some(bytes) = self.storage.get_vec(key) {
-            return bincode_serde::deserialize(&bytes).unwrap();
+            bincode_serde::deserialize(&bytes).unwrap()
         } else {
             DottedCausalContainer::new()
         };
@@ -636,8 +637,7 @@ impl VNodeState {
         if let Some(value) = value_opt {
             dcc.add(node, dot, value.into());
         }
-        // FIXME: interacts badly with recovery
-        // dcc.strip(&self.clocks);
+        dcc.strip(&self.clocks);
 
         if dcc.is_empty() {
             self.storage.del(key);
@@ -654,16 +654,17 @@ impl VNodeState {
             self.unflushed_coord_writes = 0;
         }
 
+        // we striped above
+        dcc.fill(&self.clocks);
         dcc
     }
 
-    pub fn storage_set_remote(&mut self, key: &[u8], mut new_dcc: DottedCausalContainer<Vec<u8>>,
-                              log: Option<Version>) {
+    pub fn storage_set_remote(&mut self, db: &Database, key: &[u8],
+                              mut new_dcc: DottedCausalContainer<Vec<u8>>) {
         let old_dcc = self.storage_get(key);
         new_dcc.add_to_bvv(&mut self.clocks);
         new_dcc.sync(old_dcc);
-        // FIXME: interacts badly with recovery
-        // new_dcc.strip(&self.clocks);
+        new_dcc.strip(&self.clocks);
 
         if new_dcc.is_empty() {
             self.storage.del(key);
@@ -672,11 +673,15 @@ impl VNodeState {
             self.storage.set(key, &bytes);
         }
 
-        if let Some(peer_id) = log {
-            self.peers
-                .entry(peer_id)
-                .or_insert_with(|| Default::default())
-                .log(self.clocks.get(peer_id).unwrap().base(), key.into());
+        for &(node, version) in new_dcc.versions() {
+            if node == db.dht.node() {
+                self.log.log(version, key.into());
+            } else {
+                self.peers
+                    .entry(node)
+                    .or_insert_with(|| Default::default())
+                    .log(version, key.into());
+            }
         }
     }
 }
@@ -739,9 +744,7 @@ impl Synchronization {
     fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncSend) -> bool {
         match *self {
             Synchronization::Incomming { peer, ref mut count, .. } => {
-                let bytes = bincode_serde::serialize(&msg.container, bincode::SizeLimit::Infinite)
-                    .unwrap();
-                state.storage.set(&msg.key, &bytes);
+                state.storage_set_remote(db, &msg.key, msg.container);
 
                 db.fabric
                     .send_message(peer,
@@ -834,7 +837,8 @@ impl Migration {
     fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgBootstrapSend) -> bool {
         match *self {
             Migration::Incomming { peer, ref mut count, .. } => {
-                state.storage_set_remote(&msg.key, msg.container, None);
+                state.storage_set_remote(db, &msg.key, msg.container);
+
                 db.fabric
                     .send_message(peer,
                                   MsgBootstrapAck {

@@ -187,7 +187,7 @@ impl OutConnection {
         let outgoing = scope.shared.outgoing.read().unwrap();
         let node = outgoing.get(&self.other.0).unwrap();
         if let Some(msg) = node.0.pop() {
-            debug!("pull message from write queue {:?}", msg);
+            debug!("sending to node {:?} msg {:?}", self.other.0, msg);
             write_msg(transport, &msg);
             Intent::of(self).expect_flush()
         } else {
@@ -306,7 +306,7 @@ impl Protocol for InConnection {
         loop {
             let (msg_opt, needed) = read_msg::<FabricMsg>(transport);
             if let Some(msg) = msg_opt {
-                debug!("received msg {:?}", msg);
+                debug!("received from node {:?} msg {:?}", self.other.unwrap().0, msg);
                 let msg_type = msg.get_type();
                 if let Some(handler) = scope.shared
                     .msg_handlers

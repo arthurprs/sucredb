@@ -87,7 +87,7 @@ impl Database {
                 db.init_vnode(i, false);
             } else if pending_vnodes.contains(&i) {
                 db.init_vnode(i, false);
-                db.start_migration(i);
+                // db.start_migration(i);
             } else {
                 db.remove_vnode(i);
             }
@@ -293,7 +293,6 @@ mod tests {
     use std::collections::HashMap;
     use super::*;
     use version_vector::{DottedCausalContainer, VersionVector};
-    use fabric::NodeId;
     use env_logger;
     use bincode::{serde as bincode_serde, SizeLimit};
     use resp::RespValue;
@@ -322,7 +321,12 @@ mod tests {
         }
 
         fn response(&self, token: Token) -> Option<DottedCausalContainer<Vec<u8>>> {
-            self.responses.lock().unwrap().remove(&token).and_then(|v| resp_to_dcc(v))
+            (0..200)
+                .filter_map(|_| {
+                    thread::sleep_ms(10);
+                    self.responses.lock().unwrap().remove(&token).and_then(|v| resp_to_dcc(v))
+                })
+                .next()
         }
     }
 
@@ -443,7 +447,6 @@ mod tests {
 
         for &db in &[&db1, &db2] {
             db.get(1, b"test");
-            thread::sleep_ms(100);
             assert!(db.response(1).unwrap().values().eq(vec![b"value1"]));
         }
     }
@@ -478,7 +481,6 @@ mod tests {
         warn!("will check data in db2 before balancing");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
-            thread::sleep_ms(10);
             assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
@@ -491,12 +493,7 @@ mod tests {
         warn!("will check data in db2 during balancing");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
-            let result = (0..250)
-                .filter_map(|_| {
-                    thread::sleep_ms(10);
-                    db2.response(i)
-                })
-                .next();
+            let result = db2.response(i);
             assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
@@ -508,8 +505,58 @@ mod tests {
         warn!("will check data in db2 after balancing");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
-            thread::sleep_ms(10);
             assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+        }
+    }
+
+    #[test]
+    fn test_join_sync_reverse() {
+        let _ = fs::remove_dir_all("./t");
+        let _ = env_logger::init();
+        let mut db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let mut db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        for i in 0u16..64 {
+            db1.init_vnode(i, true);
+            db2.init_vnode(i, true);
+        }
+        db2.dht.claim(db2.dht.node(), ());
+        for i in 0u16..64 {
+            db2.dht.promote_pending_node(i, db2.dht.node());
+        }
+        for i in 0..TEST_JOIN_SIZE {
+            db1.set(i,
+                    i.to_string().as_bytes(),
+                    Some(i.to_string().as_bytes()),
+                    VersionVector::new());
+            db1.response(i).unwrap();
+        }
+        for i in 0..TEST_JOIN_SIZE {
+            db1.get(i, i.to_string().as_bytes());
+            let result1 = db1.response(i);
+            db2.get(i, i.to_string().as_bytes());
+            let result2 = db2.response(i);
+            assert_eq!(result1, result2);
+        }
+
+        drop(db1);
+        let _ = fs::remove_dir_all("t/db1");
+        db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", false);
+
+        for i in 0u16..64 {
+            if db1.dht.nodes_for_vnode(i, true).contains(&db1.dht.node()) {
+                db1.start_sync(i, true);
+            }
+        }
+
+        while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
+            warn!("waiting for syncs to finish");
+            thread::sleep_ms(1000);
+        }
+
+        warn!("will check data in db1 after sync");
+        for i in 0..TEST_JOIN_SIZE {
+            db1.get(i, i.to_string().as_bytes());
+            assert!(db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
     }
 
@@ -541,7 +588,6 @@ mod tests {
         warn!("will check data in db2 before balancing");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
-            thread::sleep_ms(10);
             assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
@@ -554,12 +600,7 @@ mod tests {
         warn!("will check data in db2 during balancing");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
-            let result = (0..250)
-                .filter_map(|_| {
-                    thread::sleep_ms(10);
-                    db2.response(i)
-                })
-                .next();
+            let result = db2.response(i);
             assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
@@ -575,7 +616,6 @@ mod tests {
         warn!("will check data in db2 after balancing");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
-            thread::sleep_ms(10);
             assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
     }

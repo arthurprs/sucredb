@@ -355,6 +355,10 @@ impl<T> DottedCausalContainer<T> {
         self.dots.0.iter()
     }
 
+    pub fn versions(&self) -> linear_map::Keys<(Id, Version), T> {
+        self.dots.0.keys()
+    }
+
     pub fn version_vector(&self) -> &VersionVector {
         &self.vv
     }
