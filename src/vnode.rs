@@ -74,16 +74,14 @@ enum Migration {
     },
 }
 
-enum SyncIterator {
-    KeyLog(Box<Iterator<Item = Vec<u8>> + Send>),
-    Scan(Box<Iterator<Item = (Vec<u8>, DottedCausalContainer<Vec<u8>>)> + Send>),
-}
+// TODO: take mut buffers instead of returning them
+type SyncIteratorFn = Box<FnMut(&Storage) -> Option<(Vec<u8>, DottedCausalContainer<Vec<u8>>)> + Send>;
 
 enum Synchronization {
     Outgoing {
         clock_in_peer: BitmappedVersion,
         clock_snapshot: BitmappedVersion,
-        iterator: SyncIterator,
+        iterator: SyncIteratorFn,
         cookie: Cookie,
         peer: NodeId,
         count: u64,
@@ -406,13 +404,21 @@ impl VNode {
         } else {
             self.state.peers.get(&msg.target).cloned().unwrap_or_default()
         };
-        let iterator = if log_snapshot.min_version() <= clock_in_peer.base() {
-            SyncIterator::KeyLog(Box::new(clock_snapshot.delta(&clock_in_peer)
-                .filter_map(move |v| log_snapshot.get(v))))
+        let iterator: SyncIteratorFn = if log_snapshot.min_version() <= clock_in_peer.base() {
+            let mut iter = clock_snapshot.delta(&clock_in_peer)
+                .filter_map(move |v| log_snapshot.get(v));
+            Box::new(move |storage: &Storage| {
+                iter.by_ref()
+                    .filter_map(|k| {
+                        storage.get_vec(&k)
+                            .map(|v| (k, bincode_serde::deserialize(&v).unwrap()))
+                    })
+                    .next()
+            })
         } else {
             let mut storage_iterator = self.state.storage.iterator();
             let clock_in_peer_base = clock_in_peer.base();
-            SyncIterator::Scan(Box::new((0..)
+            let mut iter = (0..)
                 .map(move |_| {
                     storage_iterator.iter().next().map(|(k, v)| {
                         (k.into(),
@@ -424,7 +430,8 @@ impl VNode {
                 .filter(move |&(_, ref dcc)| {
                     dcc.versions()
                         .any(|&(node, version)| node == target && version > clock_in_peer_base)
-                })))
+                });
+            Box::new(move |_: &Storage| iter.next())
         };
 
         let mut sync = Synchronization::Outgoing {
@@ -695,18 +702,7 @@ impl Synchronization {
                                         ref mut count,
                                         ref clock_snapshot,
                                         .. } => {
-                let next = match *iterator {
-                    SyncIterator::KeyLog(ref mut it) => {
-                        it.filter_map(|k| {
-                                state.storage
-                                    .get_vec(&k)
-                                    .map(|v| (k, bincode_serde::deserialize(&v).unwrap()))
-                            })
-                            .next()
-                    }
-                    SyncIterator::Scan(ref mut it) => it.next(),
-                };
-                if let Some((k, dcc)) = next {
+                if let Some((k, dcc)) = iterator(&state.storage) {
                     db.fabric
                         .send_message(peer,
                                       MsgSyncSend {

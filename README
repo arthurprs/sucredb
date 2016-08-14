@@ -15,5 +15,5 @@
 * [ ] handling timeouts for crud
 * [ ] resending sync/bootstrap/recover data
 * [ ] generic sync/bootstrap/recover code?
-* [ ] when log isn't enough to satisfy sync, iter the database sending necessary dots
+* [x] when log isn't enough to satisfy sync, iter the database sending necessary dots
 * [ ] propagate dht notifications to vnodes and take actions
