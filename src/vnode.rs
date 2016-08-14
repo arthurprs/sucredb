@@ -462,7 +462,7 @@ impl VNode {
     }
 
     /// //////
-    pub fn start_migration(&mut self, db: &Database) {
+    pub fn start_migration(&mut self, db: &Database) -> bool {
         // TODO: clear storage, update state
         let cookie = self.gen_cookie();
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false);
@@ -487,32 +487,34 @@ impl VNode {
 
             let p = self.migrations.insert(cookie, migration);
             assert!(p.is_none());
-            return;
+            return true;
         }
-        unreachable!();
+        false
     }
 
-    pub fn start_sync(&mut self, db: &Database, reverse: bool) {
-        let mut peers = db.dht.nodes_for_vnode(self.state.num, false);
-        peers.retain(|&i| i != db.dht.node());
-
-        for peer in peers {
+    pub fn start_sync(&mut self, db: &Database, reverse: bool) -> usize {
+        let mut result = 0;
+        let nodes = db.dht.nodes_for_vnode(self.state.num, false);
+        for node in nodes {
+            if node == db.dht.node() {
+                continue;
+            }
             let target = if reverse {
                 db.dht.node()
             } else {
-                peer
+                node
             };
             let cookie = self.gen_cookie();
-            let clock_in_peer = self.state.clocks.get(peer).cloned().unwrap_or_default();
+            let clock_in_peer = self.state.clocks.get(node).cloned().unwrap_or_default();
             let sync = Synchronization::Incomming {
-                peer: peer,
+                peer: node,
                 cookie: cookie,
                 count: 0,
                 target: target,
             };
 
             db.fabric
-                .send_message(peer,
+                .send_message(node,
                               MsgSyncStart {
                                   cookie: cookie,
                                   vnode: self.state.num,
@@ -522,7 +524,9 @@ impl VNode {
                 .unwrap();
             let p = self.syncs.insert(cookie, sync);
             assert!(p.is_none());
+            result += 1;
         }
+        result
     }
 }
 
