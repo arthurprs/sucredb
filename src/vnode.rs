@@ -13,10 +13,12 @@ use rand::{Rng, thread_rng};
 const PEER_LOG_SIZE: usize = 1024 * 1024 / (32 + 16);
 
 #[repr(u8)]
+#[derive(PartialEq, Copy, Clone)]
 pub enum VNodeStatus {
-    InSync,
-    Syncing,
+    Ready,
+    Bootstrap,
     Zombie,
+    Dead,
 }
 
 pub struct VNode {
@@ -28,6 +30,7 @@ pub struct VNode {
 
 struct VNodeState {
     num: u16,
+    status: VNodeStatus,
     peers: LinearMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
     log: VNodePeer,
@@ -171,12 +174,8 @@ impl ReqState {
 }
 
 impl VNode {
-    pub fn new(db: &Database, num: u16, create: bool) -> VNode {
-        let state = if create {
-            VNodeState::new(num, db)
-        } else {
-            VNodeState::load(num, db)
-        };
+    pub fn new(db: &Database, num: u16, status: VNodeStatus) -> VNode {
+        let state = VNodeState::load(num, db, status);
         state.save(db, false);
         VNode {
             state: state,
@@ -186,12 +185,12 @@ impl VNode {
         }
     }
 
-    pub fn clear(db: &Database, num: u16) {
-        db.meta_storage.del(num.to_string().as_bytes());
-        if let Ok(storage) = db.storage_manager.open(num as i32, false) {
-            storage.clear();
-        }
-    }
+    // pub fn clear(db: &Database, num: u16) {
+    //     db.meta_storage.del(num.to_string().as_bytes());
+    //     if let Ok(storage) = db.storage_manager.open(num as i32, false) {
+    //         storage.clear();
+    //     }
+    // }
 
     pub fn save(&mut self, db: &Database, shutdown: bool) {
         self.state.save(db, shutdown);
@@ -541,12 +540,13 @@ impl Drop for VNode {
 
 
 impl VNodeState {
-    fn new(num: u16, db: &Database) -> Self {
+    fn new_empty(num: u16, db: &Database, status: VNodeStatus) -> Self {
         let storage = db.storage_manager.open(num as i32, true).unwrap();
         db.meta_storage.del(num.to_string().as_bytes());
         storage.clear();
 
         VNodeState {
+            status: status,
             num: num,
             clocks: BitmappedVersionVector::new(),
             peers: Default::default(),
@@ -556,19 +556,19 @@ impl VNodeState {
         }
     }
 
-    fn load(num: u16, db: &Database) -> Self {
+    fn load(num: u16, db: &Database, status: VNodeStatus) -> Self {
         info!("Loading vnode {} state", num);
         let saved_state_opt = db.meta_storage
             .get(num.to_string().as_bytes(), |bytes| bincode_serde::deserialize(bytes).unwrap());
         if saved_state_opt.is_none() {
             info!("No saved state falling back to default");
-            return Self::new(num, db);
+            return Self::new_empty(num, db, status);
         };
         let SavedVNodeState { mut clocks, mut log, mut peers, clean_shutdown } =
             saved_state_opt.unwrap();
         let storage = db.storage_manager.open(num as i32, true).unwrap();
 
-        if !clean_shutdown {
+        if !clean_shutdown && status != VNodeStatus::Dead {
             info!("Unclean shutdown, recovering from the storage");
             let this_node = db.dht.node();
             let peer_nodes = db.dht.nodes_for_vnode(num, true);
@@ -601,6 +601,7 @@ impl VNodeState {
 
         VNodeState {
             num: num,
+            status: status,
             clocks: clocks,
             storage: storage,
             unflushed_coord_writes: 0,

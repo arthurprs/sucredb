@@ -37,10 +37,6 @@ macro_rules! vnode {
         let vnodes = $s.vnodes.read().unwrap();
         vnodes.get(&$k).map(|vn| vn.lock().unwrap()).map($ok);
     });
-    ($s: expr, $k: expr, $ok: expr, $el: expr) => ({
-        let vnodes = $s.vnodes.read().unwrap();
-        vnodes.get(&$k).ok_or($k).map(|vn| vn.lock().unwrap()).map_or_else($el, $ok);
-    });
 }
 
 impl Database {
@@ -77,21 +73,6 @@ impl Database {
                 }
             });
         }));
-        // current nodes
-        db.dht.members().into_iter().map(|(n, a)| db.fabric.register_node(n, a)).count();
-
-        let (sync_vnodes, pending_vnodes) = db.dht.vnodes_for_node(db.dht.node());
-        // create storages, possibly clearing them
-        for i in 0..db.dht.partitions() as VNodeId {
-            if sync_vnodes.contains(&i) {
-                db.init_vnode(i, false);
-            } else if pending_vnodes.contains(&i) {
-                db.init_vnode(i, false);
-                // db.start_migration(i);
-            } else {
-                db.remove_vnode(i);
-            }
-        }
 
         db.workers.lock().unwrap().start(|| {
             let cdb = Arc::downgrade(&db);
@@ -114,7 +95,9 @@ impl Database {
             })
         });
 
-        // FIXME: fabric should have a start method
+        // register nodes into fabric
+        db.dht.members().into_iter().map(|(n, a)| db.fabric.register_node(n, a)).count();
+        // FIXME: fabric should have a start method that receives the callbacks
         // set fabric callbacks
         for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch, FabricMsgType::Bootstrap] {
             let mut sender = db.sender();
@@ -124,27 +107,30 @@ impl Database {
                                            }));
         }
 
+        {
+            // acquire exclusive lock to vnodes to intialize them
+            let mut vnodes = db.vnodes.write().unwrap();
+            let (sync_vnodes, pending_vnodes) = db.dht.vnodes_for_node(db.dht.node());
+            // create vnodes
+            *vnodes = (0..db.dht.partitions() as VNodeId).map(|i| {
+                let vn = if sync_vnodes.contains(&i) {
+                    VNode::new(&db, i, VNodeStatus::Ready)
+                } else if pending_vnodes.contains(&i) {
+                    VNode::new(&db, i, VNodeStatus::Bootstrap)
+                } else {
+                    VNode::new(&db, i, VNodeStatus::Dead)
+                };
+                (i, Mutex::new(vn))
+            }).collect();
+        }
+
         db
     }
 
     pub fn save(&self, shutdown: bool) {
-        for vn in self.vnodes.write().unwrap().values() {
+        for vn in self.vnodes.read().unwrap().values() {
             vn.lock().unwrap().save(self, shutdown);
         }
-    }
-
-    fn init_vnode(&self, vnode_n: VNodeId, create: bool) {
-        self.vnodes
-            .write()
-            .unwrap()
-            .entry(vnode_n)
-            .or_insert_with(|| Mutex::new(VNode::new(self, vnode_n, create)));
-    }
-
-    fn remove_vnode(&self, vnode_n: VNodeId) {
-        let mut vnodes = self.vnodes.write().unwrap();
-        vnodes.remove(&vnode_n);
-        VNode::clear(self, vnode_n);
     }
 
     // FIXME: leaky abstraction
@@ -282,6 +268,7 @@ impl Database {
 
 impl Drop for Database {
     fn drop(&mut self) {
+        // force dropping vnodes before other components
         let _ = self.vnodes.write().map(|mut vns| vns.clear());
     }
 }
@@ -389,9 +376,6 @@ mod tests {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
         let db = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db", true);
-        for i in 0u16..64 {
-            db.init_vnode(i, true);
-        }
         db.get(1, b"test");
         assert!(db.response(1).unwrap().is_empty());
 
@@ -428,10 +412,6 @@ mod tests {
         let _ = env_logger::init();
         let db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        for i in 0u16..64 {
-            db1.init_vnode(i, true);
-            db2.init_vnode(i, true);
-        }
         for i in 0u16..32 {
             db1.dht.add_pending_node(i * 2 + 1, db2.dht.node(), ());
             db1.dht.promote_pending_node(i * 2 + 1, db2.dht.node());
@@ -458,9 +438,6 @@ mod tests {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
         let db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
-        for i in 0u16..64 {
-            db1.init_vnode(i, true);
-        }
         for i in 0..TEST_JOIN_SIZE {
             db1.set(i,
                     i.to_string().as_bytes(),
@@ -474,10 +451,6 @@ mod tests {
         }
 
         let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-
-        for i in 0u16..64 {
-            db2.init_vnode(i, true);
-        }
         warn!("will check data in db2 before balancing");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
@@ -515,10 +488,6 @@ mod tests {
         let _ = env_logger::init();
         let mut db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        for i in 0u16..64 {
-            db1.init_vnode(i, true);
-            db2.init_vnode(i, true);
-        }
         db2.dht.claim(db2.dht.node(), ());
         for i in 0u16..64 {
             db2.dht.promote_pending_node(i, db2.dht.node());
@@ -565,9 +534,6 @@ mod tests {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
         let db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
-        for i in 0u16..64 {
-            db1.init_vnode(i, true);
-        }
         for i in 0..TEST_JOIN_SIZE {
             db1.set(i,
                     i.to_string().as_bytes(),
@@ -581,10 +547,6 @@ mod tests {
         }
 
         let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-
-        for i in 0u16..64 {
-            db2.init_vnode(i, true);
-        }
         warn!("will check data in db2 before balancing");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
