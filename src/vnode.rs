@@ -149,7 +149,8 @@ macro_rules! check_status {
             $($status)|* => (),
             state => {
                 let cookie = $msg.cookie;
-                debug!("Incorrect state {}[{:?}] {:?}", stringify!($col), cookie, state);
+                debug!("Incorrect state for {}[{:?}] expected {} was {:?}",
+                    stringify!($col), cookie, stringify!($($status)|*), state);
                 $db.fabric.send_message($from,  $emsg {
                     cookie: $msg.cookie,
                     vnode: $msg.vnode,
@@ -310,13 +311,6 @@ impl VNode {
                     state.container.sync(container);
                     state.succesfull += 1;
                 }
-                trace!("process_get c:{:?} tk:{:?} tl:{} - r:{} s:{} r:{}",
-                       cookie,
-                       state.token,
-                       state.total,
-                       state.succesfull,
-                       state.replies,
-                       state.required);
                 if state.succesfull == state.required || state.replies == state.total {
                     // return to client & remove state
                     true
@@ -327,6 +321,8 @@ impl VNode {
                 let state = o.remove();
                 db.respond_get(state.token, state.container);
             }
+        } else {
+            debug!("process_get cookie not found {:?}", cookie);
         }
 
     }
@@ -339,13 +335,6 @@ impl VNode {
                 if succesfull {
                     state.succesfull += 1;
                 }
-                trace!("process_set c:{:?} tk:{:?} tl:{} - r:{} s:{} r:{}",
-                       cookie,
-                       state.token,
-                       state.total,
-                       state.succesfull,
-                       state.replies,
-                       state.required);
                 if state.succesfull == state.required || state.replies == state.total {
                     // return to client & remove state
                     true
@@ -356,6 +345,8 @@ impl VNode {
                 let state = o.remove();
                 db.respond_set(state.token, state.container);
             }
+        } else {
+            debug!("process_set cookie not found {:?}", cookie);
         }
     }
 
@@ -418,8 +409,7 @@ impl VNode {
         };
         migration.on_start(db, &mut self.state, msg);
 
-        let p = self.migrations.insert(cookie, migration);
-        assert!(p.is_none());
+        assert!(self.migrations.insert(cookie, migration).is_none());
     }
 
     pub fn handler_bootstrap_send(&mut self, db: &Database, from: NodeId, msg: MsgBootstrapSend) {
@@ -477,7 +467,7 @@ impl VNode {
         let iterator: SyncIteratorFn = if log_snapshot.min_version() <= clock_in_peer.base() {
             let mut iter = clock_snapshot.delta(&clock_in_peer)
                 .filter_map(move |v| log_snapshot.get(v));
-            Box::new(move |storage: &Storage| {
+            Box::new(move |storage| {
                 iter.by_ref()
                     .filter_map(|k| {
                         storage.get_vec(&k)
@@ -501,7 +491,7 @@ impl VNode {
                     dcc.versions()
                         .any(|&(node, version)| node == target && version > clock_in_peer_base)
                 });
-            Box::new(move |_: &Storage| iter.next())
+            Box::new(move |_| iter.next())
         };
 
         let mut sync = Synchronization::Outgoing {
@@ -515,8 +505,7 @@ impl VNode {
         };
         sync.on_start(db, &mut self.state, msg);
 
-        let p = self.syncs.insert(cookie, sync);
-        assert!(p.is_none());
+        assert!(self.syncs.insert(cookie, sync).is_none());
     }
 
     pub fn handler_sync_send(&mut self, db: &Database, from: NodeId, msg: MsgSyncSend) {
