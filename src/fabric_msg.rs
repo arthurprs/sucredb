@@ -12,8 +12,8 @@ pub enum FabricMsgType {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FabricMsgError {
-    VNodeNotFound,
     CookieNotFound,
+    BadVNodeStatus,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

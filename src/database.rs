@@ -37,6 +37,15 @@ macro_rules! vnode {
         let vnodes = $s.vnodes.read().unwrap();
         vnodes.get(&$k).map(|vn| vn.lock().unwrap()).map($ok);
     });
+    ($s: expr, $k: expr, $status: expr, $ok: expr) => ({
+        let vnodes = $s.vnodes.read().unwrap();
+        match vnodes.get(&$k).map(|vn| vn.lock().unwrap()).and_then(|vn| {
+            match vn.status() {
+                status => Some(vn),
+                _ => None
+            }
+        }).map($ok);
+    });
 }
 
 impl Database {
@@ -112,16 +121,18 @@ impl Database {
             let mut vnodes = db.vnodes.write().unwrap();
             let (sync_vnodes, pending_vnodes) = db.dht.vnodes_for_node(db.dht.node());
             // create vnodes
-            *vnodes = (0..db.dht.partitions() as VNodeId).map(|i| {
-                let vn = if sync_vnodes.contains(&i) {
-                    VNode::new(&db, i, VNodeStatus::Ready)
-                } else if pending_vnodes.contains(&i) {
-                    VNode::new(&db, i, VNodeStatus::Bootstrap)
-                } else {
-                    VNode::new(&db, i, VNodeStatus::Dead)
-                };
-                (i, Mutex::new(vn))
-            }).collect();
+            *vnodes = (0..db.dht.partitions() as VNodeId)
+                .map(|i| {
+                    let vn = if sync_vnodes.contains(&i) {
+                        VNode::new(&db, i, VNodeStatus::Ready)
+                    } else if pending_vnodes.contains(&i) {
+                        VNode::new(&db, i, VNodeStatus::Bootstrap)
+                    } else {
+                        VNode::new(&db, i, VNodeStatus::Absent)
+                    };
+                    (i, Mutex::new(vn))
+                })
+                .collect();
         }
 
         db
@@ -463,15 +474,17 @@ mod tests {
                 db2.start_migration(i);
             }
         }
-        warn!("will check data in db2 during balancing");
-        for i in 0..TEST_JOIN_SIZE {
-            db2.get(i, i.to_string().as_bytes());
-            let result = db2.response(i);
-            assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
-        }
+        // warn!("will check data in db2 during balancing");
+        // for i in 0..TEST_JOIN_SIZE {
+        //     db2.get(i, i.to_string().as_bytes());
+        //     let result = db2.response(i);
+        //     assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
+        // }
 
         while db1.migrations_inflight() + db2.migrations_inflight() > 0 {
-            warn!("waiting for migrations to finish");
+            warn!("waiting for migrations to finish {} {}",
+                  db1.migrations_inflight(),
+                  db2.migrations_inflight());
             thread::sleep_ms(1000);
         }
 
