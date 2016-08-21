@@ -203,15 +203,33 @@ impl ReqState {
 }
 
 impl VNode {
-    pub fn new(db: &Database, num: u16, status: VNodeStatus) -> VNode {
-        let state = VNodeState::load(num, db, status);
+    pub fn new(db: &Database, num: u16, status: VNodeStatus, is_create: bool) -> VNode {
+        let state = VNodeState::load(num, db, status, is_create);
         state.save(db, false);
-        VNode {
+
+        if is_create {
+            assert_eq!(status, VNodeStatus::Ready, "status must be ready when creating");
+        }
+
+        let mut vnode = VNode {
             state: state,
             inflight: Default::default(),
             migrations: Default::default(),
             syncs: Default::default(),
+        };
+
+        // FIXME: need to handle failure of these
+        match vnode.status() {
+            VNodeStatus::Bootstrap => {
+                vnode.start_migration(db);
+            }
+            VNodeStatus::Recover => {
+                vnode.start_sync(db, true);
+            }
+            _ => (),
         }
+
+        vnode
     }
 
     // pub fn clear(db: &Database, num: u16) {
@@ -246,6 +264,77 @@ impl VNode {
         // FIXME: make cookie really unique
         let mut rng = thread_rng();
         (rng.gen(), rng.gen())
+    }
+
+    // DHT Changes
+    pub fn handler_dht_change(&mut self, db: &Database, x_status: VNodeStatus) {
+        use self::VNodeStatus::*;
+        match (self.status(), x_status) {
+            (Ready, Absent) |
+            (Bootstrap, Absent) |
+            (Recover, Absent) => {
+                self.state.status = Zombie;
+                // cancel incomming bootstrap
+                let cancels = self.migrations
+                    .iter()
+                    .filter_map(|(&cookie, m)| {
+                        match *m {
+                            Migration::Incomming { peer, .. } => Some((cookie, peer)),
+                            _ => None,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                for (cookie, peer) in cancels {
+                    if let Some(_) = self.migrations.remove(&cookie) {
+                        db.fabric
+                            .send_message(peer,
+                                          MsgBootstrapFin {
+                                              vnode: self.state.num,
+                                              cookie: cookie,
+                                              result: Err(FabricMsgError::BadVNodeStatus),
+                                          })
+                            .unwrap();
+                    }
+                }
+
+                // cancel incomming sync
+                let cancels = self.syncs
+                    .iter()
+                    .filter_map(|(&cookie, s)| {
+                        match *s {
+                            Synchronization::Incomming { peer, .. } => Some((cookie, peer)),
+                            _ => None,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                for (cookie, peer) in cancels {
+                    if let Some(_) = self.syncs.remove(&cookie) {
+                        db.fabric
+                            .send_message(peer,
+                                          MsgSyncFin {
+                                              vnode: self.state.num,
+                                              cookie: cookie,
+                                              result: Err(FabricMsgError::BadVNodeStatus),
+                                          })
+                            .unwrap();
+                    }
+                }
+
+            }
+            (Zombie, Absent) => (),
+            (Zombie, Ready) => {
+                // fast-recomission!
+                self.state.status = Ready;
+            }
+            (Absent, Ready) => {
+                // recomission by bootstrap
+                self.start_migration(db);
+            }
+            (Bootstrap, Ready) |
+            (Recover, Ready) => (),
+            (a, b) if a == b => (),
+            (a, b) => panic!("Invalid change {:?} -> {:?}", a, b),
+        }
     }
 
     // TICK
@@ -531,6 +620,8 @@ impl VNode {
     }
 
     pub fn handler_sync_fin(&mut self, db: &Database, from: NodeId, msg: MsgSyncFin) {
+        // TODO: need a way to control reverse syncs logic
+        // TODO: need a way to promote recover -> ready
         forward!(self,
                  VNodeStatus::Ready | VNodeStatus::Recover | VNodeStatus::Zombie,
                  db,
@@ -637,20 +728,35 @@ impl VNodeState {
         }
     }
 
-    fn load(num: u16, db: &Database, status: VNodeStatus) -> Self {
+    fn load(num: u16, db: &Database, mut status: VNodeStatus, is_create: bool) -> Self {
         info!("Loading vnode {} state", num);
         let saved_state_opt = db.meta_storage
             .get(num.to_string().as_bytes(), |bytes| bincode_serde::deserialize(bytes).unwrap());
         if saved_state_opt.is_none() {
-            info!("No saved state falling back to default");
-            return Self::new_empty(num, db, status);
+            info!("No saved state, falling back to default");
+            return Self::new_empty(num,
+                                   db,
+                                   if status == VNodeStatus::Ready && !is_create {
+                                       VNodeStatus::Recover
+                                   } else {
+                                       status
+                                   });
         };
         let SavedVNodeState { mut clocks, mut log, mut peers, clean_shutdown } =
             saved_state_opt.unwrap();
-        let storage = db.storage_manager.open(num as i32, true).unwrap();
 
-        if !clean_shutdown && status != VNodeStatus::Absent {
+        let storage = match status {
+            VNodeStatus::Ready => db.storage_manager.open(num as i32, true).unwrap(),
+            VNodeStatus::Absent | VNodeStatus::Bootstrap => {
+                // TODO: if possible don't load storage as an optimization
+                db.storage_manager.open(num as i32, true).unwrap()
+            }
+            _ => panic!("Invalid status for load {:?}", status),
+        };
+
+        if status == VNodeStatus::Ready && !is_create && !clean_shutdown {
             info!("Unclean shutdown, recovering from the storage");
+            status = VNodeStatus::Recover;
             let this_node = db.dht.node();
             let peer_nodes = db.dht.nodes_for_vnode(num, true);
             let mut iter = storage.iterator();
@@ -661,7 +767,6 @@ impl VNodeState {
                 warn!("{:?}", dcc);
                 dcc.add_to_bvv(&mut clocks);
                 for &(node, version) in dcc.versions() {
-                    // FIXME: doesn't work due to vv stripping :(
                     if node == this_node {
                         log.log(version, k.into());
                     } else if peer_nodes.contains(&node) {

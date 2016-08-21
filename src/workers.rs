@@ -11,6 +11,7 @@ pub enum WorkerMsg {
     Fabric(NodeId, FabricMsg),
     Tick(time::SystemTime),
     Command(Token, RespValue),
+    DHTChange,
     Exit,
 }
 
@@ -45,10 +46,13 @@ impl WorkerManager {
         where F: FnMut() -> Box<FnBox(mpsc::Receiver<WorkerMsg>) + Send>
     {
         assert!(self.channels.is_empty());
-        for _ in 0..self.thread_count {
+        for i in 0..self.thread_count {
             let worker_fn = worker_fn_gen();
             let (tx, rx) = mpsc::channel();
-            self.threads.push(thread::spawn(move || worker_fn(rx)));
+            self.threads.push(thread::Builder::new()
+                .name(format!("Worker:{}-{}", -1, i))
+                .spawn(move || worker_fn(rx))
+                .unwrap());
             self.channels.push(tx);
         }
 
@@ -56,15 +60,18 @@ impl WorkerManager {
         self.ticker_chan = Some(ticker_tx);
         let ticker_interval = self.ticker_interval;
         let mut sender = self.sender();
-        self.ticker_thread = Some(thread::spawn(move || {
-            loop {
-                thread::sleep(ticker_interval);
-                if ticker_rx.try_recv().is_ok() {
-                    break;
+        self.ticker_thread = Some(thread::Builder::new()
+            .name(format!("WorkerTicker:{}", -1))
+            .spawn(move || {
+                loop {
+                    thread::sleep(ticker_interval);
+                    if ticker_rx.try_recv().is_ok() {
+                        break;
+                    }
+                    let _ = sender.try_send(WorkerMsg::Tick(time::SystemTime::now()));
                 }
-                let _ = sender.try_send(WorkerMsg::Tick(time::SystemTime::now()));
-            }
-        }));
+            })
+            .unwrap());
     }
 
     pub fn sender(&self) -> WorkerSender {

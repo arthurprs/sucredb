@@ -49,18 +49,18 @@ macro_rules! vnode {
 }
 
 impl Database {
-    pub fn new(node: NodeId, bind_addr: net::SocketAddr, storage_dir: &str, create: bool,
+    pub fn new(node: NodeId, bind_addr: net::SocketAddr, storage_dir: &str, is_create: bool,
                response_fn: DatabaseResponseFn)
                -> Arc<Database> {
         let storage_manager = StorageManager::new(storage_dir).unwrap();
         let meta_storage = storage_manager.open(-1, true).unwrap();
-        let workers = WorkerManager::new(8, time::Duration::from_millis(1000));
+        let workers = WorkerManager::new(1, time::Duration::from_millis(1000));
         let db = Arc::new(Database {
             fabric: Fabric::new(node, bind_addr).unwrap(),
             dht: DHT::new(3,
                           node,
                           bind_addr,
-                          if create {
+                          if is_create {
                               Some(((), 64))
                           } else {
                               None
@@ -72,16 +72,6 @@ impl Database {
             vnodes: Default::default(),
             workers: Mutex::new(workers),
         });
-
-        // register callback and then current nodes into fabric
-        let cdb = Arc::downgrade(&db);
-        db.dht.set_callback(Box::new(move || {
-            cdb.upgrade().map(|db| {
-                for (node, meta) in db.dht.members() {
-                    db.fabric.register_node(node, meta);
-                }
-            });
-        }));
 
         db.workers.lock().unwrap().start(|| {
             let cdb = Arc::downgrade(&db);
@@ -97,12 +87,19 @@ impl Database {
                         WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
                         WorkerMsg::Tick(time) => db.handler_tick(time),
                         WorkerMsg::Command(token, cmd) => db.handler_cmd(token, cmd),
+                        WorkerMsg::DHTChange => db.handler_dht_change(),
                         WorkerMsg::Exit => break,
                     }
                 }
                 info!("Exiting worker")
             })
         });
+
+        // FIXME: DHT callback shouldnt require sync
+        let sender = Mutex::new(db.sender());
+        db.dht.set_callback(Box::new(move || {
+            sender.lock().unwrap().send(WorkerMsg::DHTChange);
+        }));
 
         // register nodes into fabric
         db.dht.members().into_iter().map(|(n, a)| db.fabric.register_node(n, a)).count();
@@ -119,16 +116,16 @@ impl Database {
         {
             // acquire exclusive lock to vnodes to intialize them
             let mut vnodes = db.vnodes.write().unwrap();
-            let (sync_vnodes, pending_vnodes) = db.dht.vnodes_for_node(db.dht.node());
+            let (ready_vnodes, pending_vnodes) = db.dht.vnodes_for_node(db.dht.node());
             // create vnodes
             *vnodes = (0..db.dht.partitions() as VNodeId)
                 .map(|i| {
-                    let vn = if sync_vnodes.contains(&i) {
-                        VNode::new(&db, i, VNodeStatus::Ready)
+                    let vn = if ready_vnodes.contains(&i) {
+                        VNode::new(&db, i, VNodeStatus::Ready, is_create)
                     } else if pending_vnodes.contains(&i) {
-                        VNode::new(&db, i, VNodeStatus::Bootstrap)
+                        VNode::new(&db, i, VNodeStatus::Bootstrap, is_create)
                     } else {
-                        VNode::new(&db, i, VNodeStatus::Absent)
+                        VNode::new(&db, i, VNodeStatus::Absent, is_create)
                     };
                     (i, Mutex::new(vn))
                 })
@@ -147,6 +144,23 @@ impl Database {
     // FIXME: leaky abstraction
     pub fn sender(&self) -> WorkerSender {
         self.workers.lock().unwrap().sender()
+    }
+
+    fn handler_dht_change(&self) {
+        for (node, meta) in self.dht.members() {
+            self.fabric.register_node(node, meta);
+        }
+
+        for (&i, vn) in self.vnodes.read().unwrap().iter() {
+            vn.lock().unwrap().handler_dht_change(self,
+                                                  if self.dht
+                                                      .nodes_for_vnode(i, true)
+                                                      .contains(&self.dht.node()) {
+                                                      VNodeStatus::Ready
+                                                  } else {
+                                                      VNodeStatus::Absent
+                                                  });
+        }
     }
 
     fn handler_tick(&self, time: time::SystemTime) {
@@ -423,17 +437,18 @@ mod tests {
         let _ = env_logger::init();
         let db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        for i in 0u16..32 {
-            db1.dht.add_pending_node(i * 2 + 1, db2.dht.node(), ());
-            db1.dht.promote_pending_node(i * 2 + 1, db2.dht.node());
+        db2.dht.claim(db2.dht.node(), ());
+
+        thread::sleep_ms(1000);
+        while db1.migrations_inflight() + db2.migrations_inflight() > 0 {
+            warn!("waiting for migrations to finish");
+            thread::sleep_ms(1000);
         }
 
         db1.get(1, b"test");
-        thread::sleep_ms(100);
         assert!(db1.response(1).unwrap().is_empty());
 
         db1.set(1, b"test", Some(b"value1"), VersionVector::new());
-        thread::sleep_ms(100);
         assert!(db1.response(1).unwrap().is_empty());
 
         for &db in &[&db1, &db2] {
@@ -469,11 +484,7 @@ mod tests {
         }
 
         db2.dht.claim(db2.dht.node(), ());
-        for i in 0u16..64 {
-            if db2.dht.nodes_for_vnode(i, true).contains(&db2.dht.node()) {
-                db2.start_migration(i);
-            }
-        }
+
         // warn!("will check data in db2 during balancing");
         // for i in 0..TEST_JOIN_SIZE {
         //     db2.get(i, i.to_string().as_bytes());
@@ -481,12 +492,13 @@ mod tests {
         //     assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
         // }
 
+        thread::sleep_ms(1000);
         while db1.migrations_inflight() + db2.migrations_inflight() > 0 {
-            warn!("waiting for migrations to finish {} {}",
-                  db1.migrations_inflight(),
-                  db2.migrations_inflight());
+            warn!("waiting for migrations to finish");
             thread::sleep_ms(1000);
         }
+
+        // drop(db1);
 
         warn!("will check data in db2 after balancing");
         for i in 0..TEST_JOIN_SIZE {
@@ -502,9 +514,13 @@ mod tests {
         let mut db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.claim(db2.dht.node(), ());
-        for i in 0u16..64 {
-            db2.dht.promote_pending_node(i, db2.dht.node());
+
+        thread::sleep_ms(1000);
+        while db1.migrations_inflight() + db2.migrations_inflight() > 0 {
+            warn!("waiting for migrations to finish");
+            thread::sleep_ms(1000);
         }
+
         for i in 0..TEST_JOIN_SIZE {
             db1.set(i,
                     i.to_string().as_bytes(),
@@ -520,16 +536,12 @@ mod tests {
             assert_eq!(result1, result2);
         }
 
+        // sim unclean shutdown
         drop(db1);
         let _ = fs::remove_dir_all("t/db1");
         db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", false);
 
-        for i in 0u16..64 {
-            if db1.dht.nodes_for_vnode(i, true).contains(&db1.dht.node()) {
-                db1.start_sync(i, true);
-            }
-        }
-
+        thread::sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
             warn!("waiting for syncs to finish");
             thread::sleep_ms(1000);
@@ -543,10 +555,19 @@ mod tests {
     }
 
     #[test]
-    fn test_join_sync() {
+    fn test_join_sync_normal() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let mut db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let mut db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        db2.dht.claim(db2.dht.node(), ());
+
+        thread::sleep_ms(1000);
+        while db1.migrations_inflight() + db2.migrations_inflight() > 0 {
+            warn!("waiting for migrations to finish");
+            thread::sleep_ms(1000);
+        }
+
         for i in 0..TEST_JOIN_SIZE {
             db1.set(i,
                     i.to_string().as_bytes(),
@@ -556,39 +577,36 @@ mod tests {
         }
         for i in 0..TEST_JOIN_SIZE {
             db1.get(i, i.to_string().as_bytes());
-            assert!(db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
-        }
-
-        let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        warn!("will check data in db2 before balancing");
-        for i in 0..TEST_JOIN_SIZE {
+            let result1 = db1.response(i);
             db2.get(i, i.to_string().as_bytes());
-            assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+            let result2 = db2.response(i);
+            assert_eq!(result1, result2);
         }
 
-        db2.dht.claim(db2.dht.node(), ());
-        for i in 0u16..64 {
-            if db2.dht.nodes_for_vnode(i, true).contains(&db2.dht.node()) {
-                db2.start_sync(i, false);
-            }
-        }
-        warn!("will check data in db2 during balancing");
-        for i in 0..TEST_JOIN_SIZE {
-            db2.get(i, i.to_string().as_bytes());
-            let result = db2.response(i);
-            assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
-        }
+        // sim unclean shutdown
+        drop(db2);
+        let _ = fs::remove_dir_all("t/db2");
+        db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
 
+        thread::sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
-            warn!("waiting for migrations to finish");
+            warn!("waiting for rev syncs to finish");
             thread::sleep_ms(1000);
         }
 
-        for i in db2.vnodes.read().unwrap().keys().cloned() {
-            db2.dht.promote_pending_node(i, db2.dht.node());
+        // force some syncs
+        for i in 0..64u16 {
+            db2.start_sync(i, false);
         }
 
-        warn!("will check data in db2 after balancing");
+        thread::sleep_ms(1000);
+        while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
+            warn!("waiting for syncs to finish");
+            thread::sleep_ms(1000);
+        }
+
+        // FIXME: this is broken until we can specify R=1
+        warn!("will check data in db2 after sync");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
             assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));

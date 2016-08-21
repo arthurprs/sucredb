@@ -40,9 +40,10 @@ macro_rules! try_cas {
     ($s: ident, $e: block) => (
         loop {
             let (ring_version, new_ring) = $e;
-            match $s.propose(ring_version, new_ring){
+            match $s.propose(ring_version, new_ring, false) {
                 Ok(()) => break,
                 Err(etcd::Error::Api(ref e)) if e.error_code == 101 => {
+                    warn!("Proposing new ring conflicted at version {}", ring_version);
                     $s.wait_new_version(ring_version);
                 }
                 Err(e) => {
@@ -84,7 +85,10 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         } else {
             dht.join();
         }
-        dht.thread = Some(thread::spawn(move || Self::run(inner, etcd2)));
+        dht.thread = Some(thread::Builder::new()
+            .name(format!("DHT:{}", node))
+            .spawn(move || Self::run(inner, etcd2))
+            .unwrap());
         dht
     }
 
@@ -122,10 +126,13 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
                 }
             }
 
-            debug!("new ring version {}", ring_version);
+            debug!("Callback with new ring version {}", ring_version);
             // call callback
-            inner.read().unwrap().callback.as_ref().map(|f| f());
-            trace!("dht callback called");
+
+            let callback = inner.write().unwrap().callback.take().unwrap();
+            callback();
+            inner.write().unwrap().callback = Some(callback);
+            trace!("dht callback returned");
         }
         debug!("exiting dht thread");
     }
@@ -138,7 +145,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             let ring_version = node.modified_index.unwrap();
             let mut new_ring = ring.clone();
             new_ring.nodes.insert(self.node, self.addr);
-            if self.propose(ring_version, new_ring).is_ok() {
+            if self.propose(ring_version, new_ring, true).is_ok() {
                 break;
             }
         }
@@ -292,9 +299,9 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         Ok(())
     }
 
-    fn propose(&self, old_version: u64, new_ring: Ring<T>) -> Result<(), etcd::Error> {
+    fn propose(&self, old_version: u64, new_ring: Ring<T>, update: bool) -> Result<(), etcd::Error> {
         // self.inner.write().unwrap().ring = new_ring;
-        debug!("proposing new ring");
+        debug!("Proposing new ring against version {}", old_version);
         let new = Self::serialize(&new_ring).unwrap();
         let r = try!(self.inner
             .read()
@@ -302,10 +309,12 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             .etcd
             .compare_and_swap("/dht", &new, None, None, Some(old_version))
             .map_err(|mut e| e.pop().unwrap()));
-        let mut inner = self.inner.write().unwrap();
-        inner.ring = new_ring;
-        inner.ring_version = r.node.unwrap().modified_index.unwrap();
-        debug!("proposed new ring version {}", inner.ring_version);
+        if update {
+            let mut inner = self.inner.write().unwrap();
+            inner.ring = new_ring;
+            inner.ring_version = r.node.unwrap().modified_index.unwrap();
+            debug!("Updated ring to version {}", inner.ring_version);
+        }
         Ok(())
     }
 

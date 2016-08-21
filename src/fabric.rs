@@ -377,9 +377,10 @@ impl Fabric {
         let shared_context = context.shared.clone();
         shared_context.running.store(true, atomic::Ordering::Relaxed);
         // start event loop thread
-        let thread = thread::spawn(move || {
-            event_loop.run(context).unwrap();
-        });
+        let thread = thread::Builder::new()
+            .name(format!("Fabric:{}", node))
+            .spawn(move || event_loop.run(context).unwrap())
+            .unwrap();
         Ok(Fabric {
             loop_thread: Some(thread),
             shared_context: shared_context,
