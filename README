@@ -8,12 +8,17 @@
 * [x] resp server
 * [x] convert resp into commands to the database
 * [x] send responses to the resp server
-* [ ] design a proper resp protocol
+* [ ] proper resp protocol
 * [ ] support specifying R/W for the request
 * [x] worker threads
 * [ ] handling timeouts for crud
-* [ ] resending sync/bootstrap/recover data
-* [ ] generic sync/bootstrap/recover code?
+* [x] generic sync normal/reverse
+* [ ] resending sync/bootstrap data
+* [ ] generic sync/bootstrap code?
 * [x] when log isn't enough to satisfy sync, iter the database sending necessary dots
 * [x] propagate dht notifications to vnodes and take actions
 * [ ] dead none handling
+* [x] cluster name
+* [ ] cluster handling api (join/leave/rebalance)
+* [ ] smart rebalance
+* [ ] configurations everywhere
