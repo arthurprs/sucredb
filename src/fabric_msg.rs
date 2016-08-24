@@ -17,12 +17,12 @@ pub enum FabricMsgError {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FabricMsg {
-    GetRemote(MsgGetRemote),
-    GetRemoteAck(MsgGetRemoteAck),
+    RemoteGet(MsgRemoteGet),
+    RemoteGetAck(MsgRemoteGetAck),
     Set(MsgSet),
     SetAck(MsgSetAck),
-    SetRemote(MsgSetRemote),
-    SetRemoteAck(MsgSetRemoteAck),
+    RemoteSet(MsgRemoteSet),
+    RemoteSetAck(MsgRemoteSetAck),
     BootstrapStart(MsgBootstrapStart),
     BootstrapSend(MsgBootstrapSend),
     BootstrapAck(MsgBootstrapAck),
@@ -46,12 +46,12 @@ macro_rules! fmsg {
 impl FabricMsg {
     pub fn get_type(&self) -> FabricMsgType {
         match *self {
-            FabricMsg::GetRemote(..) => FabricMsgType::Crud,
-            FabricMsg::GetRemoteAck(..) => FabricMsgType::Crud,
+            FabricMsg::RemoteGet(..) => FabricMsgType::Crud,
+            FabricMsg::RemoteGetAck(..) => FabricMsgType::Crud,
             FabricMsg::Set(..) => FabricMsgType::Crud,
             FabricMsg::SetAck(..) => FabricMsgType::Crud,
-            FabricMsg::SetRemote(..) => FabricMsgType::Crud,
-            FabricMsg::SetRemoteAck(..) => FabricMsgType::Crud,
+            FabricMsg::RemoteSet(..) => FabricMsgType::Crud,
+            FabricMsg::RemoteSetAck(..) => FabricMsgType::Crud,
             FabricMsg::BootstrapStart(..) => FabricMsgType::Bootstrap,
             FabricMsg::BootstrapSend(..) => FabricMsgType::Bootstrap,
             FabricMsg::BootstrapAck(..) => FabricMsgType::Bootstrap,
@@ -66,21 +66,21 @@ impl FabricMsg {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct MsgGetRemote {
+pub struct MsgRemoteGet {
     pub vnode: VNodeId,
     pub cookie: Cookie,
     pub key: Vec<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct MsgGetRemoteAck {
+pub struct MsgRemoteGetAck {
     pub vnode: VNodeId,
     pub cookie: Cookie,
     pub result: Result<DottedCausalContainer<Vec<u8>>, FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct MsgSetRemote {
+pub struct MsgRemoteSet {
     pub vnode: VNodeId,
     pub cookie: Cookie,
     pub key: Vec<u8>,
@@ -88,7 +88,7 @@ pub struct MsgSetRemote {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct MsgSetRemoteAck {
+pub struct MsgRemoteSetAck {
     pub vnode: VNodeId,
     pub cookie: Cookie,
     pub result: Result<(), FabricMsgError>,
@@ -176,12 +176,12 @@ macro_rules! impl_into {
     );
 }
 
-impl_into!(GetRemote, MsgGetRemote);
-impl_into!(GetRemoteAck, MsgGetRemoteAck);
+impl_into!(RemoteGet, MsgRemoteGet);
+impl_into!(RemoteGetAck, MsgRemoteGetAck);
 impl_into!(Set, MsgSet);
 impl_into!(SetAck, MsgSetAck);
-impl_into!(SetRemote, MsgSetRemote);
-impl_into!(SetRemoteAck, MsgSetRemoteAck);
+impl_into!(RemoteSet, MsgRemoteSet);
+impl_into!(RemoteSetAck, MsgRemoteSetAck);
 
 impl_into!(BootstrapAck, MsgBootstrapAck);
 impl_into!(BootstrapSend, MsgBootstrapSend);

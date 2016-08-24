@@ -355,7 +355,7 @@ impl VNode {
             } else {
                 db.fabric
                     .send_message(node,
-                                  MsgGetRemote {
+                                  MsgRemoteGet {
                                       cookie: cookie,
                                       vnode: self.state.num,
                                       key: key.into(),
@@ -378,7 +378,7 @@ impl VNode {
             if node != db.dht.node() {
                 db.fabric
                     .send_message(node,
-                                  MsgSetRemote {
+                                  MsgRemoteSet {
                                       cookie: cookie,
                                       vnode: self.state.num,
                                       key: key.into(),
@@ -441,15 +441,15 @@ impl VNode {
 
     // CRUD HANDLERS
 
-    pub fn handler_get_remote_ack(&mut self, db: &Database, _from: NodeId, msg: MsgGetRemoteAck) {
+    pub fn handler_get_remote_ack(&mut self, db: &Database, _from: NodeId, msg: MsgRemoteGetAck) {
         self.process_get(db, msg.cookie, msg.result.ok());
     }
 
-    pub fn handler_get_remote(&mut self, db: &Database, from: NodeId, msg: MsgGetRemote) {
+    pub fn handler_get_remote(&mut self, db: &Database, from: NodeId, msg: MsgRemoteGet) {
         let dcc = self.state.storage_get(&msg.key);
         db.fabric
             .send_message(from,
-                          MsgGetRemoteAck {
+                          MsgRemoteGetAck {
                               cookie: msg.cookie,
                               vnode: msg.vnode,
                               result: Ok(dcc),
@@ -461,12 +461,12 @@ impl VNode {
         unimplemented!()
     }
 
-    pub fn handler_set_remote(&mut self, db: &Database, from: NodeId, msg: MsgSetRemote) {
-        let MsgSetRemote { key, container, vnode, cookie } = msg;
+    pub fn handler_set_remote(&mut self, db: &Database, from: NodeId, msg: MsgRemoteSet) {
+        let MsgRemoteSet { key, container, vnode, cookie } = msg;
         let result = self.state.storage_set_remote(db, &key, container);
         db.fabric
             .send_message(from,
-                          MsgSetRemoteAck {
+                          MsgRemoteSetAck {
                               vnode: vnode,
                               cookie: cookie,
                               result: Ok(result),
@@ -474,7 +474,7 @@ impl VNode {
             .unwrap();
     }
 
-    pub fn handler_set_remote_ack(&mut self, db: &Database, _from: NodeId, msg: MsgSetRemoteAck) {
+    pub fn handler_set_remote_ack(&mut self, db: &Database, _from: NodeId, msg: MsgRemoteSetAck) {
         self.process_set(db, msg.cookie, msg.result.is_ok());
     }
 

@@ -169,12 +169,12 @@ impl Database {
 
     fn handler_fabric_msg(&self, from: NodeId, msg: FabricMsg) {
         match msg {
-            FabricMsg::GetRemote(m) => self.handler_get_remote(from, m),
-            FabricMsg::GetRemoteAck(m) => self.handler_get_remote_ack(from, m),
+            FabricMsg::RemoteGet(m) => self.handler_get_remote(from, m),
+            FabricMsg::RemoteGetAck(m) => self.handler_get_remote_ack(from, m),
             FabricMsg::Set(m) => self.handler_set(from, m),
             FabricMsg::SetAck(m) => self.handler_set_ack(from, m),
-            FabricMsg::SetRemote(m) => self.handler_set_remote(from, m),
-            FabricMsg::SetRemoteAck(m) => self.handler_set_remote_ack(from, m),
+            FabricMsg::RemoteSet(m) => self.handler_set_remote(from, m),
+            FabricMsg::RemoteSetAck(m) => self.handler_set_remote_ack(from, m),
             FabricMsg::BootstrapStart(m) => {
                 vnode!(self, m.vnode, |mut vn| vn.handler_bootstrap_start(self, from, m))
             }
@@ -264,25 +264,25 @@ impl Database {
 
     fn handler_set_ack(&self, _from: NodeId, _msg: MsgSetAck) {}
 
-    fn handler_set_remote(&self, from: NodeId, msg: MsgSetRemote) {
+    fn handler_set_remote(&self, from: NodeId, msg: MsgRemoteSet) {
         vnode!(self, msg.vnode, |mut vn| {
             vn.handler_set_remote(self, from, msg);
         });
     }
 
-    fn handler_set_remote_ack(&self, from: NodeId, msg: MsgSetRemoteAck) {
+    fn handler_set_remote_ack(&self, from: NodeId, msg: MsgRemoteSetAck) {
         vnode!(self, msg.vnode, |mut vn| {
             vn.handler_set_remote_ack(self, from, msg);
         });
     }
 
-    fn handler_get_remote(&self, from: NodeId, msg: MsgGetRemote) {
+    fn handler_get_remote(&self, from: NodeId, msg: MsgRemoteGet) {
         vnode!(self, msg.vnode, |mut vn| {
             vn.handler_get_remote(self, from, msg);
         });
     }
 
-    fn handler_get_remote_ack(&self, from: NodeId, msg: MsgGetRemoteAck) {
+    fn handler_get_remote_ack(&self, from: NodeId, msg: MsgRemoteGetAck) {
         vnode!(self, msg.vnode, |mut vn| {
             vn.handler_get_remote_ack(self, from, msg);
         });
