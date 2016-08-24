@@ -1,7 +1,6 @@
 use version_vector::*;
 use database::*;
 
-// TODO: error support
 #[derive(Debug, Copy, Clone)]
 pub enum FabricMsgType {
     Crud,

@@ -1,7 +1,7 @@
 use std::{net, time};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
-use dht::DHT;
+use dht::{self, DHT};
 use version_vector::*;
 use fabric::*;
 use vnode::*;
@@ -49,19 +49,19 @@ macro_rules! vnode {
 }
 
 impl Database {
-    pub fn new(node: NodeId, bind_addr: net::SocketAddr, storage_dir: &str, is_create: bool,
+    pub fn new(node: NodeId, fabric_addr: net::SocketAddr, storage_dir: &str, is_create: bool,
                response_fn: DatabaseResponseFn)
                -> Arc<Database> {
         let storage_manager = StorageManager::new(storage_dir).unwrap();
         let meta_storage = storage_manager.open(-1, true).unwrap();
         let workers = WorkerManager::new(1, time::Duration::from_millis(1000));
         let db = Arc::new(Database {
-            fabric: Fabric::new(node, bind_addr).unwrap(),
-            dht: DHT::new(3,
-                          node,
-                          bind_addr,
+            fabric: Fabric::new(node, fabric_addr).unwrap(),
+            dht: DHT::new(node,
+                          fabric_addr,
+                          "test",
                           if is_create {
-                              Some(((), 64))
+                              Some(((), dht::RingDescription::new(3, 64)))
                           } else {
                               None
                           }),
@@ -152,14 +152,12 @@ impl Database {
         }
 
         for (&i, vn) in self.vnodes.read().unwrap().iter() {
-            vn.lock().unwrap().handler_dht_change(self,
-                                                  if self.dht
-                                                      .nodes_for_vnode(i, true)
-                                                      .contains(&self.dht.node()) {
-                                                      VNodeStatus::Ready
-                                                  } else {
-                                                      VNodeStatus::Absent
-                                                  });
+            let final_status = if self.dht.nodes_for_vnode(i, true).contains(&self.dht.node()) {
+                VNodeStatus::Ready
+            } else {
+                VNodeStatus::Absent
+            };
+            vn.lock().unwrap().handler_dht_change(self, final_status);
         }
     }
 

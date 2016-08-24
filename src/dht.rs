@@ -28,9 +28,24 @@ pub struct Ring<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
     nodes: HashMap<NodeId, net::SocketAddr>,
 }
 
+pub struct RingDescription {
+    pub replication_factor: usize,
+    pub partitions: usize,
+}
+
+impl RingDescription {
+    pub fn new(replication_factor: usize, partitions: usize) -> Self {
+        RingDescription {
+            replication_factor: replication_factor,
+            partitions: partitions,
+        }
+    }
+}
+
 struct Inner<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
     ring: Ring<T>,
     ring_version: u64,
+    cluster: String,
     etcd: etcd::Client,
     callback: Option<DHTChangeFn>,
     running: bool,
@@ -56,32 +71,33 @@ macro_rules! try_cas {
 }
 
 impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
-    pub fn new(replication_factor: usize, node: NodeId, addr: net::SocketAddr,
-               initial: Option<(T, usize)>)
+    pub fn new(node: NodeId, fabric_addr: net::SocketAddr, cluster: &str,
+               initial: Option<(T, RingDescription)>)
                -> DHT<T> {
         let etcd1 = Default::default();
         let etcd2 = Default::default();
         let inner = Arc::new(RwLock::new(Inner {
             ring: Ring {
-                replication_factor: replication_factor,
+                replication_factor: Default::default(),
                 vnodes: Default::default(),
                 nodes: Default::default(),
                 pending: Default::default(),
                 zombie: Default::default(),
             },
             ring_version: 0,
+            cluster: cluster.into(),
             etcd: etcd1,
             callback: None,
             running: true,
         }));
         let mut dht = DHT {
             node: node,
-            addr: addr,
+            addr: fabric_addr,
             inner: inner.clone(),
             thread: None,
         };
-        if let Some((meta, partitions)) = initial {
-            dht.reset(meta, partitions);
+        if let Some((meta, description)) = initial {
+            dht.reset(meta, description.replication_factor, description.partitions);
         } else {
             dht.join();
         }
@@ -93,6 +109,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
     }
 
     fn run(inner: Arc<RwLock<Inner<T>>>, etcd: etcd::Client) {
+        let cluster_key = format!("/{}/dht", inner.read().unwrap().cluster);
         loop {
             let watch_version = {
                 let inner = inner.read().unwrap();
@@ -102,7 +119,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
                 inner.ring_version + 1
             };
             // listen for changes
-            let r = match etcd.watch("/dht", Some(watch_version), false) {
+            let r = match etcd.watch(&cluster_key, Some(watch_version), false) {
                 Ok(r) => r,
                 Err(e) => {
                     warn!("etcd err: {:?}", e);
@@ -138,8 +155,9 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
     }
 
     fn join(&self) {
+        let cluster_key = format!("/{}/dht", self.inner.read().unwrap().cluster);
         loop {
-            let r = self.inner.read().unwrap().etcd.get("/dht", false, false, false).unwrap();
+            let r = self.inner.read().unwrap().etcd.get(&cluster_key, false, false, false).unwrap();
             let node = r.node.unwrap();
             let ring = Self::deserialize(&node.value.unwrap()).unwrap();
             let ring_version = node.modified_index.unwrap();
@@ -151,17 +169,18 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         }
     }
 
-    fn reset(&self, meta: T, partitions: usize) {
+    fn reset(&self, meta: T, replication_factor: usize, partitions: usize) {
         let mut inner = self.inner.write().unwrap();
+        let cluster_key = format!("/{}/dht", inner.cluster);
         inner.ring = Ring {
-            replication_factor: inner.ring.replication_factor,
+            replication_factor: replication_factor,
             vnodes: vec![[(self.node, meta)].iter().cloned().collect(); partitions],
             pending: vec![Default::default(); partitions],
             zombie: vec![Default::default(); partitions],
             nodes: vec![(self.node, self.addr)].into_iter().collect(),
         };
         let new = Self::serialize(&inner.ring).unwrap();
-        let r = inner.etcd.set("/dht", &new, None).unwrap();
+        let r = inner.etcd.set(&cluster_key, &new, None).unwrap();
         inner.ring_version = r.node.unwrap().modified_index.unwrap();
     }
 
@@ -300,15 +319,18 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
     }
 
     fn propose(&self, old_version: u64, new_ring: Ring<T>, update: bool) -> Result<(), etcd::Error> {
-        // self.inner.write().unwrap().ring = new_ring;
         debug!("Proposing new ring against version {}", old_version);
+        let cluster_key = format!("/{}/dht", self.inner.read().unwrap().cluster);
         let new = Self::serialize(&new_ring).unwrap();
-        let r = try!(self.inner
-            .read()
-            .unwrap()
-            .etcd
-            .compare_and_swap("/dht", &new, None, None, Some(old_version))
-            .map_err(|mut e| e.pop().unwrap()));
+        let r =
+            try!(self.inner.read().unwrap()
+                .etcd
+                .compare_and_swap(&cluster_key,
+                                  &new,
+                                  None,
+                                  None,
+                                  Some(old_version))
+                .map_err(|mut e| e.pop().unwrap()));
         if update {
             let mut inner = self.inner.write().unwrap();
             inner.ring = new_ring;
@@ -343,8 +365,8 @@ mod tests {
     fn test_new() {
         let node = 0;
         let addr = "127.0.0.1:9000".parse().unwrap();
-        for rf in 0..3 {
-            let dht = DHT::new(rf, node, addr, Some(((), 256)));
+        for rf in 1..4 {
+            let dht = DHT::new(node, addr, "test", Some(((), RingDescription::new(rf, 256))));
             assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
             assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
             assert_eq!(dht.members(), [(node, addr)].iter().cloned().collect::<HashMap<_, _>>());

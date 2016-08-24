@@ -28,7 +28,7 @@ version = "*"
 features = ["serde"]
 
 [dependencies.etcd]
-version="*"
+path= "../rust-etcd"
 default-features = false
 features = ["nightly"]
 
