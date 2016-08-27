@@ -127,6 +127,7 @@ pub struct MsgBootstrapFin {
 pub struct MsgBootstrapSend {
     pub vnode: VNodeId,
     pub cookie: Cookie,
+    pub seq: u64,
     pub key: Vec<u8>,
     pub container: DottedCausalContainer<Vec<u8>>,
 }
@@ -135,6 +136,7 @@ pub struct MsgBootstrapSend {
 pub struct MsgBootstrapAck {
     pub vnode: VNodeId,
     pub cookie: Cookie,
+    pub seq: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -156,6 +158,7 @@ pub struct MsgSyncFin {
 pub struct MsgSyncSend {
     pub vnode: VNodeId,
     pub cookie: Cookie,
+    pub seq: u64,
     pub key: Vec<u8>,
     pub container: DottedCausalContainer<Vec<u8>>,
 }
@@ -164,6 +167,7 @@ pub struct MsgSyncSend {
 pub struct MsgSyncAck {
     pub vnode: VNodeId,
     pub cookie: Cookie,
+    pub seq: u64,
 }
 
 macro_rules! impl_into {

@@ -322,15 +322,12 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         debug!("Proposing new ring against version {}", old_version);
         let cluster_key = format!("/{}/dht", self.inner.read().unwrap().cluster);
         let new = Self::serialize(&new_ring).unwrap();
-        let r =
-            try!(self.inner.read().unwrap()
-                .etcd
-                .compare_and_swap(&cluster_key,
-                                  &new,
-                                  None,
-                                  None,
-                                  Some(old_version))
-                .map_err(|mut e| e.pop().unwrap()));
+        let r = try!(self.inner
+            .read()
+            .unwrap()
+            .etcd
+            .compare_and_swap(&cluster_key, &new, None, None, Some(old_version))
+            .map_err(|mut e| e.pop().unwrap()));
         if update {
             let mut inner = self.inner.write().unwrap();
             inner.ring = new_ring;

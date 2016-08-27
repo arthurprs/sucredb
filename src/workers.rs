@@ -9,7 +9,7 @@ use resp::RespValue;
 #[derive(Debug)]
 pub enum WorkerMsg {
     Fabric(NodeId, FabricMsg),
-    Tick(time::SystemTime),
+    Tick(time::Instant),
     Command(Token, RespValue),
     DHTChange,
     Exit,
@@ -65,10 +65,11 @@ impl WorkerManager {
             .spawn(move || {
                 loop {
                     thread::sleep(ticker_interval);
-                    if ticker_rx.try_recv().is_ok() {
-                        break;
+                    match ticker_rx.try_recv() {
+                        Err(mpsc::TryRecvError::Empty) => (),
+                        _ => break,
                     }
-                    let _ = sender.try_send(WorkerMsg::Tick(time::SystemTime::now()));
+                    let _ = sender.try_send(WorkerMsg::Tick(time::Instant::now()));
                 }
             })
             .unwrap());
@@ -85,12 +86,13 @@ impl WorkerManager {
 
 impl WorkerSender {
     pub fn send(&mut self, msg: WorkerMsg) {
-        self.try_send(msg).unwrap();
+        // right now only possible error is disconected, so no need to do anything
+        let _ = self.try_send(msg);
     }
-    pub fn try_send(&mut self, msg: WorkerMsg) -> Result<(), ()> {
+    pub fn try_send(&mut self, msg: WorkerMsg) -> Result<(), mpsc::SendError<WorkerMsg>> {
         let i = self.cursor % self.channels.len();
         self.cursor = self.cursor.wrapping_add(1);
-        self.channels[i].send(msg).map_err(|_| ())
+        self.channels[i].send(msg)
     }
 }
 

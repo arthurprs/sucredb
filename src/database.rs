@@ -161,9 +161,9 @@ impl Database {
         }
     }
 
-    fn handler_tick(&self, time: time::SystemTime) {
+    fn handler_tick(&self, time: time::Instant) {
         for vn in self.vnodes.read().unwrap().values() {
-            vn.lock().unwrap().handler_tick(time);
+            vn.lock().unwrap().handler_tick(self, time);
         }
     }
 

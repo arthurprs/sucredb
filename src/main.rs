@@ -1,6 +1,6 @@
 #![feature(custom_derive, plugin)]
 #![feature(question_mark)]
-#![feature(fnbox)]
+#![feature(fnbox, binary_heap_extras)]
 #![allow(dead_code)]
 #![feature(arc_counts)]
 #![plugin(serde_macros)]

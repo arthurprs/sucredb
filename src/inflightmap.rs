@@ -25,12 +25,27 @@ impl<K: Hash + Eq + Copy, V, T: Ord + Copy> InFlightMap<K, V, T> {
     pub fn pop_expired(&mut self, now: T) -> Option<(K, V)> {
         loop {
             match self.heap.peek() {
-                Some(tv) if now >= tv.0 => (),
+                Some(tk) if now >= tk.0 => (),
                 _ => return None,
             }
             let key = self.heap.pop().unwrap().1;
             if let Some(v) = self.map.remove(&key) {
                 return Some((key, v));
+            }
+        }
+    }
+
+    pub fn touch_expired(&mut self, now: T, timeout: T) -> Option<(K, &V)> {
+        loop {
+            let key = match self.heap.peek() {
+                Some(tk) if now >= tk.0 => tk.1,
+                _ => return None,
+            };
+            if let Some(v) = self.map.get(&key) {
+                self.heap.replace(Pair(timeout, key));
+                return Some((key, &v));
+            } else {
+                self.heap.pop();
             }
         }
     }
