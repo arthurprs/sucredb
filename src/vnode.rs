@@ -1,10 +1,10 @@
 use std::time;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{HashMap, BTreeMap};
 use std::collections::hash_map::Entry as HMEntry;
-use linear_map::{LinearMap, Entry as LMEntry};
 use version_vector::*;
 use storage::*;
 use database::*;
+use command::CommandError;
 use bincode::{self, serde as bincode_serde};
 use inflightmap::InFlightMap;
 use fabric::*;
@@ -14,11 +14,11 @@ use rand::{Rng, thread_rng};
 // 1MB of storage considering key avg length of 32B and 16B overhead
 const PEER_LOG_SIZE: usize = 1024 * 1024 / (32 + 16);
 
-const SYNC_INFLIGHT_MAX: usize = 10;
-const SYNC_INFLIGHT_TIMEOUT_MS: u64 = 3000;
-const BOOTSTRAP_INFLIGHT_MAX: usize = 20;
-const BOOTSTRAP_INFLIGHT_TIMEOUT_MS: u64 = 3000;
-
+const RECOVER_FAST_FORWARD: Version = 1_000_000;
+const SYNC_INFLIGHT_MAX: usize = 1;
+const SYNC_INFLIGHT_TIMEOUT_MS: u64 = 30000;
+const START_RETRY_MAX: u32 = 3;
+const START_TIMEOUT_MS: u64 = 3000;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum VNodeStatus {
@@ -36,15 +36,14 @@ pub enum VNodeStatus {
 
 pub struct VNode {
     state: VNodeState,
-    migrations: LinearMap<Cookie, Migration>,
-    syncs: LinearMap<Cookie, Synchronization>,
-    inflight: HashMap<Cookie, ReqState>,
+    syncs: HashMap<Cookie, Synchronization>,
+    inflight: InFlightMap<Cookie, ReqState, time::Instant>,
 }
 
 struct VNodeState {
     num: u16,
     status: VNodeStatus,
-    peers: LinearMap<NodeId, VNodePeer>,
+    peers: HashMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
     log: VNodePeer,
     storage: Storage,
@@ -53,7 +52,7 @@ struct VNodeState {
 
 #[derive(Serialize, Deserialize)]
 struct SavedVNodeState {
-    peers: LinearMap<NodeId, VNodePeer>,
+    peers: HashMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
     log: VNodePeer,
     clean_shutdown: bool,
@@ -75,43 +74,51 @@ pub struct ReqState {
     token: Token,
 }
 
-enum Migration {
-    Outgoing {
+// TODO: take mut buffers instead of returning them
+type IteratorFn = Box<FnMut(&Storage) -> Option<(Vec<u8>, DottedCausalContainer<Vec<u8>>)> + Send>;
+
+enum Synchronization {
+    SyncSender {
+        clock_in_peer: BitmappedVersion,
+        clock_snapshot: BitmappedVersion,
+        iterator: IteratorFn,
+        inflight: InFlightMap<u64, (Vec<u8>, DottedCausalContainer<Vec<u8>>), time::Instant>,
+        cookie: Cookie,
+        peer: NodeId,
+        target: NodeId,
+        count: u64,
+    },
+    SyncReceiver {
+        clock_in_peer: BitmappedVersion,
+        cookie: Cookie,
+        peer: NodeId,
+        target: NodeId,
+        count: u64,
+        last_touched: time::Instant,
+        starts_sent: u32,
+    },
+    BootstrapSender {
         cookie: Cookie,
         peer: NodeId,
         clocks_snapshot: BitmappedVersionVector,
-        iterator: StorageIterator,
+        iterator: IteratorFn,
         inflight: InFlightMap<u64, (Vec<u8>, DottedCausalContainer<Vec<u8>>), time::Instant>,
         count: u64,
     },
-    Incomming {
+    BootstrapReceiver {
         cookie: Cookie,
         peer: NodeId,
         count: u64,
+        last_touched: time::Instant,
+        starts_sent: u32,
     },
 }
 
-// TODO: take mut buffers instead of returning them
-type SyncIteratorFn =
-    Box<FnMut(&Storage) -> Option<(Vec<u8>, DottedCausalContainer<Vec<u8>>)> + Send>;
-
-enum Synchronization {
-    Outgoing {
-        clock_in_peer: BitmappedVersion,
-        clock_snapshot: BitmappedVersion,
-        cookie: Cookie,
-        iterator: SyncIteratorFn,
-        inflight: InFlightMap<u64, (Vec<u8>, DottedCausalContainer<Vec<u8>>), time::Instant>,
-        peer: NodeId,
-        count: u64,
-        target: NodeId,
-    },
-    Incomming {
-        cookie: Cookie,
-        peer: NodeId,
-        count: u64,
-        target: NodeId,
-    },
+enum SyncResult {
+    Bootstrap,
+    Recover,
+    Remove,
+    Continue,
 }
 
 impl VNodePeer {
@@ -186,7 +193,7 @@ macro_rules! cookie_not_found{
 macro_rules! forward {
     ($this: expr, $db: expr, $from: expr, $msg: expr, $emsg: ident, $col: ident, $f: ident) => {{
         match $this.$col.entry($msg.cookie) {
-            LMEntry::Occupied(mut o) => {
+            HMEntry::Occupied(mut o) => {
                 let cookie = $msg.cookie;
                 if o.get_mut().$f($db, &mut $this.state, $msg) {
                     o.remove();
@@ -207,7 +214,7 @@ macro_rules! forward {
 impl ReqState {
     fn new(token: Token, nodes: usize) -> Self {
         ReqState {
-            required: (nodes as u8) / 2 + 1,
+            required: 1,
             total: nodes as u8,
             replies: 0,
             succesfull: 0,
@@ -228,20 +235,20 @@ impl VNode {
 
         let mut vnode = VNode {
             state: state,
-            inflight: Default::default(),
-            migrations: Default::default(),
+            inflight: InFlightMap::new(),
             syncs: Default::default(),
         };
 
-        // FIXME: need to handle failure of these
+        // FIXME: need to handle failure
         match vnode.status() {
+            VNodeStatus::Ready | VNodeStatus::Absent => (),
             VNodeStatus::Bootstrap => {
-                vnode.start_migration(db);
+                vnode.start_bootstrap(db);
             }
             VNodeStatus::Recover => {
                 vnode.start_sync(db, true);
             }
-            _ => (),
+            status => panic!("{:?} isn't a valid state after load", status),
         }
 
         vnode
@@ -271,10 +278,6 @@ impl VNode {
         self.syncs.len()
     }
 
-    pub fn migrations_inflight(&self) -> usize {
-        self.migrations.len()
-    }
-
     fn gen_cookie(&mut self) -> Cookie {
         // FIXME: make cookie really unique
         let mut rng = thread_rng();
@@ -283,41 +286,18 @@ impl VNode {
 
     // DHT Changes
     pub fn handler_dht_change(&mut self, db: &Database, x_status: VNodeStatus) {
-        use self::VNodeStatus::*;
         match (self.status(), x_status) {
-            (Ready, Absent) |
-            (Bootstrap, Absent) |
-            (Recover, Absent) => {
-                self.state.status = Zombie;
-                // cancel incomming bootstrap
-                let cancels = self.migrations
+            (VNodeStatus::Ready, VNodeStatus::Absent) |
+            (VNodeStatus::Bootstrap, VNodeStatus::Absent) |
+            (VNodeStatus::Recover, VNodeStatus::Absent) => {
+                self.state.status = VNodeStatus::Zombie;
+                // cancel incomming syncs
+                let cancels = self.syncs
                     .iter()
                     .filter_map(|(&cookie, m)| {
                         match *m {
-                            Migration::Incomming { peer, .. } => Some((cookie, peer)),
-                            _ => None,
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                for (cookie, peer) in cancels {
-                    if let Some(_) = self.migrations.remove(&cookie) {
-                        db.fabric
-                            .send_message(peer,
-                                          MsgBootstrapFin {
-                                              vnode: self.state.num,
-                                              cookie: cookie,
-                                              result: Err(FabricMsgError::BadVNodeStatus),
-                                          })
-                            .unwrap();
-                    }
-                }
-
-                // cancel incomming sync
-                let cancels = self.syncs
-                    .iter()
-                    .filter_map(|(&cookie, s)| {
-                        match *s {
-                            Synchronization::Incomming { peer, .. } => Some((cookie, peer)),
+                            Synchronization::BootstrapReceiver { peer, .. } => Some((cookie, peer)),
+                            Synchronization::SyncReceiver { peer, .. } => Some((cookie, peer)),
                             _ => None,
                         }
                     })
@@ -334,19 +314,18 @@ impl VNode {
                             .unwrap();
                     }
                 }
-
             }
-            (Zombie, Absent) => (),
-            (Zombie, Ready) => {
+            (VNodeStatus::Zombie, VNodeStatus::Absent) => (),
+            (VNodeStatus::Zombie, VNodeStatus::Ready) => {
                 // fast-recomission!
-                self.state.status = Ready;
+                self.state.status = VNodeStatus::Ready;
             }
-            (Absent, Ready) => {
+            (VNodeStatus::Absent, VNodeStatus::Ready) => {
                 // recomission by bootstrap
-                self.start_migration(db);
+                self.start_bootstrap(db);
             }
-            (Bootstrap, Ready) |
-            (Recover, Ready) => (),
+            (VNodeStatus::Bootstrap, VNodeStatus::Ready) |
+            (VNodeStatus::Recover, VNodeStatus::Ready) => (),
             (a, b) if a == b => (),
             (a, b) => panic!("Invalid change {:?} -> {:?}", a, b),
         }
@@ -355,36 +334,35 @@ impl VNode {
     // TICK
     pub fn handler_tick(&mut self, db: &Database, _time: time::Instant) {
         {
-            let state =  &mut self.state;
-            let cancels = self.syncs.iter_mut().filter_map(|(&cookie, s)| {
-                if s.on_tick(db, state) {
-                    Some(cookie)
-                } else {
-                    None
-                }
-            }).collect::<Vec<Cookie>>();
+            let state = &mut self.state;
+            let cancels = self.syncs
+                .iter_mut()
+                .filter_map(|(&cookie, s)| {
+                    if s.on_tick(db, state) {
+                        Some(cookie)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<Cookie>>();
             for cookie in cancels {
                 self.syncs.remove(&cookie);
             }
-            let cancels = self.migrations.iter_mut().filter_map(|(&cookie, m)| {
-                if m.on_tick(db, state) {
-                    Some(cookie)
-                } else {
-                    None
-                }
-            }).collect::<Vec<Cookie>>();
-            for cookie in cancels {
-                self.migrations.remove(&cookie);
-            }
         }
 
+        let now = time::Instant::now();
+        while let Some((cookie, req)) = self.inflight.pop_expired(now) {
+            debug!("Request cookie:{:?} token:{} timed out", cookie, req.token);
+            db.respond_error(req.token, CommandError::Timeout);
+        }
     }
 
     // CLIENT CRUD
     pub fn do_get(&mut self, db: &Database, token: Token, key: &[u8]) {
         let nodes = db.dht.nodes_for_vnode(self.state.num, false);
         let cookie = self.gen_cookie();
-        assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len())).is_none());
+        let expire = time::Instant::now() + time::Duration::from_millis(1000);
+        assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len()), expire).is_none());
 
         for node in nodes {
             if node == db.dht.node() {
@@ -407,7 +385,8 @@ impl VNode {
                   vv: VersionVector) {
         let nodes = db.dht.nodes_for_vnode(self.state.num, true);
         let cookie = self.gen_cookie();
-        assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len())).is_none());
+        let expire = time::Instant::now() + time::Duration::from_millis(1000);
+        assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len()), expire).is_none());
 
         let dcc = self.state
             .storage_set_local(db, key, value_opt, &vv);
@@ -517,101 +496,44 @@ impl VNode {
     }
 
     // BOOTSTRAP
-    pub fn handler_bootstrap_start(&mut self, db: &Database, from: NodeId, msg: MsgBootstrapStart) {
-        check_status!(self,
-                      VNodeStatus::Ready | VNodeStatus::Zombie,
-                      db,
-                      from,
-                      msg,
-                      MsgBootstrapFin,
-                      migrations);
-
+    fn create_bootstrap_sender(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
         let cookie = msg.cookie;
-        let mut migration = Migration::Outgoing {
+        let mut storage_iterator = self.state.storage.iterator();
+        let mut iter = (0..)
+            .map(move |_| {
+                storage_iterator.iter().next().map(|(k, v)| {
+                    (k.into(),
+                     bincode_serde::deserialize::<DottedCausalContainer<Vec<u8>>>(&v).unwrap())
+                })
+            })
+            .take_while(|o| o.is_some())
+            .map(|o| o.unwrap());
+
+        let mut bootstrap = Synchronization::BootstrapSender {
             cookie: cookie,
             clocks_snapshot: self.state.clocks.clone(),
-            iterator: self.state.storage.iterator(),
+            iterator: Box::new(move |_| iter.next()),
             inflight: InFlightMap::new(),
             peer: from,
             count: 0,
         };
-        migration.on_start(db, &mut self.state, msg);
+        bootstrap.on_start(db, &mut self.state, msg);
 
-        assert!(self.migrations.insert(cookie, migration).is_none());
+        assert!(self.syncs.insert(cookie, bootstrap).is_none());
     }
 
-    pub fn handler_bootstrap_send(&mut self, db: &Database, from: NodeId, msg: MsgBootstrapSend) {
-        forward!(self,
-                 VNodeStatus::Bootstrap,
-                 db,
-                 from,
-                 msg,
-                 MsgBootstrapFin,
-                 migrations,
-                 on_send);
-    }
-
-    pub fn handler_bootstrap_ack(&mut self, db: &Database, from: NodeId, msg: MsgBootstrapAck) {
-        forward!(self,
-                 VNodeStatus::Ready | VNodeStatus::Zombie,
-                 db,
-                 from,
-                 msg,
-                 MsgBootstrapFin,
-                 migrations,
-                 on_ack);
-    }
-
-    pub fn handler_bootstrap_fin(&mut self, db: &Database, from: NodeId, msg: MsgBootstrapFin) {
-        check_status!(self,
-                      VNodeStatus::Ready | VNodeStatus::Bootstrap | VNodeStatus::Zombie,
-                      db,
-                      from,
-                      msg,
-                      MsgBootstrapFin,
-                      migrations);
-        if let LMEntry::Occupied(mut o) = self.migrations.entry(msg.cookie) {
-            match *o.get_mut() {
-                Migration::Incomming { peer, .. } => {
-                    if msg.result.is_ok() {
-                        self.state.clocks.merge(msg.result.as_ref().unwrap());
-                        self.state.save(db, false);
-                        self.state.storage.sync();
-                        // now we're ready!
-                        self.state.status = VNodeStatus::Ready;
-                        db.dht.promote_pending_node(self.state.num, db.dht.node()).unwrap();
-                        // send it back as a form of ack-ack
-                        db.fabric.send_message(peer, msg).unwrap();
-                    }
-                }
-                Migration::Outgoing { .. } => (),
-            }
-            o.remove();
-        } else {
-            cookie_not_found!(db, from, msg, MsgBootstrapFin, migrations);
-        }
-    }
-
-    pub fn handler_sync_start(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
-        check_status!(self,
-                      VNodeStatus::Ready | VNodeStatus::Zombie,
-                      db,
-                      from,
-                      msg,
-                      MsgSyncFin,
-                      syncs);
-
+    fn create_sync_sender(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
         let cookie = msg.cookie;
-        let target = msg.target;
-        let clock_in_peer = msg.clock_in_peer.clone();
+        let target = msg.target.unwrap();
+        let clock_in_peer = msg.clock_in_peer.clone().unwrap();
         let clock_snapshot = self.state.clocks.get(db.dht.node()).cloned().unwrap_or_default();
 
-        let log_snapshot = if msg.target == db.dht.node() {
+        let log_snapshot = if target == db.dht.node() {
             self.state.log.clone()
         } else {
-            self.state.peers.get(&msg.target).cloned().unwrap_or_default()
+            self.state.peers.get(&target).cloned().unwrap_or_default()
         };
-        let iterator: SyncIteratorFn = if log_snapshot.min_version() <= clock_in_peer.base() {
+        let iterator: IteratorFn = if log_snapshot.min_version() <= clock_in_peer.base() {
             let mut iter = clock_snapshot.delta(&clock_in_peer)
                 .filter_map(move |v| log_snapshot.get(v));
             Box::new(move |storage| {
@@ -641,7 +563,7 @@ impl VNode {
             Box::new(move |_| iter.next())
         };
 
-        let mut sync = Synchronization::Outgoing {
+        let mut sync = Synchronization::SyncSender {
             clock_in_peer: clock_in_peer,
             clock_snapshot: clock_snapshot,
             iterator: iterator,
@@ -649,16 +571,34 @@ impl VNode {
             cookie: cookie,
             peer: from,
             count: 0,
-            target: msg.target,
+            target: target,
         };
         sync.on_start(db, &mut self.state, msg);
 
         assert!(self.syncs.insert(cookie, sync).is_none());
     }
 
+    pub fn handler_sync_start(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
+        check_status!(self,
+                      VNodeStatus::Ready | VNodeStatus::Zombie,
+                      db,
+                      from,
+                      msg,
+                      MsgSyncFin,
+                      syncs);
+
+        if !self.syncs.contains_key(&msg.cookie) {
+            match (msg.target.as_ref(), msg.clock_in_peer.as_ref()) {
+                (None, None) => self.create_bootstrap_sender(db, from, msg),
+                (Some(_), Some(_)) => self.create_sync_sender(db, from, msg),
+                _ => unreachable!(),
+            }
+        }
+    }
+
     pub fn handler_sync_send(&mut self, db: &Database, from: NodeId, msg: MsgSyncSend) {
         forward!(self,
-                 VNodeStatus::Ready | VNodeStatus::Recover,
+                 VNodeStatus::Ready | VNodeStatus::Recover | VNodeStatus::Bootstrap,
                  db,
                  from,
                  msg,
@@ -682,27 +622,27 @@ impl VNode {
         // TODO: need a way to control reverse syncs logic
         // TODO: need a way to promote recover -> ready
         check_status!(self,
-                      VNodeStatus::Ready | VNodeStatus::Recover | VNodeStatus::Zombie,
+                      VNodeStatus::Ready | VNodeStatus::Recover | VNodeStatus::Zombie | VNodeStatus::Bootstrap,
                       db,
                       from,
                       msg,
                       MsgSyncFin,
                       syncs);
-        if let LMEntry::Occupied(mut o) = self.syncs.entry(msg.cookie) {
+        if let HMEntry::Occupied(mut o) = self.syncs.entry(msg.cookie) {
             match *o.get_mut() {
-                Synchronization::Incomming { peer, target, .. } => {
+                Synchronization::SyncReceiver { peer, target, .. } => {
                     if msg.result.is_ok() {
                         self.state
                             .clocks
-                            .entry_or_default(db.dht.node())
                             .join(msg.result.as_ref().unwrap());
-                        self.state.save(db, false);
-                        self.state.storage.sync();
                         // if reverse update status: recover -> ready
-                        if target == db.dht.node() {
+                        if target == db.dht.node() /* FIXME: AND all rev syncs are done */ {
                             assert!(self.state.status == VNodeStatus::Recover);
+                            // self.state.clocks.fast_forward(RECOVER_FAST_FORWARD);
                             self.state.status = VNodeStatus::Ready;
                         }
+                        self.state.save(db, false);
+                        self.state.storage.sync();
                         // send it back as a form of ack-ack
                         db.fabric.send_message(peer, msg).unwrap();
                     } else if target == db.dht.node() {
@@ -710,23 +650,39 @@ impl VNode {
                         unimplemented!();
                     }
                 }
-                Synchronization::Outgoing { ref clock_in_peer, peer, .. } => {
+                Synchronization::SyncSender { /*ref clock_in_peer, peer,*/ .. } => {
                     // TODO: advance to the snapshot base instead? Is it safe to do so?
-                    self.state
-                        .peers
-                        .entry(peer)
-                        .or_insert_with(|| Default::default())
-                        .advance_knowledge(clock_in_peer.base());
+                    // FIXME: this won't happen if we don't get the ack-ack back
+                    // if msg.result.is_ok() {
+                    //     self.state
+                    //         .peers
+                    //         .entry(peer)
+                    //         .or_insert_with(|| Default::default())
+                    //         .advance_knowledge(clock_in_peer.base());
+                    // }
                 }
+                Synchronization::BootstrapReceiver { peer, .. } => {
+                    if msg.result.is_ok() {
+                        self.state.clocks.merge(msg.result.as_ref().unwrap());
+                        self.state.save(db, false);
+                        self.state.storage.sync();
+                        // now we're ready!
+                        self.state.status = VNodeStatus::Ready;
+                        db.dht.promote_pending_node(self.state.num, db.dht.node()).unwrap();
+                        // send it back as a form of ack-ack
+                        db.fabric.send_message(peer, msg).unwrap();
+                    }
+                }
+                Synchronization::BootstrapSender { .. } => (),
             }
             o.remove();
         } else {
-            cookie_not_found!(db, from, msg, MsgSyncFin, syncs);
+            // cookie_not_found!(db, from, msg, MsgSyncFin, syncs);
         }
     }
 
     /// //////
-    pub fn start_migration(&mut self, db: &Database) -> bool {
+    pub fn start_bootstrap(&mut self, db: &Database) -> bool {
         // TODO: clear storage, update state
         let cookie = self.gen_cookie();
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false);
@@ -736,21 +692,16 @@ impl VNode {
                 continue;
             }
             self.state.status = VNodeStatus::Bootstrap;
-            let migration = Migration::Incomming {
+            let bootstrap = Synchronization::BootstrapReceiver {
                 cookie: cookie,
                 peer: node,
                 count: 0,
+                last_touched: time::Instant::now(),
+                starts_sent: 1,
             };
 
-            db.fabric
-                .send_message(node,
-                              MsgBootstrapStart {
-                                  cookie: cookie,
-                                  vnode: self.state.num,
-                              })
-                .unwrap();
-
-            assert!(self.migrations.insert(cookie, migration).is_none());
+            assert!(self.syncs.insert(cookie, bootstrap).is_none());
+            self.syncs.get_mut(&cookie).unwrap().send_start(db, &mut self.state);
             return true;
         }
         false
@@ -770,24 +721,18 @@ impl VNode {
                 node
             };
             let cookie = self.gen_cookie();
-            let clock_in_peer = self.state.clocks.get(node).cloned().unwrap_or_default();
-            let sync = Synchronization::Incomming {
+            let sync = Synchronization::SyncReceiver {
+                clock_in_peer: self.state.clocks.get(node).cloned().unwrap_or_default(),
                 peer: node,
                 cookie: cookie,
                 count: 0,
                 target: target,
+                last_touched: time::Instant::now(),
+                starts_sent: 0,
             };
 
-            db.fabric
-                .send_message(node,
-                              MsgSyncStart {
-                                  cookie: cookie,
-                                  vnode: self.state.num,
-                                  target: target,
-                                  clock_in_peer: clock_in_peer,
-                              })
-                .unwrap();
             assert!(self.syncs.insert(cookie, sync).is_none());
+            self.syncs.get_mut(&cookie).unwrap().send_start(db, &mut self.state);
             result += 1;
         }
         result
@@ -798,16 +743,14 @@ impl Drop for VNode {
     fn drop(&mut self) {
         // clean up any references to the storage
         self.inflight.clear();
-        self.migrations.clear();
         self.syncs.clear();
     }
 }
 
-
 impl VNodeState {
     fn new_empty(num: u16, db: &Database, status: VNodeStatus) -> Self {
-        let storage = db.storage_manager.open(num as i32, true).unwrap();
         db.meta_storage.del(num.to_string().as_bytes());
+        let storage = db.storage_manager.open(num as i32, true).unwrap();
         storage.clear();
 
         VNodeState {
@@ -978,19 +921,68 @@ impl VNodeState {
 }
 
 impl Synchronization {
+    fn send_start(&mut self, db: &Database, state: &mut VNodeState) {
+        let (peer, cookie, target, clock_in_peer) = match *self {
+            Synchronization::SyncReceiver { cookie, peer, target, ref clock_in_peer, ref mut starts_sent, .. } => {
+                *starts_sent += 1;
+                (peer, cookie, Some(target), Some(clock_in_peer.clone()))
+            }
+            Synchronization::BootstrapReceiver { peer, cookie, ref mut starts_sent, .. } => {
+                *starts_sent += 1;
+                (peer, cookie, None, None)
+            }
+            _ => unreachable!(),
+        };
+        db.fabric
+            .send_message(peer,
+                          MsgSyncStart {
+                              cookie: cookie,
+                              vnode: state.num,
+                              target: target,
+                              clock_in_peer: clock_in_peer,
+                          })
+            .unwrap();
+    }
+
+    fn send_fin(&mut self, db: &Database, state: &mut VNodeState) {
+        let (peer, cookie, clocks_snapshot) = match *self {
+            Synchronization::SyncSender { peer, cookie, target, ref clock_snapshot, .. } => {
+                (peer, cookie, BitmappedVersionVector::from_version(target, clock_snapshot.clone()))
+            }
+            Synchronization::BootstrapSender { peer, cookie, ref clocks_snapshot, .. } => {
+                (peer, cookie, clocks_snapshot.clone())
+            }
+            _ => unreachable!(),
+        };
+        db.fabric
+            .send_message(peer,
+                          MsgSyncFin {
+                              cookie: cookie,
+                              vnode: state.num,
+                              result: Ok(clocks_snapshot),
+                          })
+            .unwrap();
+    }
+
     #[inline(never)]
-    fn outgoing_send(&mut self, db: &Database, state: &mut VNodeState) -> bool {
+    fn send_next(&mut self, db: &Database, state: &mut VNodeState) -> bool {
         match *self {
-            Synchronization::Outgoing { peer,
-                                        cookie,
-                                        ref mut iterator,
-                                        ref mut count,
-                                        ref mut inflight,
-                                        ref clock_snapshot,
-                                        .. } => {
+            Synchronization::SyncSender { peer,
+                                          cookie,
+                                          ref mut iterator,
+                                          ref mut count,
+                                          ref mut inflight,
+                                          .. } |
+            Synchronization::BootstrapSender { peer,
+                                               cookie,
+                                               ref mut iterator,
+                                               ref mut count,
+                                               ref mut inflight,
+                                               .. } => {
                 let now = time::Instant::now();
                 let timeout = now + time::Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS);
                 while let Some((seq, &(ref k, ref dcc))) = inflight.touch_expired(now, timeout) {
+                    debug!("resending data for sync {:?}", cookie);
                     db.fabric
                         .send_message(peer,
                                       MsgSyncSend {
@@ -1018,41 +1010,53 @@ impl Synchronization {
 
                         *count += 1;
                     } else {
-                        debug!("[{}] synchronization of {} is done", db.dht.node(), state.num);
-                        db.fabric
-                            .send_message(peer,
-                                          MsgSyncFin {
-                                              cookie: cookie,
-                                              vnode: state.num,
-                                              result: Ok(clock_snapshot.clone()),
-                                          })
-                            .unwrap();
                         break;
                     }
                 }
-                false
+                if !inflight.is_empty() {
+                    return false;
+                }
             }
             _ => unreachable!(),
         }
+        self.send_fin(db, state);
+        false
+    }
+
+    fn on_cancel(&mut self, _db: &Database, _state: &mut VNodeState) -> bool {
+        unimplemented!()
     }
 
     fn on_tick(&mut self, db: &Database, state: &mut VNodeState) -> bool {
         match *self {
-            Synchronization::Outgoing { .. } => self.outgoing_send(db, state),
-            _ => false,
+            Synchronization::SyncSender { .. } |
+            Synchronization::BootstrapSender { .. } => self.send_next(db, state),
+            Synchronization::SyncReceiver { last_touched, cookie, .. } |
+            Synchronization::BootstrapReceiver { last_touched, cookie, .. } => {
+                if last_touched.elapsed().as_secs() > SYNC_INFLIGHT_TIMEOUT_MS {
+                    debug!("resending start for sync {:?}", cookie);
+                    self.send_start(db, state);
+                }
+                false
+            }
         }
     }
 
     fn on_start(&mut self, db: &Database, state: &mut VNodeState, _msg: MsgSyncStart) -> bool {
         match *self {
-            Synchronization::Outgoing { .. } => self.outgoing_send(db, state),
+            Synchronization::SyncSender { .. } => self.send_next(db, state),
+            Synchronization::BootstrapSender { .. } => self.send_next(db, state),
             _ => unreachable!(),
         }
     }
 
     fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncSend) -> bool {
         match *self {
-            Synchronization::Incomming { peer, ref mut count, .. } => {
+            Synchronization::SyncReceiver { peer, ref mut count, ref mut last_touched, .. } |
+            Synchronization::BootstrapReceiver { peer,
+                                                 ref mut count,
+                                                 ref mut last_touched,
+                                                 .. } => {
                 state.storage_set_remote(db, &msg.key, msg.container);
 
                 db.fabric
@@ -1065,6 +1069,7 @@ impl Synchronization {
                     .unwrap();
 
                 *count += 1;
+                *last_touched = time::Instant::now();
                 false
             }
             _ => unreachable!(),
@@ -1073,116 +1078,12 @@ impl Synchronization {
 
     fn on_ack(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncAck) -> bool {
         match *self {
-            Synchronization::Outgoing { ref mut inflight, .. } => {
+            Synchronization::SyncSender { ref mut inflight, .. } |
+            Synchronization::BootstrapSender { ref mut inflight, .. } => {
                 inflight.remove(&msg.seq);
-            },
-            _ => unreachable!(),
-        }
-        self.outgoing_send(db, state)
-    }
-}
-
-impl Migration {
-    #[inline(never)]
-    fn outgoing_send(&mut self, db: &Database, state: &mut VNodeState) -> bool {
-        match *self {
-            Migration::Outgoing { peer,
-                                  cookie,
-                                  ref mut iterator,
-                                  ref mut inflight,
-                                  ref mut count,
-                                  ref clocks_snapshot } => {
-                let now = time::Instant::now();
-                let timeout = now + time::Duration::from_millis(BOOTSTRAP_INFLIGHT_TIMEOUT_MS);
-                while let Some((seq, &(ref k, ref dcc))) = inflight.touch_expired(now, timeout) {
-                    db.fabric
-                        .send_message(peer,
-                                      MsgBootstrapSend {
-                                          cookie: cookie,
-                                          vnode: state.num,
-                                          seq: seq,
-                                          key: k.clone(),
-                                          container: dcc.clone(),
-                                      })
-                        .unwrap();
-                }
-                while inflight.len() < BOOTSTRAP_INFLIGHT_MAX {
-                    if let Some((k, v)) = iterator.iter().next() {
-                        let dcc: DottedCausalContainer<Vec<u8>> = bincode_serde::deserialize(v)
-                            .unwrap();
-                        db.fabric
-                            .send_message(peer,
-                                          MsgBootstrapSend {
-                                              cookie: cookie,
-                                              vnode: state.num,
-                                              seq: *count,
-                                              key: k.into(),
-                                              container: dcc.clone(),
-                                          })
-                            .unwrap();
-                        inflight.insert(*count, (k.into(), dcc), timeout);
-                        *count += 1;
-                    } else {
-                        debug!("[{}] sync of {} is done", db.dht.node(), state.num);
-                        db.fabric
-                            .send_message(peer,
-                                          MsgBootstrapFin {
-                                              cookie: cookie,
-                                              vnode: state.num,
-                                              result: Ok(clocks_snapshot.clone()),
-                                          })
-                            .unwrap();
-                        break;
-                    }
-                }
-                false
             }
             _ => unreachable!(),
         }
-    }
-
-    fn on_tick(&mut self, db: &Database, state: &mut VNodeState) -> bool {
-        match *self {
-            Migration::Outgoing { .. } => self.outgoing_send(db, state),
-            _ => false,
-        }
-    }
-
-    fn on_start(&mut self, db: &Database, state: &mut VNodeState, _msg: MsgBootstrapStart) -> bool {
-        match *self {
-            Migration::Outgoing { .. } => self.outgoing_send(db, state),
-            _ => unreachable!(),
-        }
-    }
-
-    fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgBootstrapSend) -> bool {
-        match *self {
-            Migration::Incomming { peer, ref mut count, .. } => {
-                state.storage_set_remote(db, &msg.key, msg.container);
-
-                db.fabric
-                    .send_message(peer,
-                                  MsgBootstrapAck {
-                                      cookie: msg.cookie,
-                                      vnode: state.num,
-                                      seq: msg.seq,
-                                  })
-                    .unwrap();
-
-                *count += 1;
-                false
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    fn on_ack(&mut self, db: &Database, state: &mut VNodeState, msg: MsgBootstrapAck) -> bool {
-        match *self {
-            Migration::Outgoing { ref mut inflight, .. } => {
-                inflight.remove(&msg.seq);
-            },
-            _ => unreachable!(),
-        }
-        self.outgoing_send(db, state)
+        self.send_next(db, state)
     }
 }

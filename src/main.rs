@@ -40,7 +40,7 @@ mod vnode;
 mod resp;
 mod server;
 mod workers;
-mod commands;
+mod command;
 
 #[cfg(not(test))]
 fn main() {

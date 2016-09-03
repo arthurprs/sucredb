@@ -3,6 +3,18 @@ use std::hash::Hash;
 use std::cmp::Ordering;
 use std::ops::{Deref, DerefMut};
 
+pub struct InFlightOption<V, T: Ord + Copy>(Option<(V, T)>);
+
+impl<V, T: Ord + Copy> InFlightOption<V, T> {
+    pub fn new(v: V, expire: T) -> Self {
+        InFlightOption(Some((v, expire)))
+    }
+
+    pub fn pop_expired(&mut self, ) -> Option<V> {
+        unimplemented!()
+    }
+}
+
 #[derive(Debug)]
 pub struct InFlightMap<K: Hash + Eq + Copy, V, T: Ord + Copy> {
     map: HashMap<K, V>,
@@ -10,39 +22,39 @@ pub struct InFlightMap<K: Hash + Eq + Copy, V, T: Ord + Copy> {
 }
 
 impl<K: Hash + Eq + Copy, V, T: Ord + Copy> InFlightMap<K, V, T> {
-    pub fn new() -> InFlightMap<K, V, T> {
+    pub fn new() -> Self {
         InFlightMap {
             map: Default::default(),
             heap: Default::default(),
         }
     }
 
-    pub fn insert(&mut self, key: K, value: V, timeout: T) -> Option<V> {
-        self.heap.push(Pair(timeout, key));
+    pub fn insert(&mut self, key: K, value: V, expire: T) -> Option<V> {
+        self.heap.push(Pair(expire, key));
         self.map.insert(key, value)
     }
 
     pub fn pop_expired(&mut self, now: T) -> Option<(K, V)> {
         loop {
-            match self.heap.peek() {
-                Some(tk) if now >= tk.0 => (),
+            let key = match self.heap.peek() {
+                Some(&Pair(e, k)) if now >= e => k,
                 _ => return None,
-            }
-            let key = self.heap.pop().unwrap().1;
+            };
+            self.heap.pop();
             if let Some(v) = self.map.remove(&key) {
                 return Some((key, v));
             }
         }
     }
 
-    pub fn touch_expired(&mut self, now: T, timeout: T) -> Option<(K, &V)> {
+    pub fn touch_expired(&mut self, now: T, expire: T) -> Option<(K, &V)> {
         loop {
             let key = match self.heap.peek() {
-                Some(tk) if now >= tk.0 => tk.1,
+                Some(&Pair(e, k)) if now >= e => k,
                 _ => return None,
             };
             if let Some(v) = self.map.get(&key) {
-                self.heap.replace(Pair(timeout, key));
+                self.heap.replace(Pair(expire, key));
                 return Some((key, &v));
             } else {
                 self.heap.pop();

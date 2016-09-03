@@ -6,14 +6,15 @@
 * [x] rebuild vnode state on startup (after crash)
 * [x] when joining ask nodes for their version of the log
 * [x] resp server
-* [x] convert resp into commands to the database
+* [x] convert resp into command to the database
 * [x] send responses to the resp server
 * [ ] proper resp protocol
 * [ ] support specifying R/W for the request
 * [x] worker threads
-* [ ] handling timeouts for crud
+* [x] handling timeouts for crud
 * [x] generic sync normal/reverse
-* [ ] resending sync/bootstrap data
+* [x] resending sync/bootstrap data from sender side
+* [ ] resending sync/bootstrap data from receiver side
 * [ ] generic sync/bootstrap code?
 * [x] when log isn't enough to satisfy sync, iter the database sending necessary dots
 * [x] propagate dht notifications to vnodes and take actions

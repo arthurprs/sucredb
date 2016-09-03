@@ -4,7 +4,6 @@ use database::*;
 #[derive(Debug, Copy, Clone)]
 pub enum FabricMsgType {
     Crud,
-    Bootstrap,
     Synch,
     Unknown,
 }
@@ -23,10 +22,6 @@ pub enum FabricMsg {
     SetAck(MsgSetAck),
     RemoteSet(MsgRemoteSet),
     RemoteSetAck(MsgRemoteSetAck),
-    BootstrapStart(MsgBootstrapStart),
-    BootstrapSend(MsgBootstrapSend),
-    BootstrapAck(MsgBootstrapAck),
-    BootstrapFin(MsgBootstrapFin),
     SyncStart(MsgSyncStart),
     SyncSend(MsgSyncSend),
     SyncAck(MsgSyncAck),
@@ -52,10 +47,6 @@ impl FabricMsg {
             FabricMsg::SetAck(..) => FabricMsgType::Crud,
             FabricMsg::RemoteSet(..) => FabricMsgType::Crud,
             FabricMsg::RemoteSetAck(..) => FabricMsgType::Crud,
-            FabricMsg::BootstrapStart(..) => FabricMsgType::Bootstrap,
-            FabricMsg::BootstrapSend(..) => FabricMsgType::Bootstrap,
-            FabricMsg::BootstrapAck(..) => FabricMsgType::Bootstrap,
-            FabricMsg::BootstrapFin(..) => FabricMsgType::Bootstrap,
             FabricMsg::SyncStart(..) => FabricMsgType::Synch,
             FabricMsg::SyncSend(..) => FabricMsgType::Synch,
             FabricMsg::SyncAck(..) => FabricMsgType::Synch,
@@ -111,47 +102,18 @@ pub struct MsgSetAck {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct MsgBootstrapStart {
-    pub vnode: VNodeId,
-    pub cookie: Cookie,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MsgBootstrapFin {
-    pub vnode: VNodeId,
-    pub cookie: Cookie,
-    pub result: Result<BitmappedVersionVector, FabricMsgError>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MsgBootstrapSend {
-    pub vnode: VNodeId,
-    pub cookie: Cookie,
-    pub seq: u64,
-    pub key: Vec<u8>,
-    pub container: DottedCausalContainer<Vec<u8>>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MsgBootstrapAck {
-    pub vnode: VNodeId,
-    pub cookie: Cookie,
-    pub seq: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSyncStart {
     pub vnode: VNodeId,
     pub cookie: Cookie,
-    pub target: NodeId,
-    pub clock_in_peer: BitmappedVersion,
+    pub target: Option<NodeId>,
+    pub clock_in_peer: Option<BitmappedVersion>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSyncFin {
     pub vnode: VNodeId,
     pub cookie: Cookie,
-    pub result: Result<BitmappedVersion, FabricMsgError>,
+    pub result: Result<BitmappedVersionVector, FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -186,12 +148,6 @@ impl_into!(Set, MsgSet);
 impl_into!(SetAck, MsgSetAck);
 impl_into!(RemoteSet, MsgRemoteSet);
 impl_into!(RemoteSetAck, MsgRemoteSetAck);
-
-impl_into!(BootstrapAck, MsgBootstrapAck);
-impl_into!(BootstrapSend, MsgBootstrapSend);
-impl_into!(BootstrapFin, MsgBootstrapFin);
-impl_into!(BootstrapStart, MsgBootstrapStart);
-
 impl_into!(SyncAck, MsgSyncAck);
 impl_into!(SyncSend, MsgSyncSend);
 impl_into!(SyncFin, MsgSyncFin);

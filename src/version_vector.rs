@@ -152,6 +152,12 @@ impl BitmappedVersionVector {
         BitmappedVersionVector(Default::default())
     }
 
+    pub fn from_version(id: Id, bv: BitmappedVersion) -> Self {
+        let mut bvv = Self::new();
+        bvv.0.insert(id, bv);
+        bvv
+    }
+
     pub fn add(&mut self, id: Id, version: Version) {
         self.0.entry(id).or_insert_with(|| Default::default()).add(version);
     }
@@ -204,20 +210,23 @@ impl BitmappedVersionVector {
         }
     }
 
-    pub fn reset(&mut self) {
-        for (_, bitmap_version) in &mut self.0 {
-            bitmap_version.bitmap = ramp::Int::zero();
-        }
+    pub fn iter(&self) -> linear_map::Iter<Id, BitmappedVersion> {
+        self.0.iter()
     }
-
-    pub fn clone_base(&self) -> Self {
-        let mut new = Self::new();
-        new.0.reserve(self.0.len());
-        for (&id, bitmap_version) in &self.0 {
-            new.0.insert(id, BitmappedVersion::new(bitmap_version.base, 0));
-        }
-        new
-    }
+    // pub fn reset(&mut self) {
+    //     for (_, bitmap_version) in &mut self.0 {
+    //         bitmap_version.bitmap = ramp::Int::zero();
+    //     }
+    // }
+    //
+    // pub fn clone_base(&self) -> Self {
+    //     let mut new = Self::new();
+    //     new.0.reserve(self.0.len());
+    //     for (&id, bitmap_version) in &self.0 {
+    //         new.0.insert(id, BitmappedVersion::new(bitmap_version.base, 0));
+    //     }
+    //     new
+    // }
 }
 
 impl VersionVector {
