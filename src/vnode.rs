@@ -677,12 +677,13 @@ impl VNode {
             }
             o.remove();
         } else {
+            // FIXME: depending on the message we might want to reply
             // cookie_not_found!(db, from, msg, MsgSyncFin, syncs);
         }
     }
 
     /// //////
-    pub fn start_bootstrap(&mut self, db: &Database) -> bool {
+    pub fn start_bootstrap(&mut self, db: &Database) {
         // TODO: clear storage, update state
         let cookie = self.gen_cookie();
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false);
@@ -702,13 +703,14 @@ impl VNode {
 
             assert!(self.syncs.insert(cookie, bootstrap).is_none());
             self.syncs.get_mut(&cookie).unwrap().send_start(db, &mut self.state);
-            return true;
+            return;
         }
-        false
+        // TODO: mark as ready?
+        unimplemented!();
     }
 
-    pub fn start_sync(&mut self, db: &Database, reverse: bool) -> usize {
-        let mut result = 0;
+    pub fn start_sync(&mut self, db: &Database, reverse: bool) {
+        let mut started = 0;
         let nodes = db.dht.nodes_for_vnode(self.state.num, false);
         for node in nodes {
             if node == db.dht.node() {
@@ -733,9 +735,12 @@ impl VNode {
 
             assert!(self.syncs.insert(cookie, sync).is_none());
             self.syncs.get_mut(&cookie).unwrap().send_start(db, &mut self.state);
-            result += 1;
+            started += 1;
         }
-        result
+        if reverse && started == 0 {
+            // FIXME: mark as ready?
+            unimplemented!();
+        }
     }
 }
 
