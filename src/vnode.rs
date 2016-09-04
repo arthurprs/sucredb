@@ -15,8 +15,8 @@ use rand::{Rng, thread_rng};
 const PEER_LOG_SIZE: usize = 1024 * 1024 / (32 + 16);
 
 const RECOVER_FAST_FORWARD: Version = 1_000_000;
-const SYNC_INFLIGHT_MAX: usize = 1;
-const SYNC_INFLIGHT_TIMEOUT_MS: u64 = 30000;
+const SYNC_INFLIGHT_MAX: usize = 10;
+const SYNC_INFLIGHT_TIMEOUT_MS: u64 = 3000;
 const START_RETRY_MAX: u32 = 3;
 const START_TIMEOUT_MS: u64 = 3000;
 
@@ -30,7 +30,7 @@ pub enum VNodeStatus {
     Bootstrap,
     // after another node takes over this vnode it stays as zombie until syncs are completed, etc.
     Zombie,
-    // no actual date is present (metadata is retained though)
+    // no actual data is present (metadata is retained though)
     Absent,
 }
 
@@ -94,7 +94,7 @@ enum Synchronization {
         peer: NodeId,
         target: NodeId,
         count: u64,
-        last_touched: time::Instant,
+        last_receive: time::Instant,
         starts_sent: u32,
     },
     BootstrapSender {
@@ -109,7 +109,7 @@ enum Synchronization {
         cookie: Cookie,
         peer: NodeId,
         count: u64,
-        last_touched: time::Instant,
+        last_receive: time::Instant,
         starts_sent: u32,
     },
 }
@@ -129,10 +129,10 @@ impl VNodePeer {
         }
     }
 
-    fn advance_knowledge(&mut self, until: Version) {
-        debug_assert!(until >= self.knowledge);
-        self.knowledge = until;
-    }
+    // fn advance_knowledge(&mut self, until: Version) {
+    //     debug_assert!(until >= self.knowledge);
+    //     self.knowledge = until;
+    // }
 
     fn log(&mut self, version: Version, key: Vec<u8>) {
         let min = self.min_version();
@@ -156,6 +156,15 @@ impl VNodePeer {
 
     fn min_version(&self) -> Version {
         self.log.keys().next().cloned().unwrap_or(0)
+    }
+}
+
+macro_rules! assert_any {
+    ($value: expr, $($status:pat)|*) => {
+        match $value {
+            $($status)|* => (),
+            _ => panic!("{:?} is not any of {}", $value, stringify!($($status)|*))
+        }
     }
 }
 
@@ -230,7 +239,7 @@ impl VNode {
         state.save(db, false);
 
         if is_create {
-            assert_eq!(status, VNodeStatus::Ready, "status must be ready when creating");
+            assert_eq!(status, VNodeStatus::Ready, "Status must be ready when creating");
         }
 
         let mut vnode = VNode {
@@ -290,7 +299,7 @@ impl VNode {
             (VNodeStatus::Ready, VNodeStatus::Absent) |
             (VNodeStatus::Bootstrap, VNodeStatus::Absent) |
             (VNodeStatus::Recover, VNodeStatus::Absent) => {
-                self.state.status = VNodeStatus::Zombie;
+                self.state.set_status(VNodeStatus::Zombie);
                 // cancel incomming syncs
                 let cancels = self.syncs
                     .iter()
@@ -318,7 +327,7 @@ impl VNode {
             (VNodeStatus::Zombie, VNodeStatus::Absent) => (),
             (VNodeStatus::Zombie, VNodeStatus::Ready) => {
                 // fast-recomission!
-                self.state.status = VNodeStatus::Ready;
+                self.state.set_status(VNodeStatus::Ready);
             }
             (VNodeStatus::Absent, VNodeStatus::Ready) => {
                 // recomission by bootstrap
@@ -495,89 +504,7 @@ impl VNode {
         self.process_set(db, msg.cookie, msg.result.is_ok());
     }
 
-    // BOOTSTRAP
-    fn create_bootstrap_sender(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
-        let cookie = msg.cookie;
-        let mut storage_iterator = self.state.storage.iterator();
-        let mut iter = (0..)
-            .map(move |_| {
-                storage_iterator.iter().next().map(|(k, v)| {
-                    (k.into(),
-                     bincode_serde::deserialize::<DottedCausalContainer<Vec<u8>>>(&v).unwrap())
-                })
-            })
-            .take_while(|o| o.is_some())
-            .map(|o| o.unwrap());
-
-        let mut bootstrap = Synchronization::BootstrapSender {
-            cookie: cookie,
-            clocks_snapshot: self.state.clocks.clone(),
-            iterator: Box::new(move |_| iter.next()),
-            inflight: InFlightMap::new(),
-            peer: from,
-            count: 0,
-        };
-        bootstrap.on_start(db, &mut self.state, msg);
-
-        assert!(self.syncs.insert(cookie, bootstrap).is_none());
-    }
-
-    fn create_sync_sender(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
-        let cookie = msg.cookie;
-        let target = msg.target.unwrap();
-        let clock_in_peer = msg.clock_in_peer.clone().unwrap();
-        let clock_snapshot = self.state.clocks.get(db.dht.node()).cloned().unwrap_or_default();
-
-        let log_snapshot = if target == db.dht.node() {
-            self.state.log.clone()
-        } else {
-            self.state.peers.get(&target).cloned().unwrap_or_default()
-        };
-        let iterator: IteratorFn = if log_snapshot.min_version() <= clock_in_peer.base() {
-            let mut iter = clock_snapshot.delta(&clock_in_peer)
-                .filter_map(move |v| log_snapshot.get(v));
-            Box::new(move |storage| {
-                iter.by_ref()
-                    .filter_map(|k| {
-                        storage.get_vec(&k)
-                            .map(|v| (k, bincode_serde::deserialize(&v).unwrap()))
-                    })
-                    .next()
-            })
-        } else {
-            let mut storage_iterator = self.state.storage.iterator();
-            let clock_in_peer_base = clock_in_peer.base();
-            let mut iter = (0..)
-                .map(move |_| {
-                    storage_iterator.iter().next().map(|(k, v)| {
-                        (k.into(),
-                         bincode_serde::deserialize::<DottedCausalContainer<Vec<u8>>>(&v).unwrap())
-                    })
-                })
-                .take_while(|o| o.is_some())
-                .map(|o| o.unwrap())
-                .filter(move |&(_, ref dcc)| {
-                    dcc.versions()
-                        .any(|&(node, version)| node == target && version > clock_in_peer_base)
-                });
-            Box::new(move |_| iter.next())
-        };
-
-        let mut sync = Synchronization::SyncSender {
-            clock_in_peer: clock_in_peer,
-            clock_snapshot: clock_snapshot,
-            iterator: iterator,
-            inflight: InFlightMap::new(),
-            cookie: cookie,
-            peer: from,
-            count: 0,
-            target: target,
-        };
-        sync.on_start(db, &mut self.state, msg);
-
-        assert!(self.syncs.insert(cookie, sync).is_none());
-    }
-
+    // SYNC
     pub fn handler_sync_start(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
         check_status!(self,
                       VNodeStatus::Ready | VNodeStatus::Zombie,
@@ -587,12 +514,19 @@ impl VNode {
                       MsgSyncFin,
                       syncs);
 
-        if !self.syncs.contains_key(&msg.cookie) {
-            match (msg.target.as_ref(), msg.clock_in_peer.as_ref()) {
-                (None, None) => self.create_bootstrap_sender(db, from, msg),
-                (Some(_), Some(_)) => self.create_sync_sender(db, from, msg),
+        let cookie = msg.cookie;
+        if !self.syncs.contains_key(&cookie) {
+            let sync = match (msg.target.as_ref(), msg.clock_in_peer.as_ref()) {
+                (None, None) => {
+                    Synchronization::new_bootstrap_sender(db, &mut self.state, from, msg)
+                }
+                (Some(_), Some(_)) => {
+                    Synchronization::new_sync_sender(db, &mut self.state, from, msg)
+                }
                 _ => unreachable!(),
-            }
+            };
+            self.syncs.insert(cookie, sync);
+            self.syncs.get_mut(&cookie).unwrap().on_start(db, &mut self.state);
         }
     }
 
@@ -622,7 +556,8 @@ impl VNode {
         // TODO: need a way to control reverse syncs logic
         // TODO: need a way to promote recover -> ready
         check_status!(self,
-                      VNodeStatus::Ready | VNodeStatus::Recover | VNodeStatus::Zombie | VNodeStatus::Bootstrap,
+                      VNodeStatus::Ready | VNodeStatus::Recover | VNodeStatus::Zombie |
+                      VNodeStatus::Bootstrap,
                       db,
                       from,
                       msg,
@@ -639,7 +574,7 @@ impl VNode {
                         if target == db.dht.node() /* FIXME: AND all rev syncs are done */ {
                             assert!(self.state.status == VNodeStatus::Recover);
                             // self.state.clocks.fast_forward(RECOVER_FAST_FORWARD);
-                            self.state.status = VNodeStatus::Ready;
+                            self.state.set_status(VNodeStatus::Ready);
                         }
                         self.state.save(db, false);
                         self.state.storage.sync();
@@ -667,7 +602,7 @@ impl VNode {
                         self.state.save(db, false);
                         self.state.storage.sync();
                         // now we're ready!
-                        self.state.status = VNodeStatus::Ready;
+                        self.state.set_status(VNodeStatus::Ready);
                         db.dht.promote_pending_node(self.state.num, db.dht.node()).unwrap();
                         // send it back as a form of ack-ack
                         db.fabric.send_message(peer, msg).unwrap();
@@ -678,13 +613,13 @@ impl VNode {
             o.remove();
         } else {
             // FIXME: depending on the message we might want to reply
-            // cookie_not_found!(db, from, msg, MsgSyncFin, syncs);
         }
     }
 
     /// //////
     pub fn start_bootstrap(&mut self, db: &Database) {
-        // TODO: clear storage, update state
+        // TODO: clear storage
+        assert_any!(self.state.status, VNodeStatus::Bootstrap | VNodeStatus::Absent);
         let cookie = self.gen_cookie();
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false);
         thread_rng().shuffle(&mut nodes);
@@ -692,24 +627,29 @@ impl VNode {
             if node == db.dht.node() {
                 continue;
             }
-            self.state.status = VNodeStatus::Bootstrap;
+            self.state.set_status(VNodeStatus::Bootstrap);
             let bootstrap = Synchronization::BootstrapReceiver {
                 cookie: cookie,
                 peer: node,
                 count: 0,
-                last_touched: time::Instant::now(),
-                starts_sent: 1,
+                last_receive: time::Instant::now(),
+                starts_sent: 0,
             };
 
             assert!(self.syncs.insert(cookie, bootstrap).is_none());
             self.syncs.get_mut(&cookie).unwrap().send_start(db, &mut self.state);
             return;
         }
-        // TODO: mark as ready?
-        unimplemented!();
+        self.state.set_status(VNodeStatus::Ready);
     }
 
     pub fn start_sync(&mut self, db: &Database, reverse: bool) {
+        if reverse {
+            assert_eq!(self.state.status, VNodeStatus::Recover,
+                "Status must be Reverse before starting a reverse sync");
+        } else {
+            assert_any!(self.state.status, VNodeStatus::Ready | VNodeStatus::Zombie);
+        }
         let mut started = 0;
         let nodes = db.dht.nodes_for_vnode(self.state.num, false);
         for node in nodes {
@@ -717,7 +657,6 @@ impl VNode {
                 continue;
             }
             let target = if reverse {
-                self.state.status = VNodeStatus::Recover;
                 db.dht.node()
             } else {
                 node
@@ -729,7 +668,7 @@ impl VNode {
                 cookie: cookie,
                 count: 0,
                 target: target,
-                last_touched: time::Instant::now(),
+                last_receive: time::Instant::now(),
                 starts_sent: 0,
             };
 
@@ -738,8 +677,7 @@ impl VNode {
             started += 1;
         }
         if reverse && started == 0 {
-            // FIXME: mark as ready?
-            unimplemented!();
+            self.state.set_status(VNodeStatus::Ready);
         }
     }
 }
@@ -753,6 +691,11 @@ impl Drop for VNode {
 }
 
 impl VNodeState {
+    fn set_status(&mut self, new: VNodeStatus) {
+        debug!("VNode {} status change {:?} -> {:?}", self.num, self.status, new);
+        self.status = new;
+    }
+
     fn new_empty(num: u16, db: &Database, status: VNodeStatus) -> Self {
         db.meta_storage.del(num.to_string().as_bytes());
         let storage = db.storage_manager.open(num as i32, true).unwrap();
@@ -774,7 +717,7 @@ impl VNodeState {
         let saved_state_opt = db.meta_storage
             .get(num.to_string().as_bytes(), |bytes| bincode_serde::deserialize(bytes).unwrap());
         if saved_state_opt.is_none() {
-            info!("No saved state, falling back to default");
+            info!("No saved state");
             return Self::new_empty(num,
                                    db,
                                    if status == VNodeStatus::Ready && !is_create {
@@ -803,9 +746,7 @@ impl VNodeState {
             let mut iter = storage.iterator();
             let mut count = 0;
             for (k, v) in iter.iter() {
-                // FIXME: optimize?
                 let dcc: DottedCausalContainer<Vec<u8>> = bincode_serde::deserialize(v).unwrap();
-                warn!("{:?}", dcc);
                 dcc.add_to_bvv(&mut clocks);
                 for &(node, version) in dcc.versions() {
                     if node == this_node {
@@ -818,12 +759,10 @@ impl VNodeState {
                 }
                 count += 1;
                 if count % 1000 == 0 {
-                    debug!("Processed {} keys", count)
+                    debug!("Recovered {} keys", count)
                 }
             }
-            if count % 1000 != 0 {
-                debug!("Processed {} keys", count)
-            }
+            debug!("Recovered {} keys in total", count);
         }
 
         VNodeState {
@@ -926,9 +865,92 @@ impl VNodeState {
 }
 
 impl Synchronization {
+    fn new_bootstrap_sender(_db: &Database, state: &mut VNodeState, from: NodeId, msg: MsgSyncStart)
+                            -> Self {
+        let cookie = msg.cookie;
+        let mut storage_iterator = state.storage.iterator();
+        let mut iter = (0..)
+            .map(move |_| {
+                storage_iterator.iter().next().map(|(k, v)| {
+                    (k.into(),
+                     bincode_serde::deserialize::<DottedCausalContainer<Vec<u8>>>(&v).unwrap())
+                })
+            })
+            .take_while(|o| o.is_some())
+            .map(|o| o.unwrap());
+
+        Synchronization::BootstrapSender {
+            cookie: cookie,
+            clocks_snapshot: state.clocks.clone(),
+            iterator: Box::new(move |_| iter.next()),
+            inflight: InFlightMap::new(),
+            peer: from,
+            count: 0,
+        }
+    }
+
+    fn new_sync_sender(db: &Database, state: &mut VNodeState, from: NodeId, msg: MsgSyncStart)
+                       -> Self {
+        let cookie = msg.cookie;
+        let target = msg.target.unwrap();
+        let clock_in_peer = msg.clock_in_peer.clone().unwrap();
+        let clock_snapshot = state.clocks.get(db.dht.node()).cloned().unwrap_or_default();
+
+        let log_snapshot = if target == db.dht.node() {
+            state.log.clone()
+        } else {
+            state.peers.get(&target).cloned().unwrap_or_default()
+        };
+        let iterator: IteratorFn = if log_snapshot.min_version() <= clock_in_peer.base() {
+            let mut iter = clock_snapshot.delta(&clock_in_peer)
+                .filter_map(move |v| log_snapshot.get(v));
+            Box::new(move |storage| {
+                iter.by_ref()
+                    .filter_map(|k| {
+                        storage.get_vec(&k)
+                            .map(|v| (k, bincode_serde::deserialize(&v).unwrap()))
+                    })
+                    .next()
+            })
+        } else {
+            let mut storage_iterator = state.storage.iterator();
+            let clock_in_peer_base = clock_in_peer.base();
+            let mut iter = (0..)
+                .map(move |_| {
+                    storage_iterator.iter().next().map(|(k, v)| {
+                        (k.into(),
+                         bincode_serde::deserialize::<DottedCausalContainer<Vec<u8>>>(&v).unwrap())
+                    })
+                })
+                .take_while(|o| o.is_some())
+                .map(|o| o.unwrap())
+                .filter(move |&(_, ref dcc)| {
+                    dcc.versions()
+                        .any(|&(node, version)| node == target && version > clock_in_peer_base)
+                });
+            Box::new(move |_| iter.next())
+        };
+
+        Synchronization::SyncSender {
+            clock_in_peer: clock_in_peer,
+            clock_snapshot: clock_snapshot,
+            iterator: iterator,
+            inflight: InFlightMap::new(),
+            cookie: cookie,
+            peer: from,
+            count: 0,
+            target: target,
+        }
+    }
+
     fn send_start(&mut self, db: &Database, state: &mut VNodeState) {
         let (peer, cookie, target, clock_in_peer) = match *self {
-            Synchronization::SyncReceiver { cookie, peer, target, ref clock_in_peer, ref mut starts_sent, .. } => {
+            Synchronization::SyncReceiver { cookie,
+                                            peer,
+                                            target,
+                                            ref clock_in_peer,
+                                            ref mut starts_sent,
+                                            .. } => {
                 *starts_sent += 1;
                 (peer, cookie, Some(target), Some(clock_in_peer.clone()))
             }
@@ -949,7 +971,7 @@ impl Synchronization {
             .unwrap();
     }
 
-    fn send_fin(&mut self, db: &Database, state: &mut VNodeState) {
+    fn send_success_fin(&mut self, db: &Database, state: &mut VNodeState) {
         let (peer, cookie, clocks_snapshot) = match *self {
             Synchronization::SyncSender { peer, cookie, target, ref clock_snapshot, .. } => {
                 (peer, cookie, BitmappedVersionVector::from_version(target, clock_snapshot.clone()))
@@ -969,7 +991,6 @@ impl Synchronization {
             .unwrap();
     }
 
-    #[inline(never)]
     fn send_next(&mut self, db: &Database, state: &mut VNodeState) -> bool {
         match *self {
             Synchronization::SyncSender { peer,
@@ -1012,7 +1033,6 @@ impl Synchronization {
                                           })
                             .unwrap();
                         inflight.insert(*count, (k, dcc), timeout);
-
                         *count += 1;
                     } else {
                         break;
@@ -1024,7 +1044,10 @@ impl Synchronization {
             }
             _ => unreachable!(),
         }
-        self.send_fin(db, state);
+        // if we get here, inflight is empty and we need to send the success fin
+        // FIXME: check when we sent the last one
+        // FIXME: need to fail at some point
+        self.send_success_fin(db, state);
         false
     }
 
@@ -1036,9 +1059,11 @@ impl Synchronization {
         match *self {
             Synchronization::SyncSender { .. } |
             Synchronization::BootstrapSender { .. } => self.send_next(db, state),
-            Synchronization::SyncReceiver { last_touched, cookie, .. } |
-            Synchronization::BootstrapReceiver { last_touched, cookie, .. } => {
-                if last_touched.elapsed().as_secs() > SYNC_INFLIGHT_TIMEOUT_MS {
+            Synchronization::SyncReceiver { last_receive, cookie, count, .. } |
+            Synchronization::BootstrapReceiver { last_receive, cookie, count, .. } => {
+                if count == 0 && last_receive.elapsed() > time::Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
+                    // FIXME: need to fail at some point
+                    // FIXME: check when we sent the last one
                     debug!("resending start for sync {:?}", cookie);
                     self.send_start(db, state);
                 }
@@ -1047,7 +1072,7 @@ impl Synchronization {
         }
     }
 
-    fn on_start(&mut self, db: &Database, state: &mut VNodeState, _msg: MsgSyncStart) -> bool {
+    fn on_start(&mut self, db: &Database, state: &mut VNodeState) -> bool {
         match *self {
             Synchronization::SyncSender { .. } => self.send_next(db, state),
             Synchronization::BootstrapSender { .. } => self.send_next(db, state),
@@ -1057,10 +1082,10 @@ impl Synchronization {
 
     fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncSend) -> bool {
         match *self {
-            Synchronization::SyncReceiver { peer, ref mut count, ref mut last_touched, .. } |
+            Synchronization::SyncReceiver { peer, ref mut count, ref mut last_receive, .. } |
             Synchronization::BootstrapReceiver { peer,
                                                  ref mut count,
-                                                 ref mut last_touched,
+                                                 ref mut last_receive,
                                                  .. } => {
                 state.storage_set_remote(db, &msg.key, msg.container);
 
@@ -1074,7 +1099,7 @@ impl Synchronization {
                     .unwrap();
 
                 *count += 1;
-                *last_touched = time::Instant::now();
+                *last_receive = time::Instant::now();
                 false
             }
             _ => unreachable!(),

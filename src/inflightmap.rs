@@ -10,7 +10,7 @@ impl<V, T: Ord + Copy> InFlightOption<V, T> {
         InFlightOption(Some((v, expire)))
     }
 
-    pub fn pop_expired(&mut self, ) -> Option<V> {
+    pub fn pop_expired(&mut self) -> Option<V> {
         unimplemented!()
     }
 }
