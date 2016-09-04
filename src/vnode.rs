@@ -1,4 +1,4 @@
-use std::time;
+use std::time::{Instant, Duration};
 use std::collections::{HashMap, BTreeMap};
 use std::collections::hash_map::Entry as HMEntry;
 use version_vector::*;
@@ -16,17 +16,19 @@ const PEER_LOG_SIZE: usize = 1024 * 1024 / (32 + 16);
 
 const RECOVER_FAST_FORWARD: Version = 1_000_000;
 const SYNC_INFLIGHT_MAX: usize = 10;
-const SYNC_INFLIGHT_TIMEOUT_MS: u64 = 3000;
+const SYNC_INFLIGHT_TIMEOUT_MS: u64 = 2000;
+const SYNC_TIMEOUT_MS: u64 = SYNC_INFLIGHT_TIMEOUT_MS * 31 / 10;
 const START_RETRY_MAX: u32 = 3;
 const START_TIMEOUT_MS: u64 = 3000;
+const ZOMBIE_TIMEOUT_MS: u64 = SYNC_TIMEOUT_MS;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum VNodeStatus {
     // steady state
     Ready,
-    // was ready but wasn't shutdown cleanly, so it has to finish reverse sync to all replicas before coordinating writes
+    // had data but wasn't shutdown cleanly, so it has to finish reverse sync to all replicas before coordinating writes
     Recover,
-    // was absent, now it's streamming data from another node
+    // had no data, now it's streamming data from another node
     Bootstrap,
     // after another node takes over this vnode it stays as zombie until syncs are completed, etc.
     Zombie,
@@ -37,12 +39,13 @@ pub enum VNodeStatus {
 pub struct VNode {
     state: VNodeState,
     syncs: HashMap<Cookie, Synchronization>,
-    inflight: InFlightMap<Cookie, ReqState, time::Instant>,
+    inflight: InFlightMap<Cookie, ReqState, Instant>,
 }
 
 struct VNodeState {
     num: u16,
     status: VNodeStatus,
+    last_status_change: Instant,
     peers: HashMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
     log: VNodePeer,
@@ -82,7 +85,7 @@ enum Synchronization {
         clock_in_peer: BitmappedVersion,
         clock_snapshot: BitmappedVersion,
         iterator: IteratorFn,
-        inflight: InFlightMap<u64, (Vec<u8>, DottedCausalContainer<Vec<u8>>), time::Instant>,
+        inflight: InFlightMap<u64, (Vec<u8>, DottedCausalContainer<Vec<u8>>), Instant>,
         cookie: Cookie,
         peer: NodeId,
         target: NodeId,
@@ -94,7 +97,7 @@ enum Synchronization {
         peer: NodeId,
         target: NodeId,
         count: u64,
-        last_receive: time::Instant,
+        last_receive: Instant,
         starts_sent: u32,
     },
     BootstrapSender {
@@ -102,22 +105,22 @@ enum Synchronization {
         peer: NodeId,
         clocks_snapshot: BitmappedVersionVector,
         iterator: IteratorFn,
-        inflight: InFlightMap<u64, (Vec<u8>, DottedCausalContainer<Vec<u8>>), time::Instant>,
+        inflight: InFlightMap<u64, (Vec<u8>, DottedCausalContainer<Vec<u8>>), Instant>,
         count: u64,
     },
     BootstrapReceiver {
         cookie: Cookie,
         peer: NodeId,
         count: u64,
-        last_receive: time::Instant,
+        last_receive: Instant,
         starts_sent: u32,
     },
 }
 
 enum SyncResult {
-    Bootstrap,
-    Recover,
-    Remove,
+    BootstrapDone,
+    RecoverDone,
+    SyncDone,
     Continue,
 }
 
@@ -157,6 +160,10 @@ impl VNodePeer {
     fn min_version(&self) -> Version {
         self.log.keys().next().cloned().unwrap_or(0)
     }
+
+    fn clear(&mut self) {
+        *self = Self::new();
+    }
 }
 
 macro_rules! assert_any {
@@ -176,26 +183,20 @@ macro_rules! check_status {
                 let cookie = $msg.cookie;
                 debug!("Incorrect state for {}[{:?}] expected {} was {:?}",
                     stringify!($col), cookie, stringify!($($status)|*), state);
-                $db.fabric.send_message($from,  $emsg {
-                    cookie: $msg.cookie,
-                    vnode: $msg.vnode,
-                    result: Err(FabricMsgError::BadVNodeStatus),
-                }).unwrap();
+                fabric_send_error!($db, $from, $msg, $emsg, FabricMsgError::BadVNodeStatus);
                 return;
             },
         }
     }
 }
 
-macro_rules! cookie_not_found{
-    ($db: expr, $from: expr, $msg: expr, $emsg: ident, $col: ident) => {{
-        debug!("NotFound {}[{:?}]", stringify!($col), $msg.cookie);
+macro_rules! fabric_send_error{
+    ($db: expr, $from: expr, $msg: expr, $emsg: ident, $err: expr) => {{
         $db.fabric.send_message($from,  $emsg {
             cookie: $msg.cookie,
             vnode: $msg.vnode,
-            result: Err(FabricMsgError::CookieNotFound),
+            result: Err($err),
         }).unwrap();
-        return;
     }}
 }
 
@@ -203,14 +204,10 @@ macro_rules! forward {
     ($this: expr, $db: expr, $from: expr, $msg: expr, $emsg: ident, $col: ident, $f: ident) => {{
         match $this.$col.entry($msg.cookie) {
             HMEntry::Occupied(mut o) => {
-                let cookie = $msg.cookie;
-                if o.get_mut().$f($db, &mut $this.state, $msg) {
-                    o.remove();
-                    debug!("Removing {}[{:?}]", stringify!($col), ($from, cookie));
-                }
+                o.get_mut().$f($db, &mut $this.state, $msg);
             },
             _ => {
-                cookie_not_found!($db, $from, $msg, $emsg, $col)
+                fabric_send_error!($db, $from, $msg, $emsg, FabricMsgError::CookieNotFound);
             }
         }
     }};
@@ -299,7 +296,6 @@ impl VNode {
             (VNodeStatus::Ready, VNodeStatus::Absent) |
             (VNodeStatus::Bootstrap, VNodeStatus::Absent) |
             (VNodeStatus::Recover, VNodeStatus::Absent) => {
-                self.state.set_status(VNodeStatus::Zombie);
                 // cancel incomming syncs
                 let cancels = self.syncs
                     .iter()
@@ -323,6 +319,12 @@ impl VNode {
                             .unwrap();
                     }
                 }
+
+                if self.status() == VNodeStatus::Recover {
+                    self.state.set_status(VNodeStatus::Absent);
+                } else {
+                    self.state.set_status(VNodeStatus::Zombie);
+                }
             }
             (VNodeStatus::Zombie, VNodeStatus::Absent) => (),
             (VNodeStatus::Zombie, VNodeStatus::Ready) => {
@@ -341,7 +343,7 @@ impl VNode {
     }
 
     // TICK
-    pub fn handler_tick(&mut self, db: &Database, _time: time::Instant) {
+    pub fn handler_tick(&mut self, db: &Database, _time: Instant) {
         {
             let state = &mut self.state;
             let cancels = self.syncs
@@ -359,10 +361,16 @@ impl VNode {
             }
         }
 
-        let now = time::Instant::now();
+        let now = Instant::now();
         while let Some((cookie, req)) = self.inflight.pop_expired(now) {
             debug!("Request cookie:{:?} token:{} timed out", cookie, req.token);
             db.respond_error(req.token, CommandError::Timeout);
+        }
+
+        if self.state.status == VNodeStatus::Zombie && self.syncs.is_empty() &&
+           self.inflight.is_empty() &&
+           self.state.last_status_change.elapsed() > Duration::from_millis(ZOMBIE_TIMEOUT_MS) {
+            self.state.set_status(VNodeStatus::Absent);
         }
     }
 
@@ -370,7 +378,7 @@ impl VNode {
     pub fn do_get(&mut self, db: &Database, token: Token, key: &[u8]) {
         let nodes = db.dht.nodes_for_vnode(self.state.num, false);
         let cookie = self.gen_cookie();
-        let expire = time::Instant::now() + time::Duration::from_millis(1000);
+        let expire = Instant::now() + Duration::from_millis(1000);
         assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len()), expire).is_none());
 
         for node in nodes {
@@ -394,7 +402,7 @@ impl VNode {
                   vv: VersionVector) {
         let nodes = db.dht.nodes_for_vnode(self.state.num, true);
         let cookie = self.gen_cookie();
-        let expire = time::Instant::now() + time::Duration::from_millis(1000);
+        let expire = Instant::now() + Duration::from_millis(1000);
         assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len()), expire).is_none());
 
         let dcc = self.state
@@ -439,7 +447,6 @@ impl VNode {
         } else {
             debug!("process_get cookie not found {:?}", cookie);
         }
-
     }
 
     fn process_set(&mut self, db: &Database, cookie: Cookie, succesfull: bool) {
@@ -466,12 +473,18 @@ impl VNode {
     }
 
     // CRUD HANDLERS
-
     pub fn handler_get_remote_ack(&mut self, db: &Database, _from: NodeId, msg: MsgRemoteGetAck) {
         self.process_get(db, msg.cookie, msg.result.ok());
     }
 
     pub fn handler_get_remote(&mut self, db: &Database, from: NodeId, msg: MsgRemoteGet) {
+        check_status!(self,
+                      VNodeStatus::Ready | VNodeStatus::Zombie,
+                      db,
+                      from,
+                      msg,
+                      MsgRemoteGetAck,
+                      inflight_get);
         let dcc = self.state.storage_get(&msg.key);
         db.fabric
             .send_message(from,
@@ -488,6 +501,7 @@ impl VNode {
     }
 
     pub fn handler_set_remote(&mut self, db: &Database, from: NodeId, msg: MsgRemoteSet) {
+        check_status!(self, VNodeStatus::Ready, db, from, msg, MsgRemoteSetAck, inflight_set);
         let MsgRemoteSet { key, container, vnode, cookie } = msg;
         let result = self.state.storage_set_remote(db, &key, container);
         db.fabric
@@ -506,16 +520,12 @@ impl VNode {
 
     // SYNC
     pub fn handler_sync_start(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
-        check_status!(self,
-                      VNodeStatus::Ready | VNodeStatus::Zombie,
-                      db,
-                      from,
-                      msg,
-                      MsgSyncFin,
-                      syncs);
-
-        let cookie = msg.cookie;
-        if !self.syncs.contains_key(&cookie) {
+        if !(self.state.status == VNodeStatus::Ready ||
+             (self.state.status == VNodeStatus::Zombie &&
+              self.state.last_status_change.elapsed() > Duration::from_millis(ZOMBIE_TIMEOUT_MS))) {
+            fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::BadVNodeStatus);
+        } else if !self.syncs.contains_key(&msg.cookie) {
+            let cookie = msg.cookie;
             let sync = match (msg.target.as_ref(), msg.clock_in_peer.as_ref()) {
                 (None, None) => {
                     Synchronization::new_bootstrap_sender(db, &mut self.state, from, msg)
@@ -632,7 +642,7 @@ impl VNode {
                 cookie: cookie,
                 peer: node,
                 count: 0,
-                last_receive: time::Instant::now(),
+                last_receive: Instant::now(),
                 starts_sent: 0,
             };
 
@@ -645,8 +655,9 @@ impl VNode {
 
     pub fn start_sync(&mut self, db: &Database, reverse: bool) {
         if reverse {
-            assert_eq!(self.state.status, VNodeStatus::Recover,
-                "Status must be Reverse before starting a reverse sync");
+            assert_eq!(self.state.status,
+                       VNodeStatus::Recover,
+                       "Status must be Reverse before starting a reverse sync");
         } else {
             assert_any!(self.state.status, VNodeStatus::Ready | VNodeStatus::Zombie);
         }
@@ -668,7 +679,7 @@ impl VNode {
                 cookie: cookie,
                 count: 0,
                 target: target,
-                last_receive: time::Instant::now(),
+                last_receive: Instant::now(),
                 starts_sent: 0,
             };
 
@@ -693,7 +704,14 @@ impl Drop for VNode {
 impl VNodeState {
     fn set_status(&mut self, new: VNodeStatus) {
         debug!("VNode {} status change {:?} -> {:?}", self.num, self.status, new);
-        self.status = new;
+        if new != self.status {
+            self.last_status_change = Instant::now();
+            self.status = new;
+            if new == VNodeStatus::Absent {
+                self.log.clear();
+                self.peers.clear();
+            }
+        }
     }
 
     fn new_empty(num: u16, db: &Database, status: VNodeStatus) -> Self {
@@ -702,8 +720,9 @@ impl VNodeState {
         storage.clear();
 
         VNodeState {
-            status: status,
             num: num,
+            status: status,
+            last_status_change: Instant::now(),
             clocks: BitmappedVersionVector::new(),
             peers: Default::default(),
             log: Default::default(),
@@ -732,8 +751,9 @@ impl VNodeState {
         let storage = match status {
             VNodeStatus::Ready => db.storage_manager.open(num as i32, true).unwrap(),
             VNodeStatus::Absent | VNodeStatus::Bootstrap => {
-                // TODO: if possible don't load storage as an optimization
-                db.storage_manager.open(num as i32, true).unwrap()
+                let storage = db.storage_manager.open(num as i32, true).unwrap();
+                storage.clear();
+                storage
             }
             _ => panic!("Invalid status for load {:?}", status),
         };
@@ -768,6 +788,7 @@ impl VNodeState {
         VNodeState {
             num: num,
             status: status,
+            last_status_change: Instant::now(),
             clocks: clocks,
             storage: storage,
             unflushed_coord_writes: 0,
@@ -991,7 +1012,7 @@ impl Synchronization {
             .unwrap();
     }
 
-    fn send_next(&mut self, db: &Database, state: &mut VNodeState) -> bool {
+    fn send_next(&mut self, db: &Database, state: &mut VNodeState) {
         match *self {
             Synchronization::SyncSender { peer,
                                           cookie,
@@ -1005,8 +1026,8 @@ impl Synchronization {
                                                ref mut count,
                                                ref mut inflight,
                                                .. } => {
-                let now = time::Instant::now();
-                let timeout = now + time::Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS);
+                let now = Instant::now();
+                let timeout = now + Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS);
                 while let Some((seq, &(ref k, ref dcc))) = inflight.touch_expired(now, timeout) {
                     debug!("resending data for sync {:?}", cookie);
                     db.fabric
@@ -1039,7 +1060,7 @@ impl Synchronization {
                     }
                 }
                 if !inflight.is_empty() {
-                    return false;
+                    return;
                 }
             }
             _ => unreachable!(),
@@ -1048,31 +1069,33 @@ impl Synchronization {
         // FIXME: check when we sent the last one
         // FIXME: need to fail at some point
         self.send_success_fin(db, state);
-        false
     }
 
-    fn on_cancel(&mut self, _db: &Database, _state: &mut VNodeState) -> bool {
+    fn on_cancel(&mut self, _db: &Database, _state: &mut VNodeState) {
         unimplemented!()
     }
 
     fn on_tick(&mut self, db: &Database, state: &mut VNodeState) -> bool {
         match *self {
             Synchronization::SyncSender { .. } |
-            Synchronization::BootstrapSender { .. } => self.send_next(db, state),
+            Synchronization::BootstrapSender { .. } => {
+                self.send_next(db, state);
+            }
             Synchronization::SyncReceiver { last_receive, cookie, count, .. } |
             Synchronization::BootstrapReceiver { last_receive, cookie, count, .. } => {
-                if count == 0 && last_receive.elapsed() > time::Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
+                if count == 0 &&
+                   last_receive.elapsed() > Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
                     // FIXME: need to fail at some point
                     // FIXME: check when we sent the last one
                     debug!("resending start for sync {:?}", cookie);
                     self.send_start(db, state);
                 }
-                false
             }
         }
+        false
     }
 
-    fn on_start(&mut self, db: &Database, state: &mut VNodeState) -> bool {
+    fn on_start(&mut self, db: &Database, state: &mut VNodeState) {
         match *self {
             Synchronization::SyncSender { .. } => self.send_next(db, state),
             Synchronization::BootstrapSender { .. } => self.send_next(db, state),
@@ -1080,7 +1103,7 @@ impl Synchronization {
         }
     }
 
-    fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncSend) -> bool {
+    fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncSend) {
         match *self {
             Synchronization::SyncReceiver { peer, ref mut count, ref mut last_receive, .. } |
             Synchronization::BootstrapReceiver { peer,
@@ -1099,14 +1122,13 @@ impl Synchronization {
                     .unwrap();
 
                 *count += 1;
-                *last_receive = time::Instant::now();
-                false
+                *last_receive = Instant::now();
             }
             _ => unreachable!(),
         }
     }
 
-    fn on_ack(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncAck) -> bool {
+    fn on_ack(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncAck) {
         match *self {
             Synchronization::SyncSender { ref mut inflight, .. } |
             Synchronization::BootstrapSender { ref mut inflight, .. } => {
@@ -1114,6 +1136,6 @@ impl Synchronization {
             }
             _ => unreachable!(),
         }
-        self.send_next(db, state)
+        self.send_next(db, state);
     }
 }
