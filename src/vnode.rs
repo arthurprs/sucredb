@@ -18,8 +18,6 @@ const RECOVER_FAST_FORWARD: Version = 1_000_000;
 const SYNC_INFLIGHT_MAX: usize = 10;
 const SYNC_INFLIGHT_TIMEOUT_MS: u64 = 2000;
 const SYNC_TIMEOUT_MS: u64 = SYNC_INFLIGHT_TIMEOUT_MS * 31 / 10;
-const START_RETRY_MAX: u32 = 3;
-const START_TIMEOUT_MS: u64 = 3000;
 const ZOMBIE_TIMEOUT_MS: u64 = SYNC_TIMEOUT_MS;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -90,6 +88,7 @@ enum Synchronization {
         peer: NodeId,
         target: NodeId,
         count: u64,
+        last_receive: Instant,
     },
     SyncReceiver {
         clock_in_peer: BitmappedVersion,
@@ -107,6 +106,7 @@ enum Synchronization {
         iterator: IteratorFn,
         inflight: InFlightMap<u64, (Vec<u8>, DottedCausalContainer<Vec<u8>>), Instant>,
         count: u64,
+        last_receive: Instant,
     },
     BootstrapReceiver {
         cookie: Cookie,
@@ -907,6 +907,7 @@ impl Synchronization {
             inflight: InFlightMap::new(),
             peer: from,
             count: 0,
+            last_receive: Instant::now(),
         }
     }
 
@@ -958,9 +959,10 @@ impl Synchronization {
             iterator: iterator,
             inflight: InFlightMap::new(),
             cookie: cookie,
+            target: target,
             peer: from,
             count: 0,
-            target: target,
+            last_receive: Instant::now(),
         }
     }
 
@@ -971,11 +973,16 @@ impl Synchronization {
                                             target,
                                             ref clock_in_peer,
                                             ref mut starts_sent,
+                                            ref mut last_receive,
                                             .. } => {
+                // reset last receives
+                *last_receive = Instant::now();
                 *starts_sent += 1;
                 (peer, cookie, Some(target), Some(clock_in_peer.clone()))
             }
-            Synchronization::BootstrapReceiver { peer, cookie, ref mut starts_sent, .. } => {
+            Synchronization::BootstrapReceiver { peer, cookie, ref mut starts_sent,  ref mut last_receive, .. } => {
+                // reset last receives
+                *last_receive = Instant::now();
                 *starts_sent += 1;
                 (peer, cookie, None, None)
             }
@@ -1077,18 +1084,20 @@ impl Synchronization {
 
     fn on_tick(&mut self, db: &Database, state: &mut VNodeState) -> bool {
         match *self {
-            Synchronization::SyncSender { .. } |
-            Synchronization::BootstrapSender { .. } => {
+            Synchronization::SyncSender { last_receive, .. } |
+            Synchronization::BootstrapSender { last_receive, .. } => {
+                if last_receive.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
+                    return true;
+                }
                 self.send_next(db, state);
             }
             Synchronization::SyncReceiver { last_receive, cookie, count, .. } |
             Synchronization::BootstrapReceiver { last_receive, cookie, count, .. } => {
-                if count == 0 &&
-                   last_receive.elapsed() > Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
-                    // FIXME: need to fail at some point
-                    // FIXME: check when we sent the last one
+                if last_receive.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
                     debug!("resending start for sync {:?}", cookie);
                     self.send_start(db, state);
+                } else if count == 0 && last_receive.elapsed() > Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
+                    return true;
                 }
             }
         }
@@ -1130,9 +1139,10 @@ impl Synchronization {
 
     fn on_ack(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncAck) {
         match *self {
-            Synchronization::SyncSender { ref mut inflight, .. } |
-            Synchronization::BootstrapSender { ref mut inflight, .. } => {
+            Synchronization::SyncSender { ref mut inflight, ref mut last_receive, .. } |
+            Synchronization::BootstrapSender { ref mut inflight, ref mut last_receive, .. } => {
                 inflight.remove(&msg.seq);
+                *last_receive = Instant::now();
             }
             _ => unreachable!(),
         }
