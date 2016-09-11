@@ -44,10 +44,11 @@ struct VNodeState {
     num: u16,
     status: VNodeStatus,
     last_status_change: Instant,
-    peers: HashMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
     log: VNodePeer,
+    peers: HashMap<NodeId, VNodePeer>,
     storage: Storage,
+    pending_recoveries: usize,
     unflushed_coord_writes: usize,
 }
 
@@ -118,10 +119,12 @@ enum Synchronization {
 }
 
 enum SyncResult {
-    BootstrapDone,
-    RecoverDone,
-    SyncDone,
+    // it's done, just remove entry
+    Done,
+    // do nothing
     Continue,
+    // remove then retry bootstrap
+    RetryBoostrap,
 }
 
 impl VNodePeer {
@@ -296,27 +299,24 @@ impl VNode {
             (VNodeStatus::Ready, VNodeStatus::Absent) |
             (VNodeStatus::Bootstrap, VNodeStatus::Absent) |
             (VNodeStatus::Recover, VNodeStatus::Absent) => {
-                // cancel incomming syncs
-                let cancels = self.syncs
-                    .iter()
-                    .filter_map(|(&cookie, m)| {
-                        match *m {
-                            Synchronization::BootstrapReceiver { peer, .. } => Some((cookie, peer)),
-                            Synchronization::SyncReceiver { peer, .. } => Some((cookie, peer)),
-                            _ => None,
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                for (cookie, peer) in cancels {
-                    if let Some(_) = self.syncs.remove(&cookie) {
-                        db.fabric
-                            .send_message(peer,
-                                          MsgSyncFin {
-                                              vnode: self.state.num,
-                                              cookie: cookie,
-                                              result: Err(FabricMsgError::BadVNodeStatus),
-                                          })
-                            .unwrap();
+                {
+                    // cancel incomming syncs
+                    let state = &mut self.state;
+                    let canceled = self.syncs
+                        .iter_mut()
+                        .filter_map(|(&cookie, m)| {
+                            match *m {
+                                Synchronization::BootstrapReceiver { .. } |
+                                Synchronization::SyncReceiver { .. } => {
+                                    m.on_cancel(db, state);
+                                    Some(cookie)
+                                }
+                                _ => None,
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    for cookie in canceled {
+                        self.syncs.remove(&cookie);
                     }
                 }
 
@@ -345,19 +345,29 @@ impl VNode {
     // TICK
     pub fn handler_tick(&mut self, db: &Database, _time: Instant) {
         {
-            let state = &mut self.state;
-            let cancels = self.syncs
-                .iter_mut()
-                .filter_map(|(&cookie, s)| {
-                    if s.on_tick(db, state) {
-                        Some(cookie)
-                    } else {
-                        None
+            let terminated = {
+                let state = &mut self.state;
+                self.syncs
+                    .iter_mut()
+                    .filter_map(|(&cookie, s)| {
+                        match s.on_tick(db, state) {
+                            SyncResult::Continue => None,
+                            result => Some((cookie, result)),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+            for (cookie, result) in terminated {
+                match result {
+                    SyncResult::Done => {
+                        self.syncs.remove(&cookie);
                     }
-                })
-                .collect::<Vec<Cookie>>();
-            for cookie in cancels {
-                self.syncs.remove(&cookie);
+                    SyncResult::RetryBoostrap => {
+                        self.syncs.remove(&cookie);
+                        self.start_bootstrap(db);
+                    }
+                    _ => unreachable!(),
+                }
             }
         }
 
@@ -573,56 +583,26 @@ impl VNode {
                       msg,
                       MsgSyncFin,
                       syncs);
-        if let HMEntry::Occupied(mut o) = self.syncs.entry(msg.cookie) {
-            match *o.get_mut() {
-                Synchronization::SyncReceiver { peer, target, .. } => {
-                    if msg.result.is_ok() {
-                        self.state
-                            .clocks
-                            .join(msg.result.as_ref().unwrap());
-                        // if reverse update status: recover -> ready
-                        if target == db.dht.node() /* FIXME: AND all rev syncs are done */ {
-                            assert!(self.state.status == VNodeStatus::Recover);
-                            // self.state.clocks.fast_forward(RECOVER_FAST_FORWARD);
-                            self.state.set_status(VNodeStatus::Ready);
-                        }
-                        self.state.save(db, false);
-                        self.state.storage.sync();
-                        // send it back as a form of ack-ack
-                        db.fabric.send_message(peer, msg).unwrap();
-                    } else if target == db.dht.node() {
-                        // FIXME: if reverse we need to retry?
-                        unimplemented!();
-                    }
+        let result = if let HMEntry::Occupied(mut o) = self.syncs.entry(msg.cookie) {
+            let result = o.get_mut().on_fin(db, &mut self.state, msg);
+            match result {
+                SyncResult::Done |
+                SyncResult::RetryBoostrap => {
+                    o.remove();
                 }
-                Synchronization::SyncSender { /*ref clock_in_peer, peer,*/ .. } => {
-                    // TODO: advance to the snapshot base instead? Is it safe to do so?
-                    // FIXME: this won't happen if we don't get the ack-ack back
-                    // if msg.result.is_ok() {
-                    //     self.state
-                    //         .peers
-                    //         .entry(peer)
-                    //         .or_insert_with(|| Default::default())
-                    //         .advance_knowledge(clock_in_peer.base());
-                    // }
-                }
-                Synchronization::BootstrapReceiver { peer, .. } => {
-                    if msg.result.is_ok() {
-                        self.state.clocks.merge(msg.result.as_ref().unwrap());
-                        self.state.save(db, false);
-                        self.state.storage.sync();
-                        // now we're ready!
-                        self.state.set_status(VNodeStatus::Ready);
-                        db.dht.promote_pending_node(self.state.num, db.dht.node()).unwrap();
-                        // send it back as a form of ack-ack
-                        db.fabric.send_message(peer, msg).unwrap();
-                    }
-                }
-                Synchronization::BootstrapSender { .. } => (),
+                SyncResult::Continue => (),
             }
-            o.remove();
+            result
         } else {
-            // FIXME: depending on the message we might want to reply
+            // FIXME: depending on the message we might want to reply?
+            return;
+        };
+
+        match result {
+            SyncResult::RetryBoostrap => {
+                self.start_bootstrap(db);
+            }
+            SyncResult::Done | SyncResult::Continue => (),
         }
     }
 
@@ -655,8 +635,8 @@ impl VNode {
 
     pub fn start_sync(&mut self, db: &Database, reverse: bool) {
         if reverse {
-            assert_eq!(self.state.status,
-                       VNodeStatus::Recover,
+            assert_eq!((self.state.status, self.state.pending_recoveries),
+                       (VNodeStatus::Recover, 0),
                        "Status must be Reverse before starting a reverse sync");
         } else {
             assert_any!(self.state.status, VNodeStatus::Ready | VNodeStatus::Zombie);
@@ -687,8 +667,11 @@ impl VNode {
             self.syncs.get_mut(&cookie).unwrap().send_start(db, &mut self.state);
             started += 1;
         }
-        if reverse && started == 0 {
-            self.state.set_status(VNodeStatus::Ready);
+        if reverse {
+            self.state.pending_recoveries = started;
+            if started == 0 {
+                self.state.set_status(VNodeStatus::Ready);
+            }
         }
     }
 }
@@ -705,12 +688,21 @@ impl VNodeState {
     fn set_status(&mut self, new: VNodeStatus) {
         debug!("VNode {} status change {:?} -> {:?}", self.num, self.status, new);
         if new != self.status {
+            match new {
+                VNodeStatus::Ready => {
+                    if self.status == VNodeStatus::Recover {
+                        assert_eq!(self.pending_recoveries, 0);
+                    }
+                }
+                VNodeStatus::Absent => {
+                    self.log.clear();
+                    self.peers.clear();
+                }
+                _ => (),
+            }
+
             self.last_status_change = Instant::now();
             self.status = new;
-            if new == VNodeStatus::Absent {
-                self.log.clear();
-                self.peers.clear();
-            }
         }
     }
 
@@ -728,6 +720,7 @@ impl VNodeState {
             log: Default::default(),
             storage: storage,
             unflushed_coord_writes: 0,
+            pending_recoveries: 0,
         }
     }
 
@@ -791,9 +784,10 @@ impl VNodeState {
             last_status_change: Instant::now(),
             clocks: clocks,
             storage: storage,
-            unflushed_coord_writes: 0,
             log: log,
             peers: peers,
+            unflushed_coord_writes: 0,
+            pending_recoveries: 0,
         }
     }
 
@@ -980,7 +974,11 @@ impl Synchronization {
                 *starts_sent += 1;
                 (peer, cookie, Some(target), Some(clock_in_peer.clone()))
             }
-            Synchronization::BootstrapReceiver { peer, cookie, ref mut starts_sent,  ref mut last_receive, .. } => {
+            Synchronization::BootstrapReceiver { peer,
+                                                 cookie,
+                                                 ref mut starts_sent,
+                                                 ref mut last_receive,
+                                                 .. } => {
                 // reset last receives
                 *last_receive = Instant::now();
                 *starts_sent += 1;
@@ -1074,34 +1072,75 @@ impl Synchronization {
         }
         // if we get here, inflight is empty and we need to send the success fin
         // FIXME: check when we sent the last one
-        // FIXME: need to fail at some point
         self.send_success_fin(db, state);
     }
 
-    fn on_cancel(&mut self, _db: &Database, _state: &mut VNodeState) {
-        unimplemented!()
+    fn on_cancel(&mut self, db: &Database, state: &mut VNodeState) {
+        match *self {
+            Synchronization::BootstrapReceiver { peer, cookie, .. } |
+            Synchronization::SyncReceiver { peer, cookie, .. } => {
+                db.fabric
+                    .send_message(peer,
+                                  MsgSyncFin {
+                                      vnode: state.num,
+                                      cookie: cookie,
+                                      result: Err(FabricMsgError::BadVNodeStatus),
+                                  })
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
     }
 
-    fn on_tick(&mut self, db: &Database, state: &mut VNodeState) -> bool {
+    fn on_remove(&mut self, db: &Database, state: &mut VNodeState) {
+        match *self {
+            Synchronization::BootstrapReceiver { peer, cookie, .. } |
+            Synchronization::SyncReceiver { peer, cookie, .. } => {
+                db.fabric
+                    .send_message(peer,
+                                  MsgSyncFin {
+                                      vnode: state.num,
+                                      cookie: cookie,
+                                      result: Err(FabricMsgError::BadVNodeStatus),
+                                  })
+                    .unwrap();
+            }
+            _ => (),
+        }
+    }
+
+    fn on_tick(&mut self, db: &Database, state: &mut VNodeState) -> SyncResult {
         match *self {
             Synchronization::SyncSender { last_receive, .. } |
             Synchronization::BootstrapSender { last_receive, .. } => {
                 if last_receive.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
-                    return true;
+                    return SyncResult::Done;
                 }
                 self.send_next(db, state);
             }
-            Synchronization::SyncReceiver { last_receive, cookie, count, .. } |
-            Synchronization::BootstrapReceiver { last_receive, cookie, count, .. } => {
-                if last_receive.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
-                    debug!("resending start for sync {:?}", cookie);
+            Synchronization::SyncReceiver { last_receive, count, .. } |
+            Synchronization::BootstrapReceiver { last_receive, count, .. } => {
+                if count == 0 &&
+                   last_receive.elapsed() > Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
                     self.send_start(db, state);
-                } else if count == 0 && last_receive.elapsed() > Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
-                    return true;
+                } else if last_receive.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
+                    match *self {
+                        Synchronization::BootstrapReceiver { .. } => {
+                            return SyncResult::RetryBoostrap;
+                        }
+                        Synchronization::SyncReceiver { target, .. } if target == db.dht.node() => {
+                            state.pending_recoveries -= 1;
+                            if state.pending_recoveries == 0 {
+                                state.set_status(VNodeStatus::Ready)
+                            }
+                            return SyncResult::Done;
+                        }
+                        _ => unreachable!(),
+                    }
                 }
             }
         }
-        false
+        SyncResult::Continue
     }
 
     fn on_start(&mut self, db: &Database, state: &mut VNodeState) {
@@ -1110,6 +1149,57 @@ impl Synchronization {
             Synchronization::BootstrapSender { .. } => self.send_next(db, state),
             _ => unreachable!(),
         }
+    }
+
+    fn on_fin(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncFin) -> SyncResult {
+        match *self {
+            Synchronization::SyncReceiver { peer, target, .. } => {
+                if msg.result.is_ok() {
+                    state.clocks.join(msg.result.as_ref().unwrap());
+                    // if reverse update status: recover -> ready
+                    if target == db.dht.node() {
+                        state.pending_recoveries -= 1;
+                        if state.pending_recoveries == 0 {
+                            state.set_status(VNodeStatus::Ready)
+                        }
+                    }
+                    state.save(db, false);
+                    state.storage.sync();
+                    // send it back as a form of ack-ack
+                    db.fabric.send_message(peer, msg).unwrap();
+                } else if target == db.dht.node() {
+                    // FIXME: if reverse we need to retry?
+                    unimplemented!();
+                }
+            }
+            Synchronization::SyncSender { /*ref clock_in_peer, peer,*/ .. } => {
+                // TODO: advance to the snapshot base instead? Is it safe to do so?
+                // FIXME: this won't happen if we don't get the ack-ack back
+                // if msg.result.is_ok() {
+                //     state
+                //         .peers
+                //         .entry(peer)
+                //         .or_insert_with(|| Default::default())
+                //         .advance_knowledge(clock_in_peer.base());
+                // }
+            }
+            Synchronization::BootstrapReceiver { peer, .. } => {
+                if msg.result.is_ok() {
+                    state.clocks.merge(msg.result.as_ref().unwrap());
+                    state.save(db, false);
+                    state.storage.sync();
+                    // now we're ready!
+                    state.set_status(VNodeStatus::Ready);
+                    db.dht.promote_pending_node(state.num, db.dht.node()).unwrap();
+                    // send it back as a form of ack-ack
+                    db.fabric.send_message(peer, msg).unwrap();
+                } else {
+                    return SyncResult::RetryBoostrap;
+                }
+            }
+            Synchronization::BootstrapSender { .. } => (),
+        }
+        SyncResult::Done
     }
 
     fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncSend) {
