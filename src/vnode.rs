@@ -1156,20 +1156,18 @@ impl Synchronization {
             Synchronization::SyncReceiver { peer, target, .. } => {
                 if msg.result.is_ok() {
                     state.clocks.join(msg.result.as_ref().unwrap());
-                    // if reverse update status: recover -> ready
-                    if target == db.dht.node() {
-                        state.pending_recoveries -= 1;
-                        if state.pending_recoveries == 0 {
-                            state.set_status(VNodeStatus::Ready)
-                        }
-                    }
                     state.save(db, false);
                     state.storage.sync();
                     // send it back as a form of ack-ack
                     db.fabric.send_message(peer, msg).unwrap();
-                } else if target == db.dht.node() {
-                    // FIXME: if reverse we need to retry?
-                    unimplemented!();
+                }
+
+                // if reverse update status: recover -> ready
+                if target == db.dht.node() {
+                    state.pending_recoveries -= 1;
+                    if state.pending_recoveries == 0 {
+                        state.set_status(VNodeStatus::Ready)
+                    }
                 }
             }
             Synchronization::SyncSender { /*ref clock_in_peer, peer,*/ .. } => {
