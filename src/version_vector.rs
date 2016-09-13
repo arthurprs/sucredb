@@ -196,15 +196,19 @@ impl BitmappedVersionVector {
     }
 
     pub fn event(&mut self, id: Id) -> Version {
+        self.advance(id, 1)
+    }
+
+    pub fn advance(&mut self, id: Id, n: Version) -> Version {
         match self.0.entry(id) {
             Entry::Vacant(vac) => {
-                vac.insert(BitmappedVersion::new(1, 0));
-                1
+                vac.insert(BitmappedVersion::new(n, 0));
+                n
             }
             Entry::Occupied(mut ocu) => {
                 let bv = ocu.get_mut();
                 debug_assert!(bv.bitmap == 0);
-                bv.base += 1;
+                bv.base += n;
                 bv.base
             }
         }

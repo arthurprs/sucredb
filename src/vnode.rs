@@ -706,11 +706,12 @@ impl VNodeState {
         }
     }
 
-    fn finish_reverse_sync(&mut self) {
+    fn finish_reverse_sync(&mut self, db: &Database) {
         assert_eq!(self.status, VNodeStatus::Recover);
         self.pending_recoveries -= 1;
         if self.pending_recoveries == 0 {
-            self.set_status(VNodeStatus::Ready)
+            self.set_status(VNodeStatus::Ready);
+            self.clocks.advance(db.dht.node(), RECOVER_FAST_FORWARD);
         }
     }
 
@@ -1138,7 +1139,7 @@ impl Synchronization {
                         }
                         Synchronization::SyncReceiver { target, .. } => {
                             if target == db.dht.node() {
-                                state.finish_reverse_sync();
+                                state.finish_reverse_sync(db);
                             }
                             return SyncResult::Done;
                         }
@@ -1171,7 +1172,7 @@ impl Synchronization {
 
                 // if reverse update status: recover -> ready
                 if target == db.dht.node() {
-                    state.finish_reverse_sync();
+                    state.finish_reverse_sync(db);
                 }
             }
             Synchronization::SyncSender { /*ref clock_in_peer, peer,*/ .. } => {

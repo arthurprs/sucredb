@@ -14,11 +14,11 @@
 * [x] handling timeouts for crud
 * [x] generic sync normal/reverse
 * [x] resending sync/bootstrap data from sender side
-* [ ] resending sync/bootstrap data from receiver side
+* [x] resending sync/bootstrap start from receiver side
 * [ ] generic sync/bootstrap code?
 * [x] when log isn't enough to satisfy sync, iter the database sending necessary dots
 * [x] propagate dht notifications to vnodes and take actions
-* [ ] dead none handling
+* [ ] dead node handling
 * [x] cluster name
 * [ ] cluster handling api (join/leave/rebalance)
 * [ ] smart rebalance
