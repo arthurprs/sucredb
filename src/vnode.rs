@@ -706,6 +706,14 @@ impl VNodeState {
         }
     }
 
+    fn finish_reverse_sync(&mut self) {
+        assert_eq!(self.status, VNodeStatus::Recover);
+        self.pending_recoveries -= 1;
+        if self.pending_recoveries == 0 {
+            self.set_status(VNodeStatus::Ready)
+        }
+    }
+
     fn new_empty(num: u16, db: &Database, status: VNodeStatus) -> Self {
         db.meta_storage.del(num.to_string().as_bytes());
         let storage = db.storage_manager.open(num as i32, true).unwrap();
@@ -1128,10 +1136,9 @@ impl Synchronization {
                         Synchronization::BootstrapReceiver { .. } => {
                             return SyncResult::RetryBoostrap;
                         }
-                        Synchronization::SyncReceiver { target, .. } if target == db.dht.node() => {
-                            state.pending_recoveries -= 1;
-                            if state.pending_recoveries == 0 {
-                                state.set_status(VNodeStatus::Ready)
+                        Synchronization::SyncReceiver { target, .. } => {
+                            if target == db.dht.node() {
+                                state.finish_reverse_sync();
                             }
                             return SyncResult::Done;
                         }
@@ -1164,10 +1171,7 @@ impl Synchronization {
 
                 // if reverse update status: recover -> ready
                 if target == db.dht.node() {
-                    state.pending_recoveries -= 1;
-                    if state.pending_recoveries == 0 {
-                        state.set_status(VNodeStatus::Ready)
-                    }
+                    state.finish_reverse_sync();
                 }
             }
             Synchronization::SyncSender { /*ref clock_in_peer, peer,*/ .. } => {
