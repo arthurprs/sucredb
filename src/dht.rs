@@ -1,4 +1,5 @@
-use std::{thread, net, time};
+use std::{thread, net};
+use std::time::Duration;
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
 use linear_map::LinearMap;
@@ -188,6 +189,12 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         self.inner.write().unwrap().callback = Some(callback);
     }
 
+    fn wait_new_version(&self, old_version: u64) {
+        while self.inner.read().unwrap().ring_version <= old_version {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     pub fn node(&self) -> NodeId {
         self.node
     }
@@ -198,12 +205,6 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
 
     pub fn replication_factor(&self) -> usize {
         self.inner.read().unwrap().ring.replication_factor
-    }
-
-    fn wait_new_version(&self, old_version: u64) {
-        while self.inner.read().unwrap().ring_version <= old_version {
-            thread::sleep(time::Duration::from_millis(1));
-        }
     }
 
     pub fn key_vnode(&self, key: &[u8]) -> VNodeId {

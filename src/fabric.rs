@@ -387,7 +387,21 @@ impl Fabric {
         })
     }
 
-    pub fn send_message<T: Into<FabricMsg>>(&self, recipient: NodeId, msg: T) -> FabricResult<()> {
+    pub fn send_msg<T: Into<FabricMsg>>(&self, recipient: NodeId, msg: T) -> FabricResult<()> {
+        let msg = msg.into();
+        if cfg!(test) {
+            let droppable = match msg.get_type() {
+                FabricMsgType::Crud => false,
+                _ => true
+            };
+            if droppable {
+                let fabric_drop = ::std::env::var("FABRIC_DROP").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+                if fabric_drop > 0.0 && ::rand::thread_rng().gen::<f64>() < fabric_drop {
+                    warn!("Fabric msg droped due to FABRIC_DROP: {:?}", msg);
+                    return Ok(());
+                }
+            }
+        }
         // fast path if connection already available
         if let Some(node) = self.shared_context.outgoing.read().unwrap().get(&recipient) {
             if let Some(n) = thread_rng().choose(&node.1) {
@@ -439,6 +453,7 @@ impl Drop for Fabric {
 mod tests {
     use super::*;
     use std::{thread, net};
+    use std::time::Duration;
     use env_logger;
     use std::sync::{Arc, atomic};
 
@@ -454,15 +469,15 @@ mod tests {
                                         counter_.fetch_add(1, atomic::Ordering::Relaxed);
                                     }));
         for _ in 0..3 {
-            fabric.send_message(0,
-                              MsgRemoteSetAck {
-                                  cookie: Default::default(),
-                                  vnode: Default::default(),
-                                  result: Ok(()),
-                              })
+            fabric.send_msg(0,
+                          MsgRemoteSetAck {
+                              cookie: Default::default(),
+                              vnode: Default::default(),
+                              result: Ok(()),
+                          })
                 .unwrap();
         }
-        thread::sleep_ms(10);
+        thread::sleep(Duration::from_millis(10));
         assert_eq!(counter.load(atomic::Ordering::Relaxed), 3);
     }
 }

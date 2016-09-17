@@ -118,6 +118,7 @@ enum Synchronization {
     },
 }
 
+#[derive(Debug)]
 enum SyncResult {
     // it's done, just remove entry
     Done,
@@ -195,7 +196,7 @@ macro_rules! check_status {
 
 macro_rules! fabric_send_error{
     ($db: expr, $from: expr, $msg: expr, $emsg: ident, $err: expr) => {{
-        $db.fabric.send_message($from,  $emsg {
+        $db.fabric.send_msg($from,  $emsg {
             cookie: $msg.cookie,
             vnode: $msg.vnode,
             result: Err($err),
@@ -263,13 +264,6 @@ impl VNode {
         vnode
     }
 
-    // pub fn clear(db: &Database, num: u16) {
-    //     db.meta_storage.del(num.to_string().as_bytes());
-    //     if let Ok(storage) = db.storage_manager.open(num as i32, false) {
-    //         storage.clear();
-    //     }
-    // }
-
     pub fn save(&mut self, db: &Database, shutdown: bool) {
         self.state.save(db, shutdown);
     }
@@ -288,9 +282,8 @@ impl VNode {
     }
 
     fn gen_cookie(&mut self) -> Cookie {
-        // FIXME: make cookie really unique
         let mut rng = thread_rng();
-        (rng.gen(), rng.gen())
+        Cookie::new(rng.gen(), rng.gen())
     }
 
     // DHT Changes
@@ -397,12 +390,12 @@ impl VNode {
                 self.process_get(db, cookie, Some(container));
             } else {
                 db.fabric
-                    .send_message(node,
-                                  MsgRemoteGet {
-                                      cookie: cookie,
-                                      vnode: self.state.num,
-                                      key: key.into(),
-                                  })
+                    .send_msg(node,
+                              MsgRemoteGet {
+                                  cookie: cookie,
+                                  vnode: self.state.num,
+                                  key: key.into(),
+                              })
                     .unwrap();
             }
         }
@@ -421,13 +414,13 @@ impl VNode {
         for node in nodes {
             if node != db.dht.node() {
                 db.fabric
-                    .send_message(node,
-                                  MsgRemoteSet {
-                                      cookie: cookie,
-                                      vnode: self.state.num,
-                                      key: key.into(),
-                                      container: dcc.clone(),
-                                  })
+                    .send_msg(node,
+                              MsgRemoteSet {
+                                  cookie: cookie,
+                                  vnode: self.state.num,
+                                  key: key.into(),
+                                  container: dcc.clone(),
+                              })
                     .unwrap();
             }
         }
@@ -497,12 +490,12 @@ impl VNode {
                       inflight_get);
         let dcc = self.state.storage_get(&msg.key);
         db.fabric
-            .send_message(from,
-                          MsgRemoteGetAck {
-                              cookie: msg.cookie,
-                              vnode: msg.vnode,
-                              result: Ok(dcc),
-                          })
+            .send_msg(from,
+                      MsgRemoteGetAck {
+                          cookie: msg.cookie,
+                          vnode: msg.vnode,
+                          result: Ok(dcc),
+                      })
             .unwrap();
     }
 
@@ -515,12 +508,12 @@ impl VNode {
         let MsgRemoteSet { key, container, vnode, cookie } = msg;
         let result = self.state.storage_set_remote(db, &key, container);
         db.fabric
-            .send_message(from,
-                          MsgRemoteSetAck {
-                              vnode: vnode,
-                              cookie: cookie,
-                              result: Ok(result),
-                          })
+            .send_msg(from,
+                      MsgRemoteSetAck {
+                          vnode: vnode,
+                          cookie: cookie,
+                          result: Ok(result),
+                      })
             .unwrap();
     }
 
@@ -584,17 +577,22 @@ impl VNode {
                       MsgSyncFin,
                       syncs);
         let result = if let HMEntry::Occupied(mut o) = self.syncs.entry(msg.cookie) {
+            let cookie = msg.cookie;
             let result = o.get_mut().on_fin(db, &mut self.state, msg);
             match result {
                 SyncResult::Done |
                 SyncResult::RetryBoostrap => {
+                    debug!("Removing sync/bootstrap {:?}", cookie);
                     o.remove();
                 }
                 SyncResult::Continue => (),
             }
             result
         } else {
-            // FIXME: depending on the message we might want to reply?
+            // if msg is success send an error reply
+            if msg.result.is_ok() {
+                fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::CookieNotFound);
+            }
             return;
         };
 
@@ -975,34 +973,30 @@ impl Synchronization {
                                             peer,
                                             target,
                                             ref clock_in_peer,
-                                            ref mut starts_sent,
                                             ref mut last_receive,
                                             .. } => {
                 // reset last receives
                 *last_receive = Instant::now();
-                *starts_sent += 1;
                 (peer, cookie, Some(target), Some(clock_in_peer.clone()))
             }
             Synchronization::BootstrapReceiver { peer,
                                                  cookie,
-                                                 ref mut starts_sent,
                                                  ref mut last_receive,
                                                  .. } => {
                 // reset last receives
                 *last_receive = Instant::now();
-                *starts_sent += 1;
                 (peer, cookie, None, None)
             }
             _ => unreachable!(),
         };
         db.fabric
-            .send_message(peer,
-                          MsgSyncStart {
-                              cookie: cookie,
-                              vnode: state.num,
-                              target: target,
-                              clock_in_peer: clock_in_peer,
-                          })
+            .send_msg(peer,
+                      MsgSyncStart {
+                          cookie: cookie,
+                          vnode: state.num,
+                          target: target,
+                          clock_in_peer: clock_in_peer,
+                      })
             .unwrap();
     }
 
@@ -1017,12 +1011,12 @@ impl Synchronization {
             _ => unreachable!(),
         };
         db.fabric
-            .send_message(peer,
-                          MsgSyncFin {
-                              cookie: cookie,
-                              vnode: state.num,
-                              result: Ok(clocks_snapshot),
-                          })
+            .send_msg(peer,
+                      MsgSyncFin {
+                          cookie: cookie,
+                          vnode: state.num,
+                          result: Ok(clocks_snapshot),
+                      })
             .unwrap();
     }
 
@@ -1043,29 +1037,29 @@ impl Synchronization {
                 let now = Instant::now();
                 let timeout = now + Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS);
                 while let Some((seq, &(ref k, ref dcc))) = inflight.touch_expired(now, timeout) {
-                    debug!("resending data for sync {:?}", cookie);
+                    debug!("resending seq {} for sync/bootstrap {:?}", seq, cookie);
                     db.fabric
-                        .send_message(peer,
-                                      MsgSyncSend {
-                                          cookie: cookie,
-                                          vnode: state.num,
-                                          seq: seq,
-                                          key: k.clone(),
-                                          container: dcc.clone(),
-                                      })
+                        .send_msg(peer,
+                                  MsgSyncSend {
+                                      cookie: cookie,
+                                      vnode: state.num,
+                                      seq: seq,
+                                      key: k.clone(),
+                                      container: dcc.clone(),
+                                  })
                         .unwrap();
                 }
                 while inflight.len() < SYNC_INFLIGHT_MAX {
                     if let Some((k, dcc)) = iterator(&state.storage) {
                         db.fabric
-                            .send_message(peer,
-                                          MsgSyncSend {
-                                              cookie: cookie,
-                                              vnode: state.num,
-                                              seq: *count,
-                                              key: k.clone(),
-                                              container: dcc.clone(),
-                                          })
+                            .send_msg(peer,
+                                      MsgSyncSend {
+                                          cookie: cookie,
+                                          vnode: state.num,
+                                          seq: *count,
+                                          key: k.clone(),
+                                          container: dcc.clone(),
+                                      })
                             .unwrap();
                         inflight.insert(*count, (k, dcc), timeout);
                         *count += 1;
@@ -1074,6 +1068,7 @@ impl Synchronization {
                     }
                 }
                 if !inflight.is_empty() {
+                    debug!("sync/bootstrap {:?} has {} inflight msgs", cookie, inflight.len());
                     return;
                 }
             }
@@ -1089,12 +1084,12 @@ impl Synchronization {
             Synchronization::BootstrapReceiver { peer, cookie, .. } |
             Synchronization::SyncReceiver { peer, cookie, .. } => {
                 db.fabric
-                    .send_message(peer,
-                                  MsgSyncFin {
-                                      vnode: state.num,
-                                      cookie: cookie,
-                                      result: Err(FabricMsgError::BadVNodeStatus),
-                                  })
+                    .send_msg(peer,
+                              MsgSyncFin {
+                                  vnode: state.num,
+                                  cookie: cookie,
+                                  result: Err(FabricMsgError::BadVNodeStatus),
+                              })
                     .unwrap();
             }
             _ => unreachable!(),
@@ -1106,12 +1101,12 @@ impl Synchronization {
             Synchronization::BootstrapReceiver { peer, cookie, .. } |
             Synchronization::SyncReceiver { peer, cookie, .. } => {
                 db.fabric
-                    .send_message(peer,
-                                  MsgSyncFin {
-                                      vnode: state.num,
-                                      cookie: cookie,
-                                      result: Err(FabricMsgError::BadVNodeStatus),
-                                  })
+                    .send_msg(peer,
+                              MsgSyncFin {
+                                  vnode: state.num,
+                                  cookie: cookie,
+                                  result: Err(FabricMsgError::BadVNodeStatus),
+                              })
                     .unwrap();
             }
             _ => (),
@@ -1120,19 +1115,18 @@ impl Synchronization {
 
     fn on_tick(&mut self, db: &Database, state: &mut VNodeState) -> SyncResult {
         match *self {
-            Synchronization::SyncSender { last_receive, .. } |
-            Synchronization::BootstrapSender { last_receive, .. } => {
+            Synchronization::SyncSender { last_receive, cookie, .. } |
+            Synchronization::BootstrapSender { last_receive, cookie, .. } => {
                 if last_receive.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
+                    warn!("sync/boostrap sender timed out {:?}", cookie);
                     return SyncResult::Done;
                 }
                 self.send_next(db, state);
             }
-            Synchronization::SyncReceiver { last_receive, count, .. } |
-            Synchronization::BootstrapReceiver { last_receive, count, .. } => {
-                if count == 0 &&
-                   last_receive.elapsed() > Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
-                    self.send_start(db, state);
-                } else if last_receive.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
+            Synchronization::SyncReceiver { last_receive, count, cookie, .. } |
+            Synchronization::BootstrapReceiver { last_receive, count, cookie, .. } => {
+                if last_receive.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
+                    warn!("sync/boostrap receiver timed out {:?}", cookie);
                     match *self {
                         Synchronization::BootstrapReceiver { .. } => {
                             return SyncResult::RetryBoostrap;
@@ -1145,6 +1139,9 @@ impl Synchronization {
                         }
                         _ => unreachable!(),
                     }
+                } else if count == 0 &&
+                   last_receive.elapsed() > Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
+                    self.send_start(db, state);
                 }
             }
         }
@@ -1167,7 +1164,7 @@ impl Synchronization {
                     state.save(db, false);
                     state.storage.sync();
                     // send it back as a form of ack-ack
-                    db.fabric.send_message(peer, msg).unwrap();
+                    db.fabric.send_msg(peer, msg).unwrap();
                 }
 
                 // if reverse update status: recover -> ready
@@ -1195,7 +1192,7 @@ impl Synchronization {
                     state.set_status(VNodeStatus::Ready);
                     db.dht.promote_pending_node(state.num, db.dht.node()).unwrap();
                     // send it back as a form of ack-ack
-                    db.fabric.send_message(peer, msg).unwrap();
+                    db.fabric.send_msg(peer, msg).unwrap();
                 } else {
                     return SyncResult::RetryBoostrap;
                 }
@@ -1215,12 +1212,12 @@ impl Synchronization {
                 state.storage_set_remote(db, &msg.key, msg.container);
 
                 db.fabric
-                    .send_message(peer,
-                                  MsgSyncAck {
-                                      cookie: msg.cookie,
-                                      vnode: state.num,
-                                      seq: msg.seq,
-                                  })
+                    .send_msg(peer,
+                              MsgSyncAck {
+                                  cookie: msg.cookie,
+                                  vnode: state.num,
+                                  seq: msg.seq,
+                              })
                     .unwrap();
 
                 *count += 1;

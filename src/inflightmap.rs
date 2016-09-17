@@ -3,18 +3,6 @@ use std::hash::Hash;
 use std::cmp::Ordering;
 use std::ops::{Deref, DerefMut};
 
-pub struct InFlightOption<V, T: Ord + Copy>(Option<(V, T)>);
-
-impl<V, T: Ord + Copy> InFlightOption<V, T> {
-    pub fn new(v: V, expire: T) -> Self {
-        InFlightOption(Some((v, expire)))
-    }
-
-    pub fn pop_expired(&mut self) -> Option<V> {
-        unimplemented!()
-    }
-}
-
 #[derive(Debug)]
 pub struct InFlightMap<K: Hash + Eq + Copy, V, T: Ord + Copy> {
     map: HashMap<K, V>,

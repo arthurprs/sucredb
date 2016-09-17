@@ -8,11 +8,7 @@ use vnode::*;
 use workers::*;
 use resp::RespValue;
 use storage::{StorageManager, Storage};
-
-pub type NodeId = u64;
-pub type Token = u64;
-pub type Cookie = (u64, u64);
-pub type VNodeId = u16;
+pub use types::*;
 
 pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;
 
@@ -208,14 +204,14 @@ impl Database {
     fn send_set(&self, addr: NodeId, vnode: VNodeId, cookie: Cookie, key: &[u8],
                 value_opt: Option<&[u8]>, vv: VersionVector) {
         self.fabric
-            .send_message(addr,
-                          FabricMsg::Set(MsgSet {
-                              cookie: cookie,
-                              vnode: vnode,
-                              key: key.into(),
-                              value: value_opt.map(|x| x.into()),
-                              version_vector: vv,
-                          }))
+            .send_msg(addr,
+                      FabricMsg::Set(MsgSet {
+                          cookie: cookie,
+                          vnode: vnode,
+                          key: key.into(),
+                          value: value_opt.map(|x| x.into()),
+                          version_vector: vv,
+                      }))
             .unwrap();
     }
 
@@ -291,6 +287,11 @@ mod tests {
         responses: Arc<Mutex<HashMap<Token, RespValue>>>,
     }
 
+    fn sleep_ms(ms: u64) {
+        use std::time::Duration;
+        thread::sleep(Duration::from_millis(ms));
+    }
+
     impl TestDatabase {
         fn new(node: NodeId, bind_addr: net::SocketAddr, storage_dir: &str, create: bool) -> Self {
             let responses1 = Arc::new(Mutex::new(HashMap::new()));
@@ -310,9 +311,9 @@ mod tests {
         }
 
         fn response(&self, token: Token) -> Option<DottedCausalContainer<Vec<u8>>> {
-            (0..200)
+            (0..1000)
                 .filter_map(|_| {
-                    thread::sleep_ms(10);
+                    sleep_ms(10);
                     self.responses.lock().unwrap().remove(&token).and_then(|v| resp_to_dcc(v))
                 })
                 .next()
@@ -416,10 +417,10 @@ mod tests {
         let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.claim(db2.dht.node(), ());
 
-        thread::sleep_ms(1000);
+        sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
             warn!("waiting for syncs to finish");
-            thread::sleep_ms(1000);
+            sleep_ms(1000);
         }
 
         db1.get(1, b"test");
@@ -469,10 +470,10 @@ mod tests {
         //     assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
         // }
 
-        thread::sleep_ms(1000);
+        sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
             warn!("waiting for syncs to finish");
-            thread::sleep_ms(1000);
+            sleep_ms(1000);
         }
 
         // drop(db1);
@@ -492,10 +493,10 @@ mod tests {
         let mut db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.claim(db2.dht.node(), ());
 
-        thread::sleep_ms(1000);
+        sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
             warn!("waiting for syncs to finish");
-            thread::sleep_ms(1000);
+            sleep_ms(1000);
         }
 
         for i in 0..TEST_JOIN_SIZE {
@@ -518,10 +519,10 @@ mod tests {
         let _ = fs::remove_dir_all("t/db1");
         db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", false);
 
-        thread::sleep_ms(1000);
+        sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
             warn!("waiting for syncs to finish");
-            thread::sleep_ms(1000);
+            sleep_ms(1000);
         }
 
         warn!("will check data in db1 after sync");
@@ -539,10 +540,10 @@ mod tests {
         let mut db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.claim(db2.dht.node(), ());
 
-        thread::sleep_ms(1000);
+        sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
             warn!("waiting for syncs to finish");
-            thread::sleep_ms(1000);
+            sleep_ms(1000);
         }
 
         for i in 0..TEST_JOIN_SIZE {
@@ -565,10 +566,10 @@ mod tests {
         let _ = fs::remove_dir_all("t/db2");
         db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
 
-        thread::sleep_ms(1000);
+        sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
             warn!("waiting for rev syncs to finish");
-            thread::sleep_ms(1000);
+            sleep_ms(1000);
         }
 
         // force some syncs
@@ -576,10 +577,10 @@ mod tests {
             db2.start_sync(i, false);
         }
 
-        thread::sleep_ms(1000);
+        sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
             warn!("waiting for syncs to finish");
-            thread::sleep_ms(1000);
+            sleep_ms(1000);
         }
 
         // FIXME: this is broken until we can specify R=1
