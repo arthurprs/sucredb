@@ -353,9 +353,11 @@ impl VNode {
             for (cookie, result) in terminated {
                 match result {
                     SyncResult::Done => {
+                        info!("Removing sync/bootstrap {:?}", cookie);
                         self.syncs.remove(&cookie);
                     }
                     SyncResult::RetryBoostrap => {
+                        info!("Retrying bootstrap {:?}", cookie);
                         self.syncs.remove(&cookie);
                         self.start_bootstrap(db);
                     }
@@ -529,11 +531,13 @@ impl VNode {
             fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::BadVNodeStatus);
         } else if !self.syncs.contains_key(&msg.cookie) {
             let cookie = msg.cookie;
-            let sync = match (msg.target.as_ref(), msg.clock_in_peer.as_ref()) {
+            let sync = match (msg.target.clone(), msg.clock_in_peer.as_ref()) {
                 (None, None) => {
+                    info!("starting bootstrap sender {:?} peer:{}", cookie, from);
                     Synchronization::new_bootstrap_sender(db, &mut self.state, from, msg)
                 }
-                (Some(_), Some(_)) => {
+                (Some(target), Some(_)) => {
+                    info!("starting sync sender {:?} target:{:?} peer:{}", cookie, target, from);
                     Synchronization::new_sync_sender(db, &mut self.state, from, msg)
                 }
                 _ => unreachable!(),
@@ -582,7 +586,7 @@ impl VNode {
             match result {
                 SyncResult::Done |
                 SyncResult::RetryBoostrap => {
-                    debug!("Removing sync/bootstrap {:?}", cookie);
+                    info!("Removing sync/bootstrap {:?}", cookie);
                     o.remove();
                 }
                 SyncResult::Continue => (),
@@ -623,6 +627,7 @@ impl VNode {
                 last_receive: Instant::now(),
                 starts_sent: 0,
             };
+            info!("starting bootstrap receiver {:?} peer:{}", cookie, node);
 
             assert!(self.syncs.insert(cookie, bootstrap).is_none());
             self.syncs.get_mut(&cookie).unwrap().send_start(db, &mut self.state);
@@ -660,6 +665,7 @@ impl VNode {
                 last_receive: Instant::now(),
                 starts_sent: 0,
             };
+            info!("starting sync receiver {:?} target:{:?} peer:{}", cookie, target, node);
 
             assert!(self.syncs.insert(cookie, sync).is_none());
             self.syncs.get_mut(&cookie).unwrap().send_start(db, &mut self.state);
@@ -704,7 +710,7 @@ impl VNodeState {
         }
     }
 
-    fn finish_reverse_sync(&mut self, db: &Database) {
+    fn on_reverse_sync_done(&mut self, db: &Database) {
         assert_eq!(self.status, VNodeStatus::Recover);
         self.pending_recoveries -= 1;
         if self.pending_recoveries == 0 {
@@ -1133,7 +1139,7 @@ impl Synchronization {
                         }
                         Synchronization::SyncReceiver { target, .. } => {
                             if target == db.dht.node() {
-                                state.finish_reverse_sync(db);
+                                state.on_reverse_sync_done(db);
                             }
                             return SyncResult::Done;
                         }
@@ -1169,7 +1175,7 @@ impl Synchronization {
 
                 // if reverse update status: recover -> ready
                 if target == db.dht.node() {
-                    state.finish_reverse_sync(db);
+                    state.on_reverse_sync_done(db);
                 }
             }
             Synchronization::SyncSender { /*ref clock_in_peer, peer,*/ .. } => {
