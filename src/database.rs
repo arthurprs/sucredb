@@ -19,13 +19,7 @@ pub struct Database {
     pub storage_manager: StorageManager,
     workers: Mutex<WorkerManager>,
     vnodes: RwLock<HashMap<VNodeId, Mutex<VNode>>>,
-    inflight: Mutex<HashMap<Cookie, ProxyReqState>>,
     pub response_fn: DatabaseResponseFn,
-}
-
-struct ProxyReqState {
-    from: NodeId,
-    cookie: Cookie,
 }
 
 macro_rules! vnode {
@@ -45,17 +39,31 @@ macro_rules! vnode {
 }
 
 impl Database {
-    pub fn new(node: NodeId, fabric_addr: net::SocketAddr, storage_dir: &str, is_create: bool,
-               response_fn: DatabaseResponseFn)
+    pub fn new(node: NodeId, fabric_addr: net::SocketAddr, cluster: &str, storage_dir: &str,
+               is_create: bool, response_fn: DatabaseResponseFn)
                -> Arc<Database> {
         let storage_manager = StorageManager::new(storage_dir).unwrap();
         let meta_storage = storage_manager.open(-1, true).unwrap();
+
+        if is_create {
+            meta_storage.set(b"cluster", cluster.as_bytes());
+            meta_storage.set(b"node", node.to_string().as_bytes());
+            meta_storage.sync();
+        } else {
+            assert_eq!(meta_storage.get_vec(b"cluster").unwrap_or_default(),
+                       cluster.as_bytes(),
+                       "Stored cluster name differs!");
+            assert_eq!(meta_storage.get_vec(b"node").unwrap_or_default(),
+                       node.to_string().as_bytes(),
+                       "Stored node Id differs!");
+        }
+
         let workers = WorkerManager::new(1, time::Duration::from_millis(1000));
         let db = Arc::new(Database {
             fabric: Fabric::new(node, fabric_addr).unwrap(),
             dht: DHT::new(node,
                           fabric_addr,
-                          "test",
+                          cluster,
                           if is_create {
                               Some(((), dht::RingDescription::new(3, 64)))
                           } else {
@@ -63,7 +71,6 @@ impl Database {
                           }),
             storage_manager: storage_manager,
             meta_storage: meta_storage,
-            inflight: Default::default(),
             response_fn: response_fn,
             vnodes: Default::default(),
             workers: Mutex::new(workers),
@@ -188,7 +195,15 @@ impl Database {
     }
 
     fn syncs_inflight(&self) -> usize {
-        self.vnodes.read().unwrap().values().map(|vn| vn.lock().unwrap().syncs_inflight()).sum()
+        self.vnodes
+            .read()
+            .unwrap()
+            .values()
+            .map(|vn| {
+                let inf = vn.lock().unwrap().syncs_inflight();
+                inf.0 + inf.1
+            })
+            .sum()
     }
 
     fn start_bootstrap(&self, vnode: VNodeId) {
@@ -237,7 +252,11 @@ impl Database {
         });
     }
 
-    fn handler_set_ack(&self, _from: NodeId, _msg: MsgSetAck) {}
+    fn handler_set_ack(&self, from: NodeId, msg: MsgSetAck) {
+        vnode!(self, msg.vnode, |mut vn| {
+            vn.handler_set_ack(self, from, msg);
+        });
+    }
 
     fn handler_set_remote(&self, from: NodeId, msg: MsgRemoteSet) {
         vnode!(self, msg.vnode, |mut vn| {
@@ -282,14 +301,14 @@ mod tests {
     use bincode::{serde as bincode_serde, SizeLimit};
     use resp::RespValue;
 
-    struct TestDatabase {
-        db: Arc<Database>,
-        responses: Arc<Mutex<HashMap<Token, RespValue>>>,
-    }
-
     fn sleep_ms(ms: u64) {
         use std::time::Duration;
         thread::sleep(Duration::from_millis(ms));
+    }
+
+    struct TestDatabase {
+        db: Arc<Database>,
+        responses: Arc<Mutex<HashMap<Token, RespValue>>>,
     }
 
     impl TestDatabase {
@@ -299,6 +318,7 @@ mod tests {
             let db = Database::new(node,
                                    bind_addr,
                                    storage_dir,
+                                   "test",
                                    create,
                                    Box::new(move |t, v| {
                                        let r = responses1.lock().unwrap().insert(t, v);

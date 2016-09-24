@@ -71,6 +71,7 @@ pub struct ReqState {
     succesfull: u8,
     required: u8,
     total: u8,
+    proxied: bool,
     // only used for get
     container: DottedCausalContainer<Vec<u8>>,
     token: Token,
@@ -228,6 +229,7 @@ impl ReqState {
             total: nodes as u8,
             replies: 0,
             succesfull: 0,
+            proxied: false,
             container: DottedCausalContainer::new(),
             token: token,
         }
@@ -277,8 +279,15 @@ impl VNode {
         self.state.log.log.len()
     }
 
-    pub fn syncs_inflight(&self) -> usize {
-        self.syncs.len()
+    pub fn syncs_inflight(&self) -> (usize, usize) {
+        self.syncs.values().fold((0, 0), |(inc, out), s| {
+            match *s {
+                Synchronization::BootstrapReceiver { .. } => (inc + 1, out),
+                Synchronization::SyncReceiver { .. } => (inc + 1, out),
+                Synchronization::BootstrapSender { .. } => (inc, out + 1),
+                Synchronization::SyncSender { .. } => (inc, out + 1),
+            }
+        })
     }
 
     fn gen_cookie(&mut self) -> Cookie {
@@ -502,6 +511,10 @@ impl VNode {
     }
 
     pub fn handler_set(&mut self, _db: &Database, _from: NodeId, _msg: MsgSet) {
+        unimplemented!()
+    }
+
+    pub fn handler_set_ack(&mut self, _db: &Database, _from: NodeId, _msg: MsgSetAck) {
         unimplemented!()
     }
 
@@ -985,10 +998,7 @@ impl Synchronization {
                 *last_receive = Instant::now();
                 (peer, cookie, Some(target), Some(clock_in_peer.clone()))
             }
-            Synchronization::BootstrapReceiver { peer,
-                                                 cookie,
-                                                 ref mut last_receive,
-                                                 .. } => {
+            Synchronization::BootstrapReceiver { peer, cookie, ref mut last_receive, .. } => {
                 // reset last receives
                 *last_receive = Instant::now();
                 (peer, cookie, None, None)

@@ -392,10 +392,13 @@ impl Fabric {
         if cfg!(test) {
             let droppable = match msg.get_type() {
                 FabricMsgType::Crud => false,
-                _ => true
+                _ => true,
             };
             if droppable {
-                let fabric_drop = ::std::env::var("FABRIC_DROP").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+                let fabric_drop = ::std::env::var("FABRIC_DROP")
+                    .ok()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
                 if fabric_drop > 0.0 && ::rand::thread_rng().gen::<f64>() < fabric_drop {
                     warn!("Fabric msg droped due to FABRIC_DROP: {:?}", msg);
                     return Ok(());
@@ -405,7 +408,7 @@ impl Fabric {
         // fast path if connection already available
         if let Some(node) = self.shared_context.outgoing.read().unwrap().get(&recipient) {
             if let Some(n) = thread_rng().choose(&node.1) {
-                node.0.push(msg.into()).unwrap();
+                node.0.push(msg).unwrap();
                 n.wakeup().unwrap();
                 return Ok(());
             };
@@ -415,7 +418,7 @@ impl Fabric {
         let node = outgoing.entry(recipient)
             .or_insert_with(|| (BoundedQueue::with_capacity(1024), Vec::new()));
         // push the message
-        node.0.push(msg.into()).unwrap();
+        node.0.push(msg).unwrap();
         // FIXME: we might have raced, so only create new conn if necessary
         if let Some(n) = thread_rng().choose(&node.1) {
             n.wakeup().unwrap();

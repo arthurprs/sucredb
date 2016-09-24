@@ -15,6 +15,7 @@ pub type DHTChangeFn = Box<Fn() + Send + Sync>;
 
 pub struct DHT<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
     node: NodeId,
+    cluster: String,
     addr: net::SocketAddr,
     inner: Arc<RwLock<Inner<T>>>,
     thread: Option<thread::JoinHandle<()>>,
@@ -94,6 +95,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         let mut dht = DHT {
             node: node,
             addr: fabric_addr,
+            cluster: cluster.into(),
             inner: inner.clone(),
             thread: None,
         };
@@ -197,6 +199,10 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
 
     pub fn node(&self) -> NodeId {
         self.node
+    }
+
+    pub fn cluster(&self) -> &str {
+        &self.cluster
     }
 
     pub fn partitions(&self) -> usize {
