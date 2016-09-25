@@ -8,7 +8,10 @@ use vnode::*;
 use workers::*;
 use resp::RespValue;
 use storage::{StorageManager, Storage};
+use rand::{thread_rng, Rng};
 pub use types::*;
+
+const MAX_INCOMMING_SYNCS: usize = 1;
 
 pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;
 
@@ -45,18 +48,17 @@ impl Database {
         let storage_manager = StorageManager::new(storage_dir).unwrap();
         let meta_storage = storage_manager.open(-1, true).unwrap();
 
-        if is_create {
-            meta_storage.set(b"cluster", cluster.as_bytes());
-            meta_storage.set(b"node", node.to_string().as_bytes());
-            meta_storage.sync();
-        } else {
-            assert_eq!(meta_storage.get_vec(b"cluster").unwrap_or_default(),
-                       cluster.as_bytes(),
-                       "Stored cluster name differs!");
-            assert_eq!(meta_storage.get_vec(b"node").unwrap_or_default(),
-                       node.to_string().as_bytes(),
-                       "Stored node Id differs!");
+        if !is_create {
+            if let Some(s_cluster) = meta_storage.get_vec(b"cluster") {
+                assert_eq!(s_cluster, cluster.as_bytes(), "Stored cluster name differs!");
+            }
+            if let Some(s_node) = meta_storage.get_vec(b"node") {
+                assert_eq!(s_node, node.to_string().as_bytes(), "Stored node Id differs!");
+            }
         }
+        meta_storage.set(b"cluster", cluster.as_bytes());
+        meta_storage.set(b"node", node.to_string().as_bytes());
+        meta_storage.sync();
 
         let workers = WorkerManager::new(1, time::Duration::from_millis(1000));
         let db = Arc::new(Database {
@@ -165,9 +167,22 @@ impl Database {
     }
 
     fn handler_tick(&self, time: time::Instant) {
-        for vn in self.vnodes.read().unwrap().values() {
-            vn.lock().unwrap().handler_tick(self, time);
+        let mut incomming_syncs = 0;
+        let vnodes = self.vnodes.read().unwrap();
+        for vn in vnodes.values() {
+            let mut vn = vn.lock().unwrap();
+            vn.handler_tick(self, time);
+            incomming_syncs += vn.syncs_inflight().0;
         }
+        // if incomming_syncs < MAX_INCOMMING_SYNCS {
+        //     let mut rng = thread_rng();
+        //     for i in (0..vnodes.len()).map(|_| rng.gen::<u16>() % vnodes.len() as u16) {
+        //         incomming_syncs += vnodes.get(&i).unwrap().lock().unwrap().start_sync(self, false);
+        //         if incomming_syncs >= MAX_INCOMMING_SYNCS {
+        //             break
+        //         }
+        //     }
+        // }
     }
 
     fn handler_fabric_msg(&self, from: NodeId, msg: FabricMsg) {
@@ -317,8 +332,8 @@ mod tests {
             let responses2 = responses1.clone();
             let db = Database::new(node,
                                    bind_addr,
-                                   storage_dir,
                                    "test",
+                                   storage_dir,
                                    create,
                                    Box::new(move |t, v| {
                                        let r = responses1.lock().unwrap().insert(t, v);

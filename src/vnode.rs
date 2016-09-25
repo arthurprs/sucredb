@@ -1,5 +1,5 @@
 use std::time::{Instant, Duration};
-use std::collections::{HashMap, BTreeMap};
+use std::collections::{HashMap, BTreeMap, HashSet};
 use std::collections::hash_map::Entry as HMEntry;
 use version_vector::*;
 use storage::*;
@@ -48,8 +48,11 @@ struct VNodeState {
     log: VNodePeer,
     peers: HashMap<NodeId, VNodePeer>,
     storage: Storage,
-    pending_recoveries: usize,
     unflushed_coord_writes: usize,
+    // sync
+    sync_nodes: HashSet<NodeId>,
+    // rev syncs
+    pending_recoveries: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -196,17 +199,24 @@ macro_rules! check_status {
 }
 
 macro_rules! fabric_send_error{
-    ($db: expr, $from: expr, $msg: expr, $emsg: ident, $err: expr) => {{
-        $db.fabric.send_msg($from,  $emsg {
-            cookie: $msg.cookie,
+    ($db: expr, $to: expr, $msg: expr, $emsg: ident, $err: expr) => {
+        $db.fabric.send_msg($to, $emsg {
             vnode: $msg.vnode,
+            cookie: $msg.cookie,
             result: Err($err),
         }).unwrap();
-    }}
+    };
+    ($db: expr, $to: expr, $vnode: expr, $cookie: expr, $emsg: ident, $err: expr) => {
+        $db.fabric.send_msg($to, $emsg {
+            vnode: $vnode,
+            cookie: $cookie,
+            result: Err($err),
+        }).unwrap();
+    };
 }
 
 macro_rules! forward {
-    ($this: expr, $db: expr, $from: expr, $msg: expr, $emsg: ident, $col: ident, $f: ident) => {{
+    ($this: expr, $db: expr, $from: expr, $msg: expr, $emsg: ident, $col: ident, $f: ident) => {
         match $this.$col.entry($msg.cookie) {
             HMEntry::Occupied(mut o) => {
                 o.get_mut().$f($db, &mut $this.state, $msg);
@@ -215,7 +225,7 @@ macro_rules! forward {
                 fabric_send_error!($db, $from, $msg, $emsg, FabricMsgError::CookieNotFound);
             }
         }
-    }};
+    };
     ($this: expr, $($status:pat)|*, $db: expr, $from: expr, $msg: expr, $emsg: ident, $col: ident, $f: ident) => {
         check_status!($this, $($status)|*, $db, $from, $msg, $emsg, $col);
         forward!($this, $db, $from, $msg, $emsg, $col, $f)
@@ -318,7 +328,7 @@ impl VNode {
                         })
                         .collect::<Vec<_>>();
                     for cookie in canceled {
-                        self.syncs.remove(&cookie);
+                        self.syncs.remove(&cookie).unwrap().on_remove(db, state);
                     }
                 }
 
@@ -361,17 +371,13 @@ impl VNode {
             };
             for (cookie, result) in terminated {
                 match result {
-                    SyncResult::Done => {
-                        info!("Removing sync/bootstrap {:?}", cookie);
-                        self.syncs.remove(&cookie);
-                    }
                     SyncResult::RetryBoostrap => {
                         info!("Retrying bootstrap {:?}", cookie);
-                        self.syncs.remove(&cookie);
                         self.start_bootstrap(db);
                     }
-                    _ => unreachable!(),
+                    _ => (),
                 }
+                self.syncs.remove(&cookie).unwrap().on_remove(db, &mut self.state);
             }
         }
 
@@ -600,7 +606,7 @@ impl VNode {
                 SyncResult::Done |
                 SyncResult::RetryBoostrap => {
                     info!("Removing sync/bootstrap {:?}", cookie);
-                    o.remove();
+                    o.remove().on_remove(db, &mut self.state);
                 }
                 SyncResult::Continue => (),
             }
@@ -649,7 +655,7 @@ impl VNode {
         self.state.set_status(VNodeStatus::Ready);
     }
 
-    pub fn start_sync(&mut self, db: &Database, reverse: bool) {
+    pub fn start_sync(&mut self, db: &Database, reverse: bool) -> usize {
         if reverse {
             assert_eq!((self.state.status, self.state.pending_recoveries),
                        (VNodeStatus::Recover, 0),
@@ -660,15 +666,18 @@ impl VNode {
         let mut started = 0;
         let nodes = db.dht.nodes_for_vnode(self.state.num, false);
         for node in nodes {
-            if node == db.dht.node() {
+            if node == db.dht.node() || self.state.sync_nodes.contains(&node) {
                 continue;
             }
+
+            let cookie = self.gen_cookie();
             let target = if reverse {
+                self.state.pending_recoveries += 1;
                 db.dht.node()
             } else {
+                self.state.sync_nodes.insert(node);
                 node
             };
-            let cookie = self.gen_cookie();
             let sync = Synchronization::SyncReceiver {
                 clock_in_peer: self.state.clocks.get(node).cloned().unwrap_or_default(),
                 peer: node,
@@ -684,12 +693,10 @@ impl VNode {
             self.syncs.get_mut(&cookie).unwrap().send_start(db, &mut self.state);
             started += 1;
         }
-        if reverse {
-            self.state.pending_recoveries = started;
-            if started == 0 {
-                self.state.set_status(VNodeStatus::Ready);
-            }
+        if reverse && started == 0 {
+            self.state.set_status(VNodeStatus::Ready);
         }
+        started
     }
 }
 
@@ -712,6 +719,8 @@ impl VNodeState {
                     }
                 }
                 VNodeStatus::Absent => {
+                    assert_eq!(self.pending_recoveries, 0);
+                    assert_eq!(self.sync_nodes.len(), 0);
                     self.log.clear();
                     self.peers.clear();
                 }
@@ -720,15 +729,6 @@ impl VNodeState {
 
             self.last_status_change = Instant::now();
             self.status = new;
-        }
-    }
-
-    fn on_reverse_sync_done(&mut self, db: &Database) {
-        assert_eq!(self.status, VNodeStatus::Recover);
-        self.pending_recoveries -= 1;
-        if self.pending_recoveries == 0 {
-            self.set_status(VNodeStatus::Ready);
-            self.clocks.advance(db.dht.node(), RECOVER_FAST_FORWARD);
         }
     }
 
@@ -746,6 +746,7 @@ impl VNodeState {
             log: Default::default(),
             storage: storage,
             unflushed_coord_writes: 0,
+            sync_nodes: Default::default(),
             pending_recoveries: 0,
         }
     }
@@ -813,6 +814,7 @@ impl VNodeState {
             log: log,
             peers: peers,
             unflushed_coord_writes: 0,
+            sync_nodes: Default::default(),
             pending_recoveries: 0,
         }
     }
@@ -873,7 +875,7 @@ impl VNodeState {
             self.unflushed_coord_writes = 0;
         }
 
-        // we striped above so we have to fill again :(
+        // FIXME: we striped above so we have to fill again :(
         dcc.fill(&self.clocks);
         dcc
     }
@@ -1112,18 +1114,31 @@ impl Synchronization {
         }
     }
 
-    fn on_remove(&mut self, db: &Database, state: &mut VNodeState) {
-        match *self {
+    fn on_remove(self, db: &Database, state: &mut VNodeState) {
+        match self {
+            Synchronization::SyncReceiver { peer, target, .. } => {
+                if target == peer {
+                    state.sync_nodes.remove(&peer);
+                } else {
+                    assert_eq!(state.status, VNodeStatus::Recover);
+                    state.pending_recoveries -= 1;
+                    if state.pending_recoveries == 0 {
+                        state.set_status(VNodeStatus::Ready);
+                        state.clocks.advance(db.dht.node(), RECOVER_FAST_FORWARD);
+                    }
+                }
+            }
+            _ => (),
+        }
+        match self {
             Synchronization::BootstrapReceiver { peer, cookie, .. } |
             Synchronization::SyncReceiver { peer, cookie, .. } => {
-                db.fabric
-                    .send_msg(peer,
-                              MsgSyncFin {
-                                  vnode: state.num,
-                                  cookie: cookie,
-                                  result: Err(FabricMsgError::BadVNodeStatus),
-                              })
-                    .unwrap();
+                fabric_send_error!(db,
+                                   peer,
+                                   state.num,
+                                   cookie,
+                                   MsgSyncFin,
+                                   FabricMsgError::BadVNodeStatus);
             }
             _ => (),
         }
@@ -1147,13 +1162,7 @@ impl Synchronization {
                         Synchronization::BootstrapReceiver { .. } => {
                             return SyncResult::RetryBoostrap;
                         }
-                        Synchronization::SyncReceiver { target, .. } => {
-                            if target == db.dht.node() {
-                                state.on_reverse_sync_done(db);
-                            }
-                            return SyncResult::Done;
-                        }
-                        _ => unreachable!(),
+                        _ => return SyncResult::Done,
                     }
                 } else if count == 0 &&
                    last_receive.elapsed() > Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
@@ -1181,11 +1190,6 @@ impl Synchronization {
                     state.storage.sync();
                     // send it back as a form of ack-ack
                     db.fabric.send_msg(peer, msg).unwrap();
-                }
-
-                // if reverse update status: recover -> ready
-                if target == db.dht.node() {
-                    state.on_reverse_sync_done(db);
                 }
             }
             Synchronization::SyncSender { /*ref clock_in_peer, peer,*/ .. } => {
