@@ -268,7 +268,7 @@ impl VNode {
                 vnode.start_bootstrap(db);
             }
             VNodeStatus::Recover => {
-                vnode.start_sync(db, true);
+                vnode.start_rev_sync(db);
             }
             status => panic!("{:?} isn't a valid state after load", status),
         }
@@ -345,6 +345,7 @@ impl VNode {
             }
             (VNodeStatus::Absent, VNodeStatus::Ready) => {
                 // recomission by bootstrap
+                self.state.set_status(VNodeStatus::Bootstrap);
                 self.start_bootstrap(db);
             }
             (VNodeStatus::Bootstrap, VNodeStatus::Ready) |
@@ -630,7 +631,9 @@ impl VNode {
     /// //////
     pub fn start_bootstrap(&mut self, db: &Database) {
         // TODO: clear storage
-        assert_any!(self.state.status, VNodeStatus::Bootstrap | VNodeStatus::Absent);
+        assert_eq!((self.state.status, self.syncs.len()),
+                   (VNodeStatus::Bootstrap, 0),
+                   "status must be Bootstrap before starting bootstrap");
         let cookie = self.gen_cookie();
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false);
         thread_rng().shuffle(&mut nodes);
@@ -638,7 +641,6 @@ impl VNode {
             if node == db.dht.node() {
                 continue;
             }
-            self.state.set_status(VNodeStatus::Bootstrap);
             let bootstrap = Synchronization::BootstrapReceiver {
                 cookie: cookie,
                 peer: node,
@@ -655,14 +657,28 @@ impl VNode {
         self.state.set_status(VNodeStatus::Ready);
     }
 
-    pub fn start_sync(&mut self, db: &Database, reverse: bool) -> usize {
-        if reverse {
-            assert_eq!((self.state.status, self.state.pending_recoveries),
-                       (VNodeStatus::Recover, 0),
-                       "Status must be Reverse before starting a reverse sync");
-        } else {
-            assert_any!(self.state.status, VNodeStatus::Ready | VNodeStatus::Zombie);
+    pub fn maybe_start_sync(&mut self, db: &Database) -> usize {
+        match self.state.status {
+            VNodeStatus::Ready | VNodeStatus::Zombie => self.do_start_sync(db, false),
+            _ => 0,
         }
+    }
+
+    pub fn start_sync(&mut self, db: &Database) -> usize {
+        assert_any!(self.state.status, VNodeStatus::Ready | VNodeStatus::Zombie);
+        self.do_start_sync(db, false)
+    }
+
+    pub fn start_rev_sync(&mut self, db: &Database) {
+        assert_eq!((self.state.status, self.state.pending_recoveries),
+                   (VNodeStatus::Recover, 0),
+                   "Status must be Reverse before starting a reverse sync");
+        if self.do_start_sync(db, true) == 0 {
+            self.state.set_status(VNodeStatus::Ready);
+        }
+    }
+
+    fn do_start_sync(&mut self, db: &Database, reverse: bool) -> usize {
         let mut started = 0;
         let nodes = db.dht.nodes_for_vnode(self.state.num, false);
         for node in nodes {
@@ -692,9 +708,6 @@ impl VNode {
             assert!(self.syncs.insert(cookie, sync).is_none());
             self.syncs.get_mut(&cookie).unwrap().send_start(db, &mut self.state);
             started += 1;
-        }
-        if reverse && started == 0 {
-            self.state.set_status(VNodeStatus::Ready);
         }
         started
     }
@@ -1183,7 +1196,7 @@ impl Synchronization {
 
     fn on_fin(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncFin) -> SyncResult {
         match *self {
-            Synchronization::SyncReceiver { peer, target, .. } => {
+            Synchronization::SyncReceiver { peer, .. } => {
                 if msg.result.is_ok() {
                     state.clocks.join(msg.result.as_ref().unwrap());
                     state.save(db, false);
