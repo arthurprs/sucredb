@@ -25,6 +25,23 @@ pub struct Database {
     pub response_fn: DatabaseResponseFn,
 }
 
+macro_rules! fabric_send_error{
+    ($db: expr, $to: expr, $msg: expr, $emsg: ident, $err: expr) => {
+        $db.fabric.send_msg($to, $emsg {
+            vnode: $msg.vnode,
+            cookie: $msg.cookie,
+            result: Err($err),
+        }).unwrap();
+    };
+    ($db: expr, $to: expr, $vnode: expr, $cookie: expr, $emsg: ident, $err: expr) => {
+        $db.fabric.send_msg($to, $emsg {
+            vnode: $vnode,
+            cookie: $cookie,
+            result: Err($err),
+        }).unwrap();
+    };
+}
+
 macro_rules! vnode {
     ($s: expr, $k: expr, $ok: expr) => ({
         let vnodes = $s.vnodes.read().unwrap();

@@ -30,7 +30,6 @@ mod version_vector;
 // mod gossip;
 mod inflightmap;
 mod dht;
-#[macro_use]
 mod fabric_msg;
 mod fabric;
 mod storage;
@@ -38,6 +37,7 @@ mod hash;
 #[macro_use]
 mod database;
 mod vnode;
+mod vnode_sync;
 mod resp;
 mod server;
 mod workers;

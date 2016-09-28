@@ -1,12 +1,27 @@
 use resp::{ByteTendril, RespValue};
 use database::{Token, Database};
 use version_vector::*;
+use std::str;
 use bincode::{serde as bincode_serde, SizeLimit};
 
 #[derive(Debug)]
 pub enum CommandError {
     Timeout,
     ProtocolError,
+}
+
+fn quick_int(bytes: &[u8]) -> Result<usize, CommandError> {
+    if bytes.len() == 1 {
+        (bytes[0] as char)
+            .to_digit(10)
+            .map(|d| d as usize)
+            .ok_or(CommandError::ProtocolError)
+    } else {
+        str::from_utf8(bytes)
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .ok_or(CommandError::ProtocolError)
+    }
 }
 
 impl Database {
