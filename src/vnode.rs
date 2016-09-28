@@ -726,6 +726,11 @@ impl VNodeState {
         debug!("VNode {} status change {:?} -> {:?}", self.num, self.status, new);
         if new != self.status {
             match new {
+                VNodeStatus::Bootstrap => {
+                    assert_eq!(self.pending_recoveries, 0);
+                    assert_eq!(self.sync_nodes.len(), 0);
+                    self.storage.clear();
+                }
                 VNodeStatus::Ready => {
                     if self.status == VNodeStatus::Recover {
                         assert_eq!(self.pending_recoveries, 0);
@@ -736,6 +741,7 @@ impl VNodeState {
                     assert_eq!(self.sync_nodes.len(), 0);
                     self.log.clear();
                     self.peers.clear();
+                    self.storage.clear();
                 }
                 _ => (),
             }
