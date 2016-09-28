@@ -176,7 +176,7 @@ impl Synchronization {
     }
 
     fn send_start(&mut self, db: &Database, state: &mut VNodeState) {
-        let (peer, cookie, target, clock_in_peer) = match *self {
+        let (peer, msg) = match *self {
             Synchronization::SyncReceiver { cookie,
                                             peer,
                                             target,
@@ -185,24 +185,28 @@ impl Synchronization {
                                             .. } => {
                 // reset last receives
                 *last_receive = Instant::now();
-                (peer, cookie, Some(target), Some(clock_in_peer.clone()))
+                (peer,
+                 MsgSyncStart {
+                    cookie: cookie,
+                    vnode: state.num(),
+                    target: Some(target),
+                    clock_in_peer: Some(clock_in_peer.clone()),
+                })
             }
             Synchronization::BootstrapReceiver { peer, cookie, ref mut last_receive, .. } => {
                 // reset last receives
                 *last_receive = Instant::now();
-                (peer, cookie, None, None)
+                (peer,
+                 MsgSyncStart {
+                    cookie: cookie,
+                    vnode: state.num(),
+                    target: None,
+                    clock_in_peer: None,
+                })
             }
             _ => unreachable!(),
         };
-        db.fabric
-            .send_msg(peer,
-                      MsgSyncStart {
-                          cookie: cookie,
-                          vnode: state.num(),
-                          target: target,
-                          clock_in_peer: clock_in_peer,
-                      })
-            .unwrap();
+        db.fabric.send_msg(peer, msg).unwrap();
     }
 
     fn send_success_fin(&mut self, db: &Database, state: &mut VNodeState) {
