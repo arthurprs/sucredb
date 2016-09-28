@@ -6,13 +6,13 @@ use bincode::{serde as bincode_serde, SizeLimit};
 #[derive(Debug)]
 pub enum CommandError {
     Timeout,
+    ProtocolError,
 }
 
 impl Database {
     pub fn handler_cmd(&self, token: u64, cmd: RespValue) {
         let mut args: [&[u8]; 32] = [b""; 32];
         let mut argc = 0;
-
         match cmd {
             RespValue::Array(ref a) if a.len() > 0 && a.len() <= args.len() => {
                 for v in a {
@@ -20,11 +20,17 @@ impl Database {
                         args[argc] = d.as_ref();
                         argc += 1;
                     } else {
-                        unimplemented!();
+                        argc = 0;
+                        break;
                     };
                 }
             }
-            _ => unimplemented!(),
+            _ => (),
+        }
+
+        if argc == 0 {
+            self.respond_error(token, CommandError::ProtocolError);
+            return;
         }
 
         let arg0 = args[0];
