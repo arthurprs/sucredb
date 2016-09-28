@@ -292,14 +292,12 @@ impl Synchronization {
         match *self {
             Synchronization::BootstrapReceiver { peer, cookie, .. } |
             Synchronization::SyncReceiver { peer, cookie, .. } => {
-                db.fabric
-                    .send_msg(peer,
-                              MsgSyncFin {
-                                  vnode: state.num(),
-                                  cookie: cookie,
-                                  result: Err(FabricMsgError::BadVNodeStatus),
-                              })
-                    .unwrap();
+                    fabric_send_error!(db,
+                                       peer,
+                                       state.num(),
+                                       cookie,
+                                       MsgSyncFin,
+                                       FabricMsgError::BadVNodeStatus);
             }
             _ => unreachable!(),
         }
@@ -318,18 +316,6 @@ impl Synchronization {
                         state.clocks.advance(db.dht.node(), RECOVER_FAST_FORWARD);
                     }
                 }
-            }
-            _ => (),
-        }
-        match self {
-            Synchronization::BootstrapReceiver { peer, cookie, .. } |
-            Synchronization::SyncReceiver { peer, cookie, .. } => {
-                fabric_send_error!(db,
-                                   peer,
-                                   state.num(),
-                                   cookie,
-                                   MsgSyncFin,
-                                   FabricMsgError::BadVNodeStatus);
             }
             _ => (),
         }
