@@ -18,6 +18,10 @@ rotor-tools="*"
 byteorder="*"
 nodrop="*"
 ramp="*"
+futures="0.1"
+
+[dependencies.tokio-core]
+git="https://github.com/tokio-rs/tokio-core.git"
 
 [dependencies.linear-map]
 git = "https://github.com/arthurprs/linear-map.git"

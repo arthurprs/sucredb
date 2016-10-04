@@ -287,7 +287,8 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         Ok(changes)
     }
 
-    pub fn add_pending_node(&self, vnode: VNodeId, node: NodeId, meta: T) -> Result<(), GenericError> {
+    pub fn add_pending_node(&self, vnode: VNodeId, node: NodeId, meta: T)
+                            -> Result<(), GenericError> {
         try_cas!(self, {
             let (mut ring, ring_version) = self.ring_clone();
             {
@@ -325,7 +326,8 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         Ok(())
     }
 
-    fn propose(&self, old_version: u64, new_ring: Ring<T>, update: bool) -> Result<(), etcd::Error> {
+    fn propose(&self, old_version: u64, new_ring: Ring<T>, update: bool)
+               -> Result<(), etcd::Error> {
         debug!("Proposing new ring against version {}", old_version);
         let cluster_key = format!("/{}/dht", self.inner.read().unwrap().cluster);
         let new = Self::serialize(&new_ring).unwrap();

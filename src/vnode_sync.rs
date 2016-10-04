@@ -292,12 +292,12 @@ impl Synchronization {
         match *self {
             Synchronization::BootstrapReceiver { peer, cookie, .. } |
             Synchronization::SyncReceiver { peer, cookie, .. } => {
-                    fabric_send_error!(db,
-                                       peer,
-                                       state.num(),
-                                       cookie,
-                                       MsgSyncFin,
-                                       FabricMsgError::BadVNodeStatus);
+                fabric_send_error!(db,
+                                   peer,
+                                   state.num(),
+                                   cookie,
+                                   MsgSyncFin,
+                                   FabricMsgError::BadVNodeStatus);
             }
             _ => unreachable!(),
         }
@@ -342,7 +342,7 @@ impl Synchronization {
                         _ => return SyncResult::Done,
                     }
                 } else if count == 0 &&
-                   last_receive.elapsed() > Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
+                          last_receive.elapsed() > Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
                     self.send_start(db, state);
                 }
             }

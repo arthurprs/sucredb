@@ -99,7 +99,8 @@ impl Machine for OutMachine {
         Stream::new(stream, (this, other), scope).wrap(OutMachine::Connection)
     }
 
-    fn ready(self, events: EventSet, scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
+    fn ready(self, events: EventSet, scope: &mut Scope<Self::Context>)
+             -> Response<Self, Self::Seed> {
         match self {
             OutMachine::Connector(..) => unreachable!(),
             OutMachine::Connection(m) => {
@@ -144,14 +145,16 @@ impl Machine for OutMachine {
     }
 }
 
-fn write_msg<T: Serialize + fmt::Debug>(transport: &mut Transport<TcpStream>, msg: &T) {
+fn write_msg<T>(transport: &mut Transport<TcpStream>, msg: &T) where T: Serialize + fmt::Debug {
     let msg_len = bincode_serde::serialized_size(msg);
     trace!("writing msg {:?} ({} bytes)", msg, msg_len);
     transport.output().write_u32::<LittleEndian>(msg_len as u32).unwrap();
     bincode_serde::serialize_into(transport.output(), msg, bincode::SizeLimit::Infinite).unwrap();
 }
 
-fn read_msg<T: Deserialize + fmt::Debug>(transport: &mut Transport<TcpStream>) -> (Option<T>, usize) {
+fn read_msg<T>(transport: &mut Transport<TcpStream>) -> (Option<T>, usize)
+    where T: Deserialize + fmt::Debug
+{
     let mut consumed = 0;
     let mut needed = 4;
     let mut de_msg = None;
@@ -255,7 +258,8 @@ impl Protocol for OutConnection {
         Intent::done()
     }
 
-    fn wakeup(self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>) -> Intent<Self> {
+    fn wakeup(self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
+              -> Intent<Self> {
         self.pull_msgs(transport, scope)
     }
 

@@ -1,8 +1,6 @@
-#![feature(custom_derive, plugin)]
-#![feature(question_mark)]
-#![feature(fnbox, binary_heap_extras)]
+#![feature(custom_derive, plugin, question_mark, arc_counts,
+binary_heap_extras, fnbox, conservative_impl_trait)]
 #![allow(dead_code)]
-#![feature(arc_counts)]
 #![plugin(serde_macros)]
 #[macro_use]
 extern crate log;
@@ -23,9 +21,14 @@ extern crate byteorder;
 extern crate etcd;
 extern crate nodrop;
 
+extern crate futures;
+#[macro_use]
+extern crate tokio_core;
+
 #[macro_use]
 mod utils;
 mod types;
+mod my_futures;
 mod version_vector;
 // mod gossip;
 mod inflightmap;
