@@ -45,6 +45,7 @@ mod resp;
 mod server;
 mod workers;
 mod command;
+mod new_fabric;
 
 #[cfg(not(test))]
 fn main() {
