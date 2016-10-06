@@ -64,13 +64,14 @@ impl RespConnection {
         }
     }
 
-    fn run(self, handle: tokio::reactor::Handle, socket: tokio::net::TcpStream, context: Rc<GlobalContext>)
-           -> impl Future<Item = (), Error = ()> {
+    fn run(self, handle: tokio::reactor::Handle, socket: tokio::net::TcpStream,
+           context: Rc<GlobalContext>)
+           -> Box<Future<Item = (), Error = ()>> {
         debug!("run token {}", self.token);
         let (pipe_tx, pipe_rx) = tokio::channel::channel(&handle).unwrap();
         context.token_chans.lock().unwrap().insert(self.token, pipe_tx);
         let (sock_rx, sock_tx) = socket.split();
-        let ctx_rx = Rc::new(RefCell::new(LocalContext{
+        let ctx_rx = Rc::new(RefCell::new(LocalContext {
             token: self.token,
             context: context,
             inflight: false,
@@ -78,8 +79,8 @@ impl RespConnection {
         }));
         let ctx_tx = ctx_rx.clone();
 
-        let inf_stream = stream::iter((0..).map(|_| -> Result<(), ()> { Ok(()) }));
-        let read_fut = inf_stream.fold((ctx_rx, sock_rx, resp::ByteTendril::new(), 0), |(ctx, s, mut b, p), _| {
+        let read_fut = stream::iter((0..).map(|_| -> Result<(), ()> { Ok(()) }))
+            .fold((ctx_rx, sock_rx, resp::ByteTendril::new(), 0), |(ctx, s, mut b, p), _| {
                 if b.len() - p < 4 * 1024 {
                     unsafe {
                         b.push_uninitialized(4 * 1024);
@@ -115,18 +116,18 @@ impl RespConnection {
             .then(|_| futures::finished::<(), ()>(()));
 
         let write_fut = pipe_rx.fold((ctx_tx, sock_tx, Vec::new()), |(ctx, s, mut b), resp| {
-            ctx.borrow_mut().dispatch_next();
-            b.clear();
-            resp.serialize_to(&mut b);
-            tokio::io::write_all(s, b).map(move |(s, b)| (ctx, s, b))
-        })
-        .into_future()
-        .then(|_| futures::finished::<(), ()>(()));
+                ctx.borrow_mut().dispatch_next();
+                b.clear();
+                resp.serialize_to(&mut b);
+                tokio::io::write_all(s, b).map(move |(s, b)| (ctx, s, b))
+            })
+            .into_future()
+            .then(|_| futures::finished::<(), ()>(()));
 
-        read_fut.select(write_fut).then(move |_| {
+        Box::new(read_fut.select(write_fut).then(move |_| {
             debug!("finished token {}", self.token);
             futures::finished::<(), ()>(())
-        })
+        }))
     }
 }
 
@@ -140,7 +141,8 @@ impl Server {
         let resp_addr = "127.0.0.1:6379".parse().unwrap();
         let listener = tokio::net::TcpListener::bind(&resp_addr, &core.handle()).unwrap();
 
-        let token_chans: Arc<Mutex<HashMap<Token, tokio::channel::Sender<RespValue>>>> = Default::default();
+        let token_chans: Arc<Mutex<HashMap<Token, tokio::channel::Sender<RespValue>>>> =
+            Default::default();
         let token_chans_cloned = token_chans.clone();
         let response_fn = Box::new(move |token, resp| {
             if let Some(chan) = token_chans_cloned.lock().unwrap().get(&token) {

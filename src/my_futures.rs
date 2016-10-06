@@ -44,7 +44,9 @@ impl<R, T> Future for ReadAt<R, T>
 
     fn poll(&mut self) -> Poll<(R, T, usize, usize), ::std::io::Error> {
         let nread = match self.state {
-            ReadAtState::Pending { ref mut rd, ref mut buf, at } => try_nb!(rd.read(&mut buf[at..])),
+            ReadAtState::Pending { ref mut rd, ref mut buf, at } => {
+                try_nb!(rd.read(&mut buf[at..]))
+            }
             ReadAtState::Empty => panic!("poll a Read after it's done"),
         };
 
