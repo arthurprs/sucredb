@@ -1,397 +1,283 @@
-use std::{fmt, thread, net};
-use std::error::Error;
-use std::sync::{Arc, RwLock, Mutex, atomic};
+use std::{str, io, net, thread};
+use std::sync::{Mutex, Arc};
 use std::collections::HashMap;
-use linear_map::LinearMap;
-use rotor::{self, Machine, Scope, Response, Void};
-use rotor::mio::{EventSet, PollOpt};
-use rotor::mio::util::BoundedQueue;
-use rotor::mio::tcp::{TcpListener, TcpStream};
-use rotor_tools::loop_ext::LoopExt;
-use rotor_stream::{Accept, Stream, Protocol, Intent, Transport, Exception};
+use std::collections::hash_map::Entry as HMEntry;
+
 use rand::{thread_rng, Rng};
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
-use serde::{Serialize, Deserialize};
 use bincode::{self, serde as bincode_serde};
+
+use futures::{self, Future, IntoFuture};
+use futures::stream::{self, Stream};
+use my_futures;
+use tokio_core as tokio;
+use tokio_core::io::Io;
+
 pub use fabric_msg::*;
 use utils::GenericError;
 use database::NodeId;
 
 pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
-
 pub type FabricResult<T> = Result<T, GenericError>;
-
 type FabricId = (NodeId, net::SocketAddr);
 
-pub struct Fabric {
-    loop_thread: Option<thread::JoinHandle<()>>,
-    shared_context: Arc<SharedContext>,
+struct ReaderContext {
+    context: Arc<GlobalContext>,
+    peer: FabricId,
 }
 
-struct SharedContext {
-    node: NodeId,
-    outgoing: RwLock<HashMap<NodeId, (BoundedQueue<FabricMsg>, Vec<rotor::Notifier>)>>,
+impl ReaderContext {
+    fn dispatch(&self, msg: FabricMsg) {
+        let msg_type = msg.get_type();
+        if let Some(handler) = self.context
+            .msg_handlers
+            .lock()
+            .unwrap()
+            .get_mut(&(msg_type as u8)) {
+            handler(self.peer.0, msg);
+        } else {
+            error!("No handler for msg type {:?}", msg_type);
+        }
+    }
+}
+
+struct WriterContext {
+    context: Arc<GlobalContext>,
+    peer: FabricId,
+}
+
+struct GlobalContext {
+    node: FabricId,
+    msg_handlers: Mutex<HashMap<u8, FabricHandlerFn>>,
     nodes_addr: Mutex<HashMap<NodeId, net::SocketAddr>>,
-    msg_handlers: Mutex<LinearMap<u8, FabricHandlerFn>>,
-    connector_notifier: rotor::Notifier,
-    connector_queue: BoundedQueue<FabricId>,
-    running: atomic::AtomicBool,
+    writer_chans: Arc<Mutex<HashMap<NodeId, Vec<tokio::channel::Sender<FabricMsg>>>>>,
 }
 
-struct Context {
-    shared: Arc<SharedContext>,
+pub struct Fabric {
+    context: Arc<GlobalContext>,
+    loop_remote: tokio::reactor::Remote,
+    loop_thread: Option<(thread::JoinHandle<()>, futures::Complete<()>)>,
 }
 
-enum OutMachine {
-    Connector(FabricId, BoundedQueue<FabricId>),
-    Connection(Stream<OutConnection>),
-}
-
-struct OutConnection {
-    identified: bool,
-    this: FabricId,
-    other: FabricId,
-    notifier: rotor::Notifier,
-}
-
-struct InConnection {
-    this: FabricId,
-    other: Option<FabricId>,
-}
-
-rotor_compose! {
-    enum Fsm/Seed<Context> {
-        Out(OutMachine),
-        In(Accept<Stream<InConnection>, TcpListener>),
-    }
-}
-
-impl Context {
-    fn new(node: NodeId, connector_notifier: rotor::Notifier,
-           connector_queue: BoundedQueue<FabricId>)
-           -> Self {
-        Context { shared: Arc::new(SharedContext::new(node, connector_notifier, connector_queue)) }
-    }
-}
-
-impl SharedContext {
-    fn new(node: NodeId, connector_notifier: rotor::Notifier,
-           connector_queue: BoundedQueue<FabricId>)
-           -> Self {
-        SharedContext {
-            node: node,
-            outgoing: Default::default(),
-            nodes_addr: Default::default(),
-            msg_handlers: Default::default(),
-            connector_notifier: connector_notifier,
-            connector_queue: connector_queue,
-            running: atomic::AtomicBool::new(false),
-        }
-    }
-}
-
-impl Machine for OutMachine {
-    type Context = Context;
-    type Seed = (FabricId, FabricId);
-
-    fn create((this, other): Self::Seed, scope: &mut Scope<Self::Context>) -> Response<Self, Void> {
-        let stream = TcpStream::connect(&other.1).unwrap();
-        Stream::new(stream, (this, other), scope).wrap(OutMachine::Connection)
-    }
-
-    fn ready(self, events: EventSet, scope: &mut Scope<Self::Context>)
-             -> Response<Self, Self::Seed> {
-        match self {
-            OutMachine::Connector(..) => unreachable!(),
-            OutMachine::Connection(m) => {
-                m.ready(events, scope)
-                    .map(OutMachine::Connection, |_| unreachable!())
-            }
-        }
-    }
-
-    fn spawned(self, _scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
-        match self {
-            OutMachine::Connector(..) => Response::ok(self),
-            OutMachine::Connection(..) => unreachable!(),
-        }
-    }
-
-    fn timeout(self, scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
-        match self {
-            OutMachine::Connector(..) => unreachable!(),
-            OutMachine::Connection(m) => {
-                m.timeout(scope).map(OutMachine::Connection, |_| unreachable!())
-            }
-        }
-    }
-
-    fn wakeup(self, scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
-        match self {
-            OutMachine::Connector(this, q) => {
-                if !scope.shared.running.load(atomic::Ordering::Relaxed) {
-                    debug!("shuting down loop");
-                    scope.shutdown_loop();
-                    return Response::done();
-                }
-                let other = q.pop().unwrap();
-                debug!("connector wake up with: {:?}", other);
-                Response::spawn(OutMachine::Connector(this, q), (this, other))
-            }
-            OutMachine::Connection(m) => {
-                m.wakeup(scope).map(OutMachine::Connection, |_| unreachable!())
-            }
-        }
-    }
-}
-
-fn write_msg<T>(transport: &mut Transport<TcpStream>, msg: &T) where T: Serialize + fmt::Debug {
-    let msg_len = bincode_serde::serialized_size(msg);
-    trace!("writing msg {:?} ({} bytes)", msg, msg_len);
-    transport.output().write_u32::<LittleEndian>(msg_len as u32).unwrap();
-    bincode_serde::serialize_into(transport.output(), msg, bincode::SizeLimit::Infinite).unwrap();
-}
-
-fn read_msg<T>(transport: &mut Transport<TcpStream>) -> (Option<T>, usize)
-    where T: Deserialize + fmt::Debug
-{
-    let mut consumed = 0;
-    let mut needed = 4;
-    let mut de_msg = None;
-    {
-        let mut buf = &transport.input()[..];
-        if let Ok(msg_len) = buf.read_u32::<LittleEndian>().map(|l| l as usize) {
-            if buf.len() >= msg_len {
-                let mut msg_buf = &buf[..msg_len];
-                let de_result = bincode_serde::deserialize_from(&mut msg_buf,
-                                                                bincode::SizeLimit::Infinite);
-                match de_result {
-                    Ok(msg) => {
-                        trace!("read msg {:?} ({} bytes)", msg, msg_len);
-                        de_msg = Some(msg);
-                    }
-                    Err(e) => {
-                        panic!("Error deserializing msg: {:?} from: {:?}", e, &buf[..msg_len])
-                    }
-                }
-                consumed += 4 + msg_len;
-            } else {
-                needed += msg_len;
-            }
-        }
-    }
-    transport.input().consume(consumed);
-    (de_msg, needed)
-}
-
-impl OutConnection {
-    fn pull_msgs(self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
-                 -> Intent<Self> {
-        let outgoing = scope.shared.outgoing.read().unwrap();
-        let node = outgoing.get(&self.other.0).unwrap();
-        if let Some(msg) = node.0.pop() {
-            debug!("sending to node {:?} msg {:?}", self.other.0, msg);
-            write_msg(transport, &msg);
-            Intent::of(self).expect_flush()
-        } else {
-            trace!("no message, will sleep");
-            Intent::of(self).sleep()
-        }
-    }
-
-    fn cleanup(&self, scope: &mut Scope<Context>) {
-        debug!("cleaning up");
-        // TODO create another connection if queue still has items
-        scope.shared.outgoing.write().unwrap().get_mut(&self.other.0).map(|n| {
-            n.1.retain(|a| unsafe {
-                use std::mem;
-                mem::transmute_copy::<_, (usize, usize)>(a) !=
-                mem::transmute_copy::<_, (usize, usize)>(&self.notifier)
-            });
-        });
-    }
-}
-
-impl Protocol for OutConnection {
-    type Context = Context;
-    type Socket = TcpStream;
-    type Seed = (FabricId, FabricId);
-
-    fn create((this, other): Self::Seed, sock: &mut TcpStream, scope: &mut Scope<Context>)
-              -> Intent<Self> {
-        debug!("outgoing connection to {:?}", other);
-        let _ = sock.set_nodelay(true);
-        let _ = sock.set_keepalive(Some(1));
-        let notifier = scope.notifier();
-        let mut outgoing = scope.shared.outgoing.write().unwrap();
-        outgoing.get_mut(&other.0).unwrap().1.push(notifier.clone());
-        Intent::of(OutConnection {
-                identified: false,
-                this: this,
-                other: other,
-                notifier: notifier,
-            })
-            .expect_flush()
-    }
-
-    fn bytes_read(self, _transport: &mut Transport<TcpStream>, _end: usize,
-                  _scope: &mut Scope<Context>)
-                  -> Intent<Self> {
-        unreachable!();
-    }
-
-    fn bytes_flushed(mut self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
-                     -> Intent<Self> {
-        if self.identified {
-            self.pull_msgs(transport, scope)
-        } else {
-            write_msg(transport, &self.this);
-            self.identified = true;
-            Intent::of(self).expect_flush()
-        }
-    }
-
-    fn timeout(self, _transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
-               -> Intent<Self> {
-        debug!("Out: Timeout happened");
-        self.cleanup(scope);
-        Intent::done()
-    }
-
-    fn wakeup(self, transport: &mut Transport<TcpStream>, scope: &mut Scope<Context>)
-              -> Intent<Self> {
-        self.pull_msgs(transport, scope)
-    }
-
-    fn exception(self, _transport: &mut Transport<Self::Socket>, reason: Exception,
-                 scope: &mut Scope<Self::Context>)
-                 -> Intent<Self> {
-        debug!("Out: Error: {}", reason);
-        self.cleanup(scope);
-        Intent::done()
-    }
-
-    fn fatal(self, reason: Exception, scope: &mut Scope<Self::Context>) -> Option<Box<Error>> {
-        debug!("Out: Error: {}", reason);
-        self.cleanup(scope);
-        None
-    }
-}
-
-impl Protocol for InConnection {
-    type Context = Context;
-    type Socket = TcpStream;
-    type Seed = FabricId;
-
-    fn create(this: Self::Seed, sock: &mut TcpStream, _scope: &mut Scope<Context>) -> Intent<Self> {
-        debug!("incomming connection from {:?}", sock.peer_addr().unwrap());
-        let _ = sock.set_nodelay(true);
-        let _ = sock.set_keepalive(Some(1));
-        Intent::of(InConnection {
-                this: this,
-                other: None,
-            })
-            .expect_bytes(4)
-    }
-
-    fn bytes_read(mut self, transport: &mut Transport<TcpStream>, _end: usize,
-                  scope: &mut Scope<Context>)
-                  -> Intent<Self> {
-        // first message is always the node addr
-        if self.other.is_none() {
-            let (fabricid_opt, needed) = read_msg::<FabricId>(transport);
-            if let Some(fabricid) = fabricid_opt {
-                self.other = Some(fabricid);
-                debug!("identified connection from {:?}", fabricid);
-            }
-            return Intent::of(self).expect_bytes(needed);
-        }
-
-        loop {
-            let (msg_opt, needed) = read_msg::<FabricMsg>(transport);
-            if let Some(msg) = msg_opt {
-                debug!("received from node {:?} msg {:?}", self.other.unwrap().0, msg);
-                let msg_type = msg.get_type();
-                if let Some(handler) = scope.shared
-                    .msg_handlers
-                    .lock()
-                    .unwrap()
-                    .get_mut(&(msg_type as u8)) {
-                    handler(self.other.unwrap().0, msg);
-                } else {
-                    error!("No handler for msg type {:?}", msg_type);
-                }
-            }
-
-            if transport.input().len() < needed {
-                return Intent::of(self).expect_bytes(needed);
-            }
-        }
-    }
-
-    fn bytes_flushed(self, _transport: &mut Transport<TcpStream>, _scope: &mut Scope<Context>)
-                     -> Intent<Self> {
-        unreachable!();
-    }
-
-    fn timeout(self, _transport: &mut Transport<TcpStream>, _scope: &mut Scope<Context>)
-               -> Intent<Self> {
-        debug!("In: Timeout happened");
-        Intent::done()
-    }
-
-    fn wakeup(self, _transport: &mut Transport<TcpStream>, _scope: &mut Scope<Context>)
-              -> Intent<Self> {
-        unreachable!();
-    }
-
-    fn exception(self, _transport: &mut Transport<Self::Socket>, reason: Exception,
-                 _scope: &mut Scope<Self::Context>)
-                 -> Intent<Self> {
-        debug!("In: Error: {}", reason);
-        Intent::done()
-    }
-
-    fn fatal(self, reason: Exception, _scope: &mut Scope<Self::Context>) -> Option<Box<Error>> {
-        debug!("In: Fatal: {}", reason);
-        None
-    }
-}
+type InitType = Result<(tokio::reactor::Remote, futures::Complete<()>), io::Error>;
 
 impl Fabric {
-    pub fn new(node: NodeId, bind_addr: net::SocketAddr) -> FabricResult<Self> {
-        // rotor sorcery
-        let mut event_loop = try!(rotor::Loop::new(&rotor::Config::new()));
-        let lst = try!(TcpListener::bind(&bind_addr));
-        let connector_queue = BoundedQueue::with_capacity(128);
-        let connector_notifier = event_loop.add_and_fetch(Fsm::Out, |scope| {
-                let connector = OutMachine::Connector((node, bind_addr), connector_queue.clone());
-                Response::ok((connector, scope.notifier()))
+    fn listen(listener: tokio::net::TcpListener, context: Arc<GlobalContext>,
+              handle: tokio::reactor::Handle)
+              -> Box<Future<Item = (), Error = ()>> {
+        debug!("Starting fabric listener");
+        let fut = listener.incoming()
+            .and_then(move |(socket, addr)| {
+                debug!("Accepting fabric connection from {:?}", addr);
+                let handle_cloned = handle.clone();
+                let context_cloned = context.clone();
+                handle.spawn_fn(move || {
+                    Self::connection(socket, None, context_cloned, handle_cloned).map_err(|_| ())
+                });
+                Ok(())
             })
-            .unwrap();
-        event_loop.add_machine_with(|scope| {
-                if let Err(e) = scope.register(&lst, EventSet::readable(), PollOpt::edge()) {
-                    return Response::error(Box::new(e));
+            .map_err(|_| ())
+            .for_each(|_| Ok(()));
+        Box::new(fut)
+    }
+
+    fn connect(node: NodeId, addr: net::SocketAddr, context: Arc<GlobalContext>,
+               handle: tokio::reactor::Handle)
+               -> Box<Future<Item = (), Error = ()>> {
+        debug!("Opening fabric connecting to node {:?}", addr);
+        let fut = tokio::net::TcpStream::connect(&addr, &handle)
+            .and_then(move |s| {
+                debug!("Stablished fabric connection with {:?}", addr);
+                Self::connection(s, Some(node), context, handle)
+            })
+            .map_err(|_| ());
+        Box::new(fut)
+    }
+
+    fn connection(socket: tokio::net::TcpStream, expected_node: Option<NodeId>,
+                  context: Arc<GlobalContext>, handle: tokio::reactor::Handle)
+                  -> Box<Future<Item = (), Error = io::Error>> {
+        let _ = socket.set_nodelay(true);
+        let _ = socket.set_keepalive_ms(Some(2000));
+        let mut buffer = [0u8; 8];
+        (&mut buffer[..]).write_u64::<LittleEndian>(context.node.0).unwrap();
+        let fut = tokio::io::write_all(socket, buffer)
+            .and_then(|(s, b)| tokio::io::read_exact(s, b))
+            .and_then(move |(s, b)| {
+                let peer_id = (&b[..]).read_u64::<LittleEndian>().unwrap();
+                if expected_node.unwrap_or(peer_id) == peer_id {
+                    Ok((s, peer_id))
+                } else {
+                    Err(io::Error::new(io::ErrorKind::Other, "Unexpected NodeId"))
                 }
-                Response::ok(Fsm::In(Accept::Server(lst, (node, bind_addr))))
             })
-            .unwrap();
+            .and_then(move |(s, peer_id)| {
+                debug!("Identified fabric connection to node {:?}", peer_id);
+                Self::steady_connection(s, peer_id, context, handle)
+            })
+            .then(|r| {
+                debug!("Fabric connection exit {:?}", r);
+                r
+            });
+
+        Box::new(fut)
+    }
+
+    fn steady_connection(socket: tokio::net::TcpStream, peer_id: NodeId,
+                         context: Arc<GlobalContext>, handle: tokio::reactor::Handle)
+                         -> Box<Future<Item = (), Error = io::Error>> {
+        let ctx_rx = ReaderContext {
+            context: context.clone(),
+            peer: (peer_id, socket.peer_addr().unwrap()),
+        };
+        let ctx_tx = WriterContext {
+            context: context.clone(),
+            peer: (peer_id, socket.peer_addr().unwrap()),
+        };
+        let (pipe_tx, pipe_rx) = tokio::channel::channel::<FabricMsg>(&handle).unwrap();
+        context.writer_chans
+            .lock()
+            .unwrap()
+            .entry(peer_id)
+            .or_insert_with(|| Default::default())
+            .push(pipe_tx);
+
+        let (sock_rx, sock_tx) = socket.split();
+        let rx_fut = stream::iter((0..).map(|_| -> Result<(), io::Error> { Ok(()) }))
+            .fold((ctx_rx, sock_rx, Vec::<u8>::new(), 0), |(ctx, s, mut b, p), _| {
+                if b.len() - p < 4 * 1024 {
+                    unsafe {
+                        b.reserve(4 * 1024);
+                        let cap = b.capacity();
+                        b.set_len(cap);
+                    }
+                }
+
+                my_futures::read_at(s, b, p).and_then(|(s, b, p, r)| {
+                    let mut end = p + r;
+                    let mut start = 0;
+                    while end - start > 4 {
+                        let mut slice = &b[start..end];
+                        let msg_len = slice.read_u32::<LittleEndian>().unwrap() as usize;
+                        if slice.len() < msg_len {
+                            break;
+                        }
+
+                        let de_result =
+                            bincode_serde::deserialize_from(&mut slice,
+                                                            bincode::SizeLimit::Infinite);
+
+                        match de_result {
+                            Ok(msg) => {
+                                debug!("Received from node {} msg {:?}", ctx.peer.0, msg);
+                                ctx.dispatch(msg);
+                                start += 4 + msg_len;
+                            }
+                            Err(e) => {
+                                return Err(io::Error::new(io::ErrorKind::Other, e));
+                            }
+                        }
+                    }
+
+                    if start != 0 {
+                        unsafe {
+                            ::std::ptr::copy(b.as_ptr().offset(start as isize),
+                                             b.as_ptr() as *mut _,
+                                             end - start);
+                        }
+                        end -= start;
+                    }
+                    Ok((ctx, s, b, end))
+                })
+            })
+            .into_future().map(|_| {
+                debug!("rx side done");
+                ()
+            });
+        let tx_fut = pipe_rx.fold((ctx_tx, sock_tx, Vec::new()), |(ctx, s, mut b), msg| {
+                debug!("Sending to node {} msg {:?}", ctx.peer.0, msg);
+                unsafe {
+                    b.clear();
+                    b.reserve(4);
+                    b.set_len(4);
+                }
+                bincode_serde::serialize_into(&mut b, &msg, bincode::SizeLimit::Infinite).unwrap();
+                let msg_len = b.len() as u32 - 4;
+                (&mut b[0..4]).write_u32::<LittleEndian>(msg_len).unwrap();
+                tokio::io::write_all(s, b).map(|(s, b)| (ctx, s, b))
+            })
+            .into_future()
+            .map(|_| {
+                debug!("tx side done");
+                ()
+            });
+        Box::new(rx_fut.select(tx_fut).map(|_| ()).map_err(|(e, _)| e))
+    }
+
+    fn run(context: Arc<GlobalContext>, init_tx: ::std::sync::mpsc::Sender<InitType>) {
+        let mut core = tokio::reactor::Core::new().unwrap();
+        let handle = core.handle();
+        let init_result = tokio::net::TcpListener::bind(&context.node.1, &handle)
+            .map(|listener| core.handle().spawn(Self::listen(listener, context, core.handle())));
+
+        match init_result {
+            Ok(_) => {
+                let (completer_tx, completer_rx) = futures::oneshot();
+                let _ = init_tx.send(Ok((core.remote(), completer_tx)));
+                core.run(completer_rx).unwrap();
+            }
+            Err(e) => {
+                let _ = init_tx.send(Err(e));
+            }
+        }
+    }
+
+    pub fn new(node: NodeId, addr: net::SocketAddr) -> FabricResult<Self> {
         // create context and mark as running
-        let context = Context::new(node, connector_notifier, connector_queue);
-        let shared_context = context.shared.clone();
-        shared_context.running.store(true, atomic::Ordering::Relaxed);
+        let context = Arc::new(GlobalContext {
+            node: (node, addr),
+            nodes_addr: Default::default(),
+            msg_handlers: Default::default(),
+            writer_chans: Default::default(),
+        });
         // start event loop thread
+        let context_cloned = context.clone();
+        let (init_tx, init_rx) = ::std::sync::mpsc::channel();
         let thread = thread::Builder::new()
             .name(format!("Fabric:{}", node))
-            .spawn(move || event_loop.run(context).unwrap())
+            .spawn(move || Self::run(context_cloned, init_tx))
             .unwrap();
+        let (remote, completer) = try!(try!(init_rx.recv()));
         Ok(Fabric {
-            loop_thread: Some(thread),
-            shared_context: shared_context,
+            context: context,
+            loop_remote: remote,
+            loop_thread: Some((thread, completer)),
         })
     }
 
-    pub fn send_msg<T: Into<FabricMsg>>(&self, recipient: NodeId, msg: T) -> FabricResult<()> {
+    pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: FabricHandlerFn) {
+        self.context.msg_handlers.lock().unwrap().insert(msg_type as u8, handler);
+    }
+
+    pub fn register_node(&self, node: NodeId, addr: net::SocketAddr) {
+        if node == self.context.node.0 {
+            return;
+        }
+        let prev = self.context.nodes_addr.lock().unwrap().insert(node, addr);
+        if prev.is_none() || prev.unwrap() != addr {
+            self.start_connect(node, addr);
+            ::std::thread::sleep(::std::time::Duration::from_millis(500));
+        }
+    }
+
+    fn start_connect(&self, node: NodeId, addr: net::SocketAddr) {
+        let context = self.context.clone();
+        let mut writers = self.context.writer_chans.lock().unwrap();
+        writers.entry(node).or_insert_with(|| Default::default());
+        self.loop_remote.spawn(move |handle| Self::connect(node, addr, context, handle.clone()))
+    }
+
+    pub fn send_msg<T: Into<FabricMsg>>(&self, node_id: NodeId, msg: T) -> FabricResult<()> {
         let msg = msg.into();
         if cfg!(test) {
             let droppable = match msg.get_type() {
@@ -403,54 +289,41 @@ impl Fabric {
                     .ok()
                     .and_then(|s| s.parse::<f64>().ok())
                     .unwrap_or(0.0);
-                if fabric_drop > 0.0 && ::rand::thread_rng().gen::<f64>() < fabric_drop {
+                if fabric_drop > 0.0 && thread_rng().gen::<f64>() < fabric_drop {
                     warn!("Fabric msg droped due to FABRIC_DROP: {:?}", msg);
                     return Ok(());
                 }
             }
         }
-        // fast path if connection already available
-        if let Some(node) = self.shared_context.outgoing.read().unwrap().get(&recipient) {
-            if let Some(n) = thread_rng().choose(&node.1) {
-                node.0.push(msg).unwrap();
-                n.wakeup().unwrap();
-                return Ok(());
-            };
+        let mut writers = self.context.writer_chans.lock().unwrap();
+        match writers.entry(node_id) {
+            HMEntry::Occupied(o) => {
+                let chans = o.get();
+                match chans.len() {
+                    0 => {
+                        warn!("DROPING MSG - No writers");
+                    }
+                    1 => {
+                        let _ = chans[0].send(msg);
+                    }
+                    _ => {
+                        let _ = thread_rng().choose(&chans).unwrap().send(msg);
+                    }
+                }
+            }
+            HMEntry::Vacant(_v) => {
+                warn!("DROPING MSG - No Channels entry");
+            }
         }
-        let addr = self.shared_context.nodes_addr.lock().unwrap().get(&recipient).cloned().unwrap();
-        let mut outgoing = self.shared_context.outgoing.write().unwrap();
-        let node = outgoing.entry(recipient)
-            .or_insert_with(|| (BoundedQueue::with_capacity(1024), Vec::new()));
-        // push the message
-        node.0.push(msg).unwrap();
-        // FIXME: we might have raced, so only create new conn if necessary
-        if let Some(n) = thread_rng().choose(&node.1) {
-            n.wakeup().unwrap();
-        } else {
-            self.shared_context.connector_queue.push((recipient, addr)).unwrap();
-            self.shared_context.connector_notifier.wakeup().unwrap();
-        }
-
         Ok(())
-    }
-
-    pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: FabricHandlerFn) {
-        self.shared_context.msg_handlers.lock().unwrap().insert(msg_type as u8, handler);
-    }
-
-    pub fn register_node(&self, node: NodeId, addr: net::SocketAddr) {
-        self.shared_context.nodes_addr.lock().unwrap().insert(node, addr);
     }
 }
 
 impl Drop for Fabric {
     fn drop(&mut self) {
         warn!("droping fabric");
-        // mark as not running and wakeup connector as it knows how to shutdown the loop
-        self.shared_context.running.store(false, atomic::Ordering::Relaxed);
-        self.shared_context.connector_notifier.wakeup().unwrap();
-        // join the loop thread
-        if let Some(t) = self.loop_thread.take() {
+        if let Some((t, c)) = self.loop_thread.take() {
+            c.complete(());
             t.join().unwrap();
         }
     }
@@ -475,6 +348,7 @@ mod tests {
                                     Box::new(move |_, m| {
                                         counter_.fetch_add(1, atomic::Ordering::Relaxed);
                                     }));
+        thread::sleep(Duration::from_millis(10));
         for _ in 0..3 {
             fabric.send_msg(0,
                           MsgRemoteSetAck {
