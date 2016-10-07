@@ -1,13 +1,10 @@
 use std::{str, io, net, thread};
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::net::SocketAddr;
 use std::sync::{Mutex, Arc};
 use std::collections::HashMap;
+use std::collections::hash_map::Entry as HMEntry;
 
 use rand::{thread_rng, Rng};
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
-use serde::{Serialize, Deserialize};
 use bincode::{self, serde as bincode_serde};
 
 use futures::{self, Future, IntoFuture};
@@ -53,7 +50,7 @@ struct GlobalContext {
     node: FabricId,
     msg_handlers: Mutex<HashMap<u8, FabricHandlerFn>>,
     nodes_addr: Mutex<HashMap<NodeId, net::SocketAddr>>,
-    writer_chans: Arc<Mutex<HashMap<NodeId, tokio::channel::Sender<FabricMsg>>>>,
+    writer_chans: Arc<Mutex<HashMap<NodeId, Vec<tokio::channel::Sender<FabricMsg>>>>>,
 }
 
 pub struct Fabric {
@@ -68,12 +65,14 @@ impl Fabric {
     fn listen(listener: tokio::net::TcpListener, context: Arc<GlobalContext>,
               handle: tokio::reactor::Handle)
               -> Box<Future<Item = (), Error = ()>> {
+        debug!("Starting fabric listener");
         let fut = listener.incoming()
-            .and_then(move |(socket, _)| {
+            .and_then(move |(socket, addr)| {
+                debug!("Accepting fabric connection from {:?}", addr);
                 let handle_cloned = handle.clone();
-                let ctx_cloned = context.clone();
+                let context_cloned = context.clone();
                 handle.spawn_fn(move || {
-                    Self::connection(socket, None, ctx_cloned, handle_cloned)
+                    Self::connection(socket, None, context_cloned, handle_cloned).map_err(|_| ())
                 });
                 Ok(())
             })
@@ -82,9 +81,22 @@ impl Fabric {
         Box::new(fut)
     }
 
+    fn connect(node: NodeId, addr: net::SocketAddr, context: Arc<GlobalContext>,
+               handle: tokio::reactor::Handle)
+               -> Box<Future<Item = (), Error = ()>> {
+        debug!("Opening fabric connecting to node {:?}", addr);
+        let fut = tokio::net::TcpStream::connect(&addr, &handle)
+            .and_then(move |s| {
+                debug!("Stablished fabric connection with {:?}", addr);
+                Self::connection(s, Some(node), context, handle)
+            })
+            .map_err(|_| ());
+        Box::new(fut)
+    }
+
     fn connection(socket: tokio::net::TcpStream, expected_node: Option<NodeId>,
                   context: Arc<GlobalContext>, handle: tokio::reactor::Handle)
-                  -> Box<Future<Item = (), Error = ()>> {
+                  -> Box<Future<Item = (), Error = io::Error>> {
         let _ = socket.set_nodelay(true);
         let _ = socket.set_keepalive_ms(Some(2000));
         let mut buffer = [0u8; 8];
@@ -99,9 +111,16 @@ impl Fabric {
                     Err(io::Error::new(io::ErrorKind::Other, "Unexpected NodeId"))
                 }
             })
-            .and_then(move |(s, peer_id)| Self::steady_connection(s, peer_id, context, handle));
+            .and_then(move |(s, peer_id)| {
+                debug!("Identified fabric connection to node {:?}", peer_id);
+                Self::steady_connection(s, peer_id, context, handle)
+            })
+            .then(|r| {
+                debug!("Fabric connection exit {:?}", r);
+                r
+            });
 
-        Box::new(fut.then(|_| futures::finished::<(), ()>(())))
+        Box::new(fut)
     }
 
     fn steady_connection(socket: tokio::net::TcpStream, peer_id: NodeId,
@@ -112,10 +131,17 @@ impl Fabric {
             peer: (peer_id, socket.peer_addr().unwrap()),
         };
         let ctx_tx = WriterContext {
-            context: context,
+            context: context.clone(),
             peer: (peer_id, socket.peer_addr().unwrap()),
         };
         let (pipe_tx, pipe_rx) = tokio::channel::channel::<FabricMsg>(&handle).unwrap();
+        context.writer_chans
+            .lock()
+            .unwrap()
+            .entry(peer_id)
+            .or_insert_with(|| Default::default())
+            .push(pipe_tx);
+
         let (sock_rx, sock_tx) = socket.split();
         let rx_fut = stream::iter((0..).map(|_| -> Result<(), io::Error> { Ok(()) }))
             .fold((ctx_rx, sock_rx, Vec::<u8>::new(), 0), |(ctx, s, mut b, p), _| {
@@ -133,7 +159,7 @@ impl Fabric {
                     while end - start > 4 {
                         let mut slice = &b[start..end];
                         let msg_len = slice.read_u32::<LittleEndian>().unwrap() as usize;
-                        if slice.len() < 4 + msg_len {
+                        if slice.len() < msg_len {
                             break;
                         }
 
@@ -143,11 +169,12 @@ impl Fabric {
 
                         match de_result {
                             Ok(msg) => {
+                                debug!("Received from node {} msg {:?}", ctx.peer.0, msg);
                                 ctx.dispatch(msg);
                                 start += 4 + msg_len;
                             }
                             Err(e) => {
-                                return Err(io::Error::new(io::ErrorKind::InvalidData, e));
+                                return Err(io::Error::new(io::ErrorKind::Other, e));
                             }
                         }
                     }
@@ -166,8 +193,15 @@ impl Fabric {
             .into_future()
             .map(|_| ());
         let tx_fut = pipe_rx.fold((ctx_tx, sock_tx, Vec::new()), |(ctx, s, mut b), msg| {
-                b.clear();
+                debug!("Sending to node {} msg {:?}", ctx.peer.0, msg);
+                unsafe {
+                    b.clear();
+                    b.reserve(4);
+                    b.set_len(4);
+                }
                 bincode_serde::serialize_into(&mut b, &msg, bincode::SizeLimit::Infinite).unwrap();
+                let msg_len = b.len() as u32 - 4;
+                (&mut b[0..4]).write_u32::<LittleEndian>(msg_len).unwrap();
                 tokio::io::write_all(s, b).map(|(s, b)| (ctx, s, b))
             })
             .into_future()
@@ -222,9 +256,13 @@ impl Fabric {
 
     pub fn register_node(&self, node: NodeId, addr: net::SocketAddr) {
         self.context.nodes_addr.lock().unwrap().insert(node, addr);
+        let context = self.context.clone();
+        let mut writers = self.context.writer_chans.lock().unwrap();
+        writers.insert(node, Default::default());
+        self.loop_remote.spawn(move |handle| Self::connect(node, addr, context, handle.clone()))
     }
 
-    pub fn send_msg<T: Into<FabricMsg>>(&self, recipient: NodeId, msg: T) -> FabricResult<()> {
+    pub fn send_msg<T: Into<FabricMsg>>(&self, node_id: NodeId, msg: T) -> FabricResult<()> {
         let msg = msg.into();
         if cfg!(test) {
             let droppable = match msg.get_type() {
@@ -236,17 +274,33 @@ impl Fabric {
                     .ok()
                     .and_then(|s| s.parse::<f64>().ok())
                     .unwrap_or(0.0);
-                if fabric_drop > 0.0 && ::rand::thread_rng().gen::<f64>() < fabric_drop {
+                if thread_rng().gen::<f64>() < fabric_drop {
                     warn!("Fabric msg droped due to FABRIC_DROP: {:?}", msg);
                     return Ok(());
                 }
             }
         }
-        let writers = self.context.writer_chans.lock().unwrap();
-        if let Some(chan) = writers.get(&recipient) {
-            chan.send(msg).unwrap();
+        let mut writers = self.context.writer_chans.lock().unwrap();
+        match writers.entry(node_id) {
+            HMEntry::Occupied(o) => {
+                let chans = o.get();
+                match chans.len() {
+                    0 => {
+                        warn!("DROPING MSG - No writers");
+                    }
+                    1 => {
+                        chans[0].send(msg).unwrap();
+                    }
+                    _ => {
+                        thread_rng().choose(&chans).unwrap().send(msg).unwrap();
+                    }
+                }
+            }
+            HMEntry::Vacant(_v) => {
+                warn!("DROPING MSG - No Channels entry");
+            }
         }
-        unimplemented!()
+        Ok(())
     }
 }
 
@@ -279,6 +333,7 @@ mod tests {
                                     Box::new(move |_, m| {
                                         counter_.fetch_add(1, atomic::Ordering::Relaxed);
                                     }));
+        thread::sleep(Duration::from_millis(10));
         for _ in 0..3 {
             fabric.send_msg(0,
                           MsgRemoteSetAck {
