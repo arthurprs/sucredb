@@ -79,7 +79,7 @@ impl RespConnection {
         }));
         let ctx_tx = ctx_rx.clone();
 
-        let read_fut = stream::iter((0..).map(|_| -> Result<(), ()> { Ok(()) }))
+        let read_fut = stream::iter((0..).map(|_| -> Result<(), io::Error> { Ok(()) }))
             .fold((ctx_rx, sock_rx, resp::ByteTendril::new(), 0), |(ctx, s, mut b, p), _| {
                 if b.len() - p < 4 * 1024 {
                     unsafe {
@@ -110,10 +110,9 @@ impl RespConnection {
                         }
                         Ok((ctx, s, b, end))
                     })
-                    .map_err(|_| ())
             })
             .into_future()
-            .then(|_| futures::finished::<(), ()>(()));
+            .map(|_| ());
 
         let write_fut = pipe_rx.fold((ctx_tx, sock_tx, Vec::new()), |(ctx, s, mut b), resp| {
                 ctx.borrow_mut().dispatch_next();
@@ -122,7 +121,7 @@ impl RespConnection {
                 tokio::io::write_all(s, b).map(move |(s, b)| (ctx, s, b))
             })
             .into_future()
-            .then(|_| futures::finished::<(), ()>(()));
+            .map(|_| ());
 
         Box::new(read_fut.select(write_fut).then(move |_| {
             debug!("finished token {}", self.token);

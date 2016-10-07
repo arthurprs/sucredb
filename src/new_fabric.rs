@@ -20,7 +20,6 @@ pub use fabric_msg::*;
 use utils::GenericError;
 use database::NodeId;
 
-
 pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
 pub type FabricResult<T> = Result<T, GenericError>;
 type FabricId = (NodeId, net::SocketAddr);
@@ -116,8 +115,9 @@ impl Fabric {
             context: context,
             peer: (peer_id, socket.peer_addr().unwrap()),
         };
+        let (pipe_tx, pipe_rx) = tokio::channel::channel::<FabricMsg>(&handle).unwrap();
         let (sock_rx, sock_tx) = socket.split();
-        let rx_fut = stream::iter((0..).map(|_| -> Result<(), ()> { Ok(()) }))
+        let rx_fut = stream::iter((0..).map(|_| -> Result<(), io::Error> { Ok(()) }))
             .fold((ctx_rx, sock_rx, Vec::<u8>::new(), 0), |(ctx, s, mut b, p), _| {
                 if b.len() - p < 4 * 1024 {
                     unsafe {
@@ -127,44 +127,52 @@ impl Fabric {
                     }
                 }
 
-                my_futures::read_at(s, b, p)
-                    .and_then(|(s, b, p, r)| {
-                        let mut end = p + r;
-                        let mut start = 0;
-                        while end - start > 4 {
-                            let mut slice = &b[start..end];
-                            let msg_len = slice.read_u32::<LittleEndian>().unwrap() as usize;
-                            if slice.len() < 4 + msg_len {
-                                break;
-                            }
-
-                            let de_result = bincode_serde::deserialize_from(
-                                &mut slice, bincode::SizeLimit::Infinite);
-
-                            match de_result {
-                                Ok(msg) => {
-                                    ctx.dispatch(msg);
-                                    start += 4 + msg_len;
-                                }
-                                Err(e) => {
-                                    return Err(io::Error::new(io::ErrorKind::InvalidData, e));
-                                }
-                            }
+                my_futures::read_at(s, b, p).and_then(|(s, b, p, r)| {
+                    let mut end = p + r;
+                    let mut start = 0;
+                    while end - start > 4 {
+                        let mut slice = &b[start..end];
+                        let msg_len = slice.read_u32::<LittleEndian>().unwrap() as usize;
+                        if slice.len() < 4 + msg_len {
+                            break;
                         }
 
-                        if start != 0 {
-                            unsafe {
-                                ::std::ptr::copy(b.as_ptr().offset(start as isize),
-                                                 b.as_ptr() as *mut _,
-                                                 end - start);
+                        let de_result =
+                            bincode_serde::deserialize_from(&mut slice,
+                                                            bincode::SizeLimit::Infinite);
+
+                        match de_result {
+                            Ok(msg) => {
+                                ctx.dispatch(msg);
+                                start += 4 + msg_len;
                             }
-                            end -= start;
+                            Err(e) => {
+                                return Err(io::Error::new(io::ErrorKind::InvalidData, e));
+                            }
                         }
-                        Ok((ctx, s, b, end))
-                    })
-                    .map_err(|_| ())
-            });
-        unimplemented!()
+                    }
+
+                    if start != 0 {
+                        unsafe {
+                            ::std::ptr::copy(b.as_ptr().offset(start as isize),
+                                             b.as_ptr() as *mut _,
+                                             end - start);
+                        }
+                        end -= start;
+                    }
+                    Ok((ctx, s, b, end))
+                })
+            })
+            .into_future()
+            .map(|_| ());
+        let tx_fut = pipe_rx.fold((ctx_tx, sock_tx, Vec::new()), |(ctx, s, mut b), msg| {
+                b.clear();
+                bincode_serde::serialize_into(&mut b, &msg, bincode::SizeLimit::Infinite).unwrap();
+                tokio::io::write_all(s, b).map(|(s, b)| (ctx, s, b))
+            })
+            .into_future()
+            .map(|_| ());
+        Box::new(rx_fut.select(tx_fut).map(|_| ()).map_err(|(e, _)| e))
     }
 
     fn run(context: Arc<GlobalContext>, init_tx: ::std::sync::mpsc::Sender<InitType>) {
