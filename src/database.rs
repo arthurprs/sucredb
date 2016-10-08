@@ -191,15 +191,15 @@ impl Database {
             vn.handler_tick(self, time);
             incomming_syncs += vn.syncs_inflight().0;
         }
-        if incomming_syncs < MAX_INCOMMING_SYNCS {
-            let mut rng = thread_rng();
-            for i in (0..vnodes.len()).map(|_| rng.gen::<u16>() % vnodes.len() as u16) {
-                incomming_syncs += vnodes.get(&i).unwrap().lock().unwrap().maybe_start_sync(self);
-                if incomming_syncs >= MAX_INCOMMING_SYNCS {
-                    break;
-                }
-            }
-        }
+        // if incomming_syncs < MAX_INCOMMING_SYNCS {
+        //     let mut rng = thread_rng();
+        //     for i in (0..vnodes.len()).map(|_| rng.gen::<u16>() % vnodes.len() as u16) {
+        //         incomming_syncs += vnodes.get(&i).unwrap().lock().unwrap().maybe_start_sync(self);
+        //         if incomming_syncs >= MAX_INCOMMING_SYNCS {
+        //             break;
+        //         }
+        //     }
+        // }
     }
 
     fn handler_fabric_msg(&self, from: NodeId, msg: FabricMsg) {

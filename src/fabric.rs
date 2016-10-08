@@ -26,21 +26,6 @@ struct ReaderContext {
     addr: net::SocketAddr,
 }
 
-impl ReaderContext {
-    fn dispatch(&self, msg: FabricMsg) {
-        let msg_type = msg.get_type();
-        if let Some(handler) = self.context
-            .msg_handlers
-            .lock()
-            .unwrap()
-            .get_mut(&(msg_type as u8)) {
-            handler(self.peer, msg);
-        } else {
-            error!("No handler for msg type {:?}", msg_type);
-        }
-    }
-}
-
 struct WriterContext {
     context: Arc<GlobalContext>,
     peer: NodeId,
@@ -63,6 +48,42 @@ pub struct Fabric {
 }
 
 type InitType = Result<(tokio::reactor::Remote, futures::Complete<()>), io::Error>;
+
+
+impl ReaderContext {
+    fn dispatch(&self, msg: FabricMsg) {
+        let msg_type = msg.get_type();
+        if let Some(handler) = self.context
+            .msg_handlers
+            .lock()
+            .unwrap()
+            .get_mut(&(msg_type as u8)) {
+            handler(self.peer, msg);
+        } else {
+            error!("No handler for msg type {:?}", msg_type);
+        }
+    }
+}
+
+impl WriterContext {
+    fn add_writer_chan(&self, sender: tokio::channel::Sender<FabricMsg>) {
+        let mut locked = self.context.writer_chans.lock().unwrap();
+        locked.entry(self.peer).or_insert(Default::default()).push(sender);
+    }
+
+    fn remove_writer_chan(&self, sender: tokio::channel::Sender<FabricMsg>) {
+        let mut locked = self.context.writer_chans.lock().unwrap();
+        if let HMEntry::Occupied(mut o) = locked.entry(self.peer) {
+            o.get_mut().retain(|i| unsafe {
+                use ::std::mem::transmute_copy;
+                transmute_copy::<_, usize>(i) != transmute_copy::<_, usize>(&sender)
+            });
+            if o.get().is_empty() {
+                o.remove();
+            }
+        }
+    }
+}
 
 impl Fabric {
     fn listen(listener: tokio::net::TcpListener, context: Arc<GlobalContext>,
@@ -139,13 +160,8 @@ impl Fabric {
             peer: peer,
             addr: ctx_rx.addr,
         };
-        let (pipe_tx, pipe_rx) = tokio::channel::channel::<FabricMsg>(&handle).unwrap();
-        context.writer_chans
-            .lock()
-            .unwrap()
-            .entry(peer)
-            .or_insert_with(|| Default::default())
-            .push(pipe_tx);
+        let (chan_tx, chan_rx) = tokio::channel::channel::<FabricMsg>(&handle).unwrap();
+        ctx_tx.add_writer_chan(chan_tx.clone());
 
         let (sock_rx, sock_tx) = socket.split();
         let rx_fut = stream::iter((0..).map(|_| -> Result<(), io::Error> { Ok(()) }))
@@ -196,10 +212,9 @@ impl Fabric {
                 })
             })
             .into_future()
-            .map(|_| {
-                debug!("rx side done");
-            });
-        let tx_fut = pipe_rx.fold((ctx_tx, sock_tx, Vec::new()), |(ctx, s, mut b), msg| {
+            .map(|_| ());
+
+        let tx_fut = chan_rx.fold((ctx_tx, sock_tx, Vec::new()), move |(ctx, s, mut b), msg| {
                 debug!("Sending to node {} msg {:?}", ctx.peer, msg);
                 unsafe {
                     b.clear();
@@ -212,9 +227,7 @@ impl Fabric {
                 tokio::io::write_all(s, b).map(|(s, b)| (ctx, s, b))
             })
             .into_future()
-            .map(|_| {
-                debug!("tx side done");
-            });
+            .map(|_| ());
         Box::new(rx_fut.select(tx_fut).map(|_| ()).map_err(|(e, _)| e))
     }
 
@@ -303,6 +316,7 @@ impl Fabric {
                 }
             }
         }
+        debug!("send_msg to node {} msg {:?}", node, msg);
         let mut writers = self.context.writer_chans.lock().unwrap();
         match writers.entry(node) {
             HMEntry::Occupied(o) => {
