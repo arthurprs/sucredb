@@ -19,7 +19,6 @@ use database::NodeId;
 
 pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
 pub type FabricResult<T> = Result<T, GenericError>;
-type FabricId = (NodeId, net::SocketAddr);
 
 struct ReaderContext {
     context: Arc<GlobalContext>,
@@ -49,7 +48,8 @@ struct WriterContext {
 }
 
 struct GlobalContext {
-    node: FabricId,
+    node: NodeId,
+    addr: net::SocketAddr,
     msg_handlers: Mutex<HashMap<u8, FabricHandlerFn>>,
     nodes_addr: Mutex<HashMap<NodeId, net::SocketAddr>>,
     // FIXME: remove mutex or at least change to RwLock
@@ -103,7 +103,7 @@ impl Fabric {
         let _ = socket.set_nodelay(true);
         let _ = socket.set_keepalive_ms(Some(2000));
         let mut buffer = [0u8; 8];
-        (&mut buffer[..]).write_u64::<LittleEndian>(context.node.0).unwrap();
+        (&mut buffer[..]).write_u64::<LittleEndian>(context.node).unwrap();
         let fut = tokio::io::write_all(socket, buffer)
             .and_then(|(s, b)| tokio::io::read_exact(s, b))
             .and_then(move |(s, b)| {
@@ -195,9 +195,9 @@ impl Fabric {
                     Ok((ctx, s, b, end))
                 })
             })
-            .into_future().map(|_| {
+            .into_future()
+            .map(|_| {
                 debug!("rx side done");
-                ()
             });
         let tx_fut = pipe_rx.fold((ctx_tx, sock_tx, Vec::new()), |(ctx, s, mut b), msg| {
                 debug!("Sending to node {} msg {:?}", ctx.peer, msg);
@@ -214,7 +214,6 @@ impl Fabric {
             .into_future()
             .map(|_| {
                 debug!("tx side done");
-                ()
             });
         Box::new(rx_fut.select(tx_fut).map(|_| ()).map_err(|(e, _)| e))
     }
@@ -222,7 +221,7 @@ impl Fabric {
     fn run(context: Arc<GlobalContext>, init_tx: ::std::sync::mpsc::Sender<InitType>) {
         let mut core = tokio::reactor::Core::new().unwrap();
         let handle = core.handle();
-        let init_result = tokio::net::TcpListener::bind(&context.node.1, &handle)
+        let init_result = tokio::net::TcpListener::bind(&context.addr, &handle)
             .map(|listener| core.handle().spawn(Self::listen(listener, context, core.handle())));
 
         match init_result {
@@ -240,7 +239,8 @@ impl Fabric {
     pub fn new(node: NodeId, addr: net::SocketAddr) -> FabricResult<Self> {
         // create context and mark as running
         let context = Arc::new(GlobalContext {
-            node: (node, addr),
+            node: node,
+            addr: addr,
             nodes_addr: Default::default(),
             msg_handlers: Default::default(),
             writer_chans: Default::default(),
@@ -265,7 +265,7 @@ impl Fabric {
     }
 
     pub fn register_node(&self, node: NodeId, addr: net::SocketAddr) {
-        if node == self.context.node.0 {
+        if node == self.context.node {
             return;
         }
         let prev = self.context.nodes_addr.lock().unwrap().insert(node, addr);
@@ -283,7 +283,7 @@ impl Fabric {
     }
 
     pub fn send_msg<T: Into<FabricMsg>>(&self, node: NodeId, msg: T) -> FabricResult<()> {
-        if node == self.context.node.0 {
+        if node == self.context.node {
             panic!("Can't send message to self");
         }
         let msg = msg.into();

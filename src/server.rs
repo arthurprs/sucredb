@@ -89,14 +89,10 @@ impl RespConnection {
 
                 my_futures::read_at(s, b, p).and_then(|(s, mut b, p, r)| {
                     debug!("read {} bytes at [{}..{}]", r, p, b.len());
-                    let mut end = p + r;
-                    let mut parser = resp::Parser::new(b.subtendril(0, end as u32));
+                    let mut parser = resp::Parser::new(b.subtendril(0, (p + r) as u32));
                     loop {
                         match parser.parse() {
                             Ok(req) => {
-                                b.pop_front(parser.bytes_consumed() as u32);
-                                end -= parser.bytes_consumed();
-                                // parse it and send to correct worker thread?
                                 debug!("Parsed request {:?}", req);
                                 ctx.borrow_mut().dispatch(req);
                             }
@@ -107,7 +103,8 @@ impl RespConnection {
                             }
                         }
                     }
-                    Ok((ctx, s, b, end))
+                    b.pop_front(parser.bytes_consumed() as u32);
+                    Ok((ctx, s, b, p + r - parser.bytes_consumed()))
                 })
             })
             .into_future()

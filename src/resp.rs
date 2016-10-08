@@ -79,7 +79,7 @@ impl fmt::Debug for RespValue {
 
 /// The internal redis response parser.
 pub struct Parser {
-    original_len: usize,
+    bytes_consumed: usize,
     body: ByteTendril,
 }
 
@@ -87,25 +87,42 @@ impl Parser {
     pub fn new<T: Into<ByteTendril>>(body: T) -> Parser {
         let body = body.into();
         Parser {
-            original_len: body.len(),
+            bytes_consumed: 0,
             body: body,
         }
     }
 
     pub fn bytes_consumed(&self) -> usize {
-        self.original_len - self.body.len()
+        self.bytes_consumed
     }
 
     /// parses a single value out of the stream.  If there are multiple
     /// values you can call this multiple times.
     pub fn parse(&mut self) -> RespResult<RespValue> {
+        let saved_len = self.body.len();
+        let value = self.parse_value();
+        if value.is_ok() {
+            self.bytes_consumed += saved_len - self.body.len();
+        }
+        value
+    }
+
+    fn parse_value(&mut self) -> RespResult<RespValue> {
         match try!(self.read_byte()) {
             b'+' => self.parse_status(),
             b':' => self.parse_int(),
             b'$' => self.parse_data(),
             b'*' => self.parse_array(),
             b'-' => self.parse_error(),
-            _ => Err("Invalid response when parsing value".into()),
+            c => {
+                if c == b'\r' && try!(self.read_byte()) == b'\n' {
+                    return self.parse_value();
+                }
+                debug!("Invalid prefix {:?}{:?} when parsing value",
+                       c as char,
+                       String::from_utf8_lossy(self.body.as_ref()));
+                Err("Invalid prefix when parsing value".into())
+            }
         }
     }
 
@@ -199,7 +216,7 @@ impl Parser {
         } else {
             let mut rv = Vec::with_capacity(length as usize);
             for _ in 0..length {
-                let value = try!(self.parse());
+                let value = try!(self.parse_value());
                 rv.push(value);
             }
             Ok(RespValue::Array(rv))

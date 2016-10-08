@@ -1,7 +1,5 @@
-
 use std::ops::DerefMut;
 use std::mem;
-
 use futures::{Future, Poll};
 
 enum ReadAtState<R, T> {

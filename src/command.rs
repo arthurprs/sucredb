@@ -55,6 +55,9 @@ impl Database {
             b"GET" | b"MGET" => self.cmd_get(token, args),
             b"SET" | b"MSET" => self.cmd_set(token, args),
             b"DEL" | b"MDEL" => self.cmd_del(token, args),
+            b"ECHO" if args.len() > 0 => {
+                (&self.response_fn)(token, RespValue::Data(args[0].into()))
+            }
             b"CONFIG" => unimplemented!(),
             _ => unimplemented!(),
         };
