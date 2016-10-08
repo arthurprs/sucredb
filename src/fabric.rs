@@ -23,7 +23,8 @@ type FabricId = (NodeId, net::SocketAddr);
 
 struct ReaderContext {
     context: Arc<GlobalContext>,
-    peer: FabricId,
+    peer: NodeId,
+    addr: net::SocketAddr,
 }
 
 impl ReaderContext {
@@ -34,7 +35,7 @@ impl ReaderContext {
             .lock()
             .unwrap()
             .get_mut(&(msg_type as u8)) {
-            handler(self.peer.0, msg);
+            handler(self.peer, msg);
         } else {
             error!("No handler for msg type {:?}", msg_type);
         }
@@ -43,13 +44,15 @@ impl ReaderContext {
 
 struct WriterContext {
     context: Arc<GlobalContext>,
-    peer: FabricId,
+    peer: NodeId,
+    addr: net::SocketAddr,
 }
 
 struct GlobalContext {
     node: FabricId,
     msg_handlers: Mutex<HashMap<u8, FabricHandlerFn>>,
     nodes_addr: Mutex<HashMap<NodeId, net::SocketAddr>>,
+    // FIXME: remove mutex or at least change to RwLock
     writer_chans: Arc<Mutex<HashMap<NodeId, Vec<tokio::channel::Sender<FabricMsg>>>>>,
 }
 
@@ -123,22 +126,24 @@ impl Fabric {
         Box::new(fut)
     }
 
-    fn steady_connection(socket: tokio::net::TcpStream, peer_id: NodeId,
+    fn steady_connection(socket: tokio::net::TcpStream, peer: NodeId,
                          context: Arc<GlobalContext>, handle: tokio::reactor::Handle)
                          -> Box<Future<Item = (), Error = io::Error>> {
         let ctx_rx = ReaderContext {
             context: context.clone(),
-            peer: (peer_id, socket.peer_addr().unwrap()),
+            peer: peer,
+            addr: socket.peer_addr().unwrap(),
         };
         let ctx_tx = WriterContext {
             context: context.clone(),
-            peer: (peer_id, socket.peer_addr().unwrap()),
+            peer: peer,
+            addr: ctx_rx.addr,
         };
         let (pipe_tx, pipe_rx) = tokio::channel::channel::<FabricMsg>(&handle).unwrap();
         context.writer_chans
             .lock()
             .unwrap()
-            .entry(peer_id)
+            .entry(peer)
             .or_insert_with(|| Default::default())
             .push(pipe_tx);
 
@@ -169,7 +174,7 @@ impl Fabric {
 
                         match de_result {
                             Ok(msg) => {
-                                debug!("Received from node {} msg {:?}", ctx.peer.0, msg);
+                                debug!("Received from node {} msg {:?}", ctx.peer, msg);
                                 ctx.dispatch(msg);
                                 start += 4 + msg_len;
                             }
@@ -195,7 +200,7 @@ impl Fabric {
                 ()
             });
         let tx_fut = pipe_rx.fold((ctx_tx, sock_tx, Vec::new()), |(ctx, s, mut b), msg| {
-                debug!("Sending to node {} msg {:?}", ctx.peer.0, msg);
+                debug!("Sending to node {} msg {:?}", ctx.peer, msg);
                 unsafe {
                     b.clear();
                     b.reserve(4);
@@ -277,7 +282,10 @@ impl Fabric {
         self.loop_remote.spawn(move |handle| Self::connect(node, addr, context, handle.clone()))
     }
 
-    pub fn send_msg<T: Into<FabricMsg>>(&self, node_id: NodeId, msg: T) -> FabricResult<()> {
+    pub fn send_msg<T: Into<FabricMsg>>(&self, node: NodeId, msg: T) -> FabricResult<()> {
+        if node == self.context.node.0 {
+            panic!("Can't send message to self");
+        }
         let msg = msg.into();
         if cfg!(test) {
             let droppable = match msg.get_type() {
@@ -296,12 +304,13 @@ impl Fabric {
             }
         }
         let mut writers = self.context.writer_chans.lock().unwrap();
-        match writers.entry(node_id) {
+        match writers.entry(node) {
             HMEntry::Occupied(o) => {
                 let chans = o.get();
                 match chans.len() {
                     0 => {
-                        warn!("DROPING MSG - No writers");
+                        // FIXME: super broken
+                        error!("DROPING MSG - No writers");
                     }
                     1 => {
                         let _ = chans[0].send(msg);
@@ -312,7 +321,8 @@ impl Fabric {
                 }
             }
             HMEntry::Vacant(_v) => {
-                warn!("DROPING MSG - No Channels entry");
+                // FIXME: super broken
+                error!("DROPING MSG - No Channels entry");
             }
         }
         Ok(())

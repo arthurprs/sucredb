@@ -13,10 +13,6 @@ extern crate serde_yaml;
 extern crate bincode;
 extern crate tendril;
 extern crate lmdb_rs;
-#[macro_use]
-extern crate rotor;
-extern crate rotor_stream;
-extern crate rotor_tools;
 extern crate byteorder;
 extern crate etcd;
 extern crate nodrop;

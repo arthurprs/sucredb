@@ -13,8 +13,6 @@ log = "*"
 env_logger = "*"
 lmdb-rs = "*"
 tendril="*"
-rotor="*"
-rotor-tools="*"
 byteorder="*"
 nodrop="*"
 ramp="*"
@@ -35,9 +33,6 @@ features = ["serde"]
 path= "../rust-etcd"
 default-features = false
 features = ["nightly"]
-
-[dependencies.rotor-stream]
-path= "../rotor-stream"
 
 [profile.dev]
 codegen-units = 4
