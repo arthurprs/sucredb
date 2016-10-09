@@ -141,7 +141,7 @@ impl Server {
         let token_chans_cloned = token_chans.clone();
         let response_fn = Box::new(move |token, resp| {
             if let Some(chan) = token_chans_cloned.lock().unwrap().get(&token) {
-                chan.send(resp).unwrap();
+                let _ = chan.send(resp);
             }
         });
 
