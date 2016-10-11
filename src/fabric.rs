@@ -129,25 +129,24 @@ impl Fabric {
             .then(move |r| {
                 debug!("{:?}", r);
                 tokio::reactor::Timeout::new(Duration::from_millis(99999), &handle)
-                .and_then(move |_| {
-                    let still_valid = {
-                        let locked = context.nodes_addr.lock().unwrap();
-                        locked.get(&node).map_or(false, |&a| a == addr)
-                    };
-                    if still_valid {
-                        debug!("Reconnecting fabric connection to node {:?}", addr);
-                        handle.spawn(Self::connect(node, addr, context, handle.clone()));
-                    }
-                    Ok(())
-                })
+                    .and_then(move |_| {
+                        let still_valid = {
+                            let locked = context.nodes_addr.lock().unwrap();
+                            locked.get(&node).map_or(false, |&a| a == addr)
+                        };
+                        if still_valid {
+                            debug!("Reconnecting fabric connection to node {:?}", addr);
+                            handle.spawn(Self::connect(node, addr, context, handle.clone()));
+                        }
+                        Ok(())
+                    })
             })
             .map_err(|_| ());
         Box::new(fut)
     }
 
-    fn connection(socket: tokio::net::TcpStream, expected_node: Option<NodeId>,
-                  addr: SocketAddr, context: Arc<GlobalContext>,
-                  handle: tokio::reactor::Handle)
+    fn connection(socket: tokio::net::TcpStream, expected_node: Option<NodeId>, addr: SocketAddr,
+                  context: Arc<GlobalContext>, handle: tokio::reactor::Handle)
                   -> Box<Future<Item = (), Error = io::Error>> {
         let _ = socket.set_nodelay(true);
         let _ = socket.set_keepalive_ms(Some(2000));
@@ -270,7 +269,9 @@ impl Fabric {
             writer_chans: Default::default(),
         });
         let init_result = tokio::net::TcpListener::bind(&context.addr, &handle)
-            .map(|listener| core.handle().spawn(Self::listen(listener, context.clone(), core.handle())));
+            .map(|listener| {
+                core.handle().spawn(Self::listen(listener, context.clone(), core.handle()))
+            });
 
         match init_result {
             Ok(_) => {
@@ -398,9 +399,9 @@ mod tests {
         let counter = Arc::new(atomic::AtomicUsize::new(0));
         let counter_ = counter.clone();
         fabric2.register_msg_handler(FabricMsgType::Crud,
-                                    Box::new(move |_, m| {
-                                        counter_.fetch_add(1, atomic::Ordering::Relaxed);
-                                    }));
+                                     Box::new(move |_, m| {
+                                         counter_.fetch_add(1, atomic::Ordering::Relaxed);
+                                     }));
         for _ in 0..3 {
             fabric1.send_msg(2,
                           MsgRemoteSetAck {

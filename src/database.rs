@@ -1,4 +1,4 @@
-use std::{net, time};
+use std::{net, str, time};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use dht::{self, DHT};
@@ -11,7 +11,9 @@ use storage::{StorageManager, Storage};
 use rand::{thread_rng, Rng};
 pub use types::*;
 
-const MAX_INCOMMING_SYNCS: usize = 1;
+const MAX_INCOMMING_SYNCS: usize = 0;
+const WORKERS: usize = 1;
+const WORKER_TIMER_MS: u64 = 1000;
 
 pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;
 
@@ -59,25 +61,25 @@ macro_rules! vnode {
 }
 
 impl Database {
-    pub fn new(node: NodeId, fabric_addr: net::SocketAddr, cluster: &str, storage_dir: &str,
-               is_create: bool, response_fn: DatabaseResponseFn)
+    pub fn new(fabric_addr: net::SocketAddr, cluster: &str, storage_dir: &str, is_create: bool,
+               response_fn: DatabaseResponseFn)
                -> Arc<Database> {
         let storage_manager = StorageManager::new(storage_dir).unwrap();
         let meta_storage = storage_manager.open(-1, true).unwrap();
 
-        if !is_create {
-            if let Some(s_cluster) = meta_storage.get_vec(b"cluster") {
-                assert_eq!(s_cluster, cluster.as_bytes(), "Stored cluster name differs!");
-            }
-            if let Some(s_node) = meta_storage.get_vec(b"node") {
-                assert_eq!(s_node, node.to_string().as_bytes(), "Stored node Id differs!");
-            }
+        let node = if let Some(s_node) = meta_storage.get_vec(b"node") {
+            String::from_utf8(s_node).unwrap().parse::<NodeId>().unwrap()
+        } else {
+            thread_rng().gen::<i64>().abs() as NodeId
+        };
+        if let Some(s_cluster) = meta_storage.get_vec(b"cluster") {
+            assert_eq!(s_cluster, cluster.as_bytes(), "Stored cluster name differs!");
         }
         meta_storage.set(b"cluster", cluster.as_bytes());
         meta_storage.set(b"node", node.to_string().as_bytes());
         meta_storage.sync();
 
-        let workers = WorkerManager::new(1, time::Duration::from_millis(1000));
+        let workers = WorkerManager::new(WORKERS, time::Duration::from_millis(WORKER_TIMER_MS));
         let db = Arc::new(Database {
             fabric: Fabric::new(node, fabric_addr).unwrap(),
             dht: DHT::new(node,
@@ -191,36 +193,48 @@ impl Database {
             vn.handler_tick(self, time);
             incomming_syncs += vn.syncs_inflight().0;
         }
-        // if incomming_syncs < MAX_INCOMMING_SYNCS {
-        //     let mut rng = thread_rng();
-        //     for i in (0..vnodes.len()).map(|_| rng.gen::<u16>() % vnodes.len() as u16) {
-        //         incomming_syncs += vnodes.get(&i).unwrap().lock().unwrap().maybe_start_sync(self);
-        //         if incomming_syncs >= MAX_INCOMMING_SYNCS {
-        //             break;
-        //         }
-        //     }
-        // }
+        if incomming_syncs < MAX_INCOMMING_SYNCS {
+            let mut rng = thread_rng();
+            for i in (0..vnodes.len()).map(|_| rng.gen::<u16>() % vnodes.len() as u16) {
+                incomming_syncs += vnodes.get(&i).unwrap().lock().unwrap().maybe_start_sync(self);
+                if incomming_syncs >= MAX_INCOMMING_SYNCS {
+                    break;
+                }
+            }
+        }
     }
 
     fn handler_fabric_msg(&self, from: NodeId, msg: FabricMsg) {
         match msg {
-            FabricMsg::RemoteGet(m) => self.handler_get_remote(from, m),
-            FabricMsg::RemoteGetAck(m) => self.handler_get_remote_ack(from, m),
-            FabricMsg::Set(m) => self.handler_set(from, m),
-            FabricMsg::SetAck(m) => self.handler_set_ack(from, m),
-            FabricMsg::RemoteSet(m) => self.handler_set_remote(from, m),
-            FabricMsg::RemoteSetAck(m) => self.handler_set_remote_ack(from, m),
+            FabricMsg::RemoteGet(m) => {
+                vnode!(self, m.vnode, |mut vn| vn.handler_get_remote(self, from, m));
+            }
+            FabricMsg::RemoteGetAck(m) => {
+                vnode!(self, m.vnode, |mut vn| vn.handler_get_remote_ack(self, from, m));
+            }
+            FabricMsg::Set(m) => {
+                vnode!(self, m.vnode, |mut vn| vn.handler_set(self, from, m));
+            }
+            FabricMsg::SetAck(m) => {
+                vnode!(self, m.vnode, |mut vn| vn.handler_set_ack(self, from, m));
+            }
+            FabricMsg::RemoteSet(m) => {
+                vnode!(self, m.vnode, |mut vn| vn.handler_set_remote(self, from, m));
+            }
+            FabricMsg::RemoteSetAck(m) => {
+                vnode!(self, m.vnode, |mut vn| vn.handler_set_remote_ack(self, from, m));
+            }
             FabricMsg::SyncStart(m) => {
-                vnode!(self, m.vnode, |mut vn| vn.handler_sync_start(self, from, m))
+                vnode!(self, m.vnode, |mut vn| vn.handler_sync_start(self, from, m));
             }
             FabricMsg::SyncSend(m) => {
-                vnode!(self, m.vnode, |mut vn| vn.handler_sync_send(self, from, m))
+                vnode!(self, m.vnode, |mut vn| vn.handler_sync_send(self, from, m));
             }
             FabricMsg::SyncAck(m) => {
-                vnode!(self, m.vnode, |mut vn| vn.handler_sync_ack(self, from, m))
+                vnode!(self, m.vnode, |mut vn| vn.handler_sync_ack(self, from, m));
             }
             FabricMsg::SyncFin(m) => {
-                vnode!(self, m.vnode, |mut vn| vn.handler_sync_fin(self, from, m))
+                vnode!(self, m.vnode, |mut vn| vn.handler_sync_fin(self, from, m));
             }
             msg @ _ => unreachable!("Can't handle {:?}", msg),
         };
@@ -276,43 +290,6 @@ impl Database {
             vn.do_get(self, token, key);
         });
     }
-
-    // CRUD HANDLERS
-    fn handler_set(&self, from: NodeId, msg: MsgSet) {
-        vnode!(self, msg.vnode, |mut vn| {
-            vn.handler_set(self, from, msg);
-        });
-    }
-
-    fn handler_set_ack(&self, from: NodeId, msg: MsgSetAck) {
-        vnode!(self, msg.vnode, |mut vn| {
-            vn.handler_set_ack(self, from, msg);
-        });
-    }
-
-    fn handler_set_remote(&self, from: NodeId, msg: MsgRemoteSet) {
-        vnode!(self, msg.vnode, |mut vn| {
-            vn.handler_set_remote(self, from, msg);
-        });
-    }
-
-    fn handler_set_remote_ack(&self, from: NodeId, msg: MsgRemoteSetAck) {
-        vnode!(self, msg.vnode, |mut vn| {
-            vn.handler_set_remote_ack(self, from, msg);
-        });
-    }
-
-    fn handler_get_remote(&self, from: NodeId, msg: MsgRemoteGet) {
-        vnode!(self, msg.vnode, |mut vn| {
-            vn.handler_get_remote(self, from, msg);
-        });
-    }
-
-    fn handler_get_remote_ack(&self, from: NodeId, msg: MsgRemoteGetAck) {
-        vnode!(self, msg.vnode, |mut vn| {
-            vn.handler_get_remote_ack(self, from, msg);
-        });
-    }
 }
 
 impl Drop for Database {
@@ -344,11 +321,10 @@ mod tests {
     }
 
     impl TestDatabase {
-        fn new(node: NodeId, bind_addr: net::SocketAddr, storage_dir: &str, create: bool) -> Self {
+        fn new(bind_addr: net::SocketAddr, storage_dir: &str, create: bool) -> Self {
             let responses1 = Arc::new(Mutex::new(HashMap::new()));
             let responses2 = responses1.clone();
-            let db = Database::new(node,
-                                   bind_addr,
+            let db = Database::new(bind_addr,
                                    "test",
                                    storage_dir,
                                    create,
@@ -389,7 +365,7 @@ mod tests {
     fn test_reload_stub(shutdown: bool) {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let mut db = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db", true);
+        let mut db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
 
         db.get(1, b"test");
         assert!(db.response(1).unwrap().is_empty());
@@ -402,7 +378,7 @@ mod tests {
 
         db.save(shutdown);
         drop(db);
-        db = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db", false);
+        db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", false);
 
         db.get(1, b"test");
         assert!(db.response(1).unwrap().values().eq(vec![b"value1"]));
@@ -430,7 +406,7 @@ mod tests {
     fn test_one() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db", true);
+        let db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
         db.get(1, b"test");
         assert!(db.response(1).unwrap().is_empty());
 
@@ -465,8 +441,8 @@ mod tests {
     fn test_two() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
-        let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.claim(db2.dht.node(), ());
 
         sleep_ms(1000);
@@ -493,7 +469,7 @@ mod tests {
     fn test_join_migrate() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         for i in 0..TEST_JOIN_SIZE {
             db1.set(i,
                     i.to_string().as_bytes(),
@@ -506,7 +482,7 @@ mod tests {
             assert!(db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
-        let db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         warn!("will check data in db2 before balancing");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());
@@ -541,8 +517,8 @@ mod tests {
     fn test_join_sync_reverse() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let mut db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
-        let mut db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let mut db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.claim(db2.dht.node(), ());
 
         sleep_ms(1000);
@@ -569,7 +545,7 @@ mod tests {
         // sim unclean shutdown
         drop(db1);
         let _ = fs::remove_dir_all("t/db1");
-        db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", false);
+        db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", false);
 
         sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
@@ -588,8 +564,8 @@ mod tests {
     fn test_join_sync_normal() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let mut db1 = TestDatabase::new(1, "127.0.0.1:9000".parse().unwrap(), "t/db1", true);
-        let mut db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let mut db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.claim(db2.dht.node(), ());
 
         sleep_ms(1000);
@@ -616,7 +592,7 @@ mod tests {
         // sim unclean shutdown
         drop(db2);
         let _ = fs::remove_dir_all("t/db2");
-        db2 = TestDatabase::new(2, "127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
 
         sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {

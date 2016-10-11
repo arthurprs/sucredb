@@ -145,12 +145,8 @@ impl Server {
             }
         });
 
-        let database = Database::new(utils::get_or_gen_node_id(),
-                                     "127.0.0.1:9000".parse().unwrap(),
-                                     "./run/",
-                                     "test",
-                                     true,
-                                     response_fn);
+        let database =
+            Database::new("127.0.0.1:9000".parse().unwrap(), "./run/", "test", true, response_fn);
 
         let context = Rc::new(GlobalContext {
             db_sender: RefCell::new(database.sender()),
