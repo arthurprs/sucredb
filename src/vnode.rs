@@ -1,5 +1,5 @@
 use std::time::{Instant, Duration};
-use std::collections::{HashMap, BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::collections::hash_map::Entry as HMEntry;
 use version_vector::*;
 use storage::*;
@@ -10,6 +10,7 @@ use inflightmap::InFlightMap;
 use fabric::*;
 use vnode_sync::*;
 use rand::{Rng, thread_rng};
+use utils::{IdHashMap, IdHasherBuilder};
 
 // FIXME: use a more efficient ring buffer
 // 1MB of storage considering key avg length of 32B and 16B overhead
@@ -32,8 +33,8 @@ pub enum VNodeStatus {
 
 pub struct VNode {
     state: VNodeState,
-    syncs: HashMap<Cookie, Synchronization>,
-    inflight: InFlightMap<Cookie, ReqState, Instant>,
+    syncs: IdHashMap<Cookie, Synchronization>,
+    inflight: InFlightMap<Cookie, ReqState, Instant, IdHasherBuilder>,
 }
 
 pub struct VNodeState {
@@ -42,7 +43,7 @@ pub struct VNodeState {
     last_status_change: Instant,
     pub clocks: BitmappedVersionVector,
     pub log: VNodePeer,
-    pub peers: HashMap<NodeId, VNodePeer>,
+    pub peers: IdHashMap<NodeId, VNodePeer>,
     pub storage: Storage,
     pub unflushed_coord_writes: usize,
     // sync
@@ -53,7 +54,7 @@ pub struct VNodeState {
 
 #[derive(Serialize, Deserialize)]
 struct SavedVNodeState {
-    peers: HashMap<NodeId, VNodePeer>,
+    peers: IdHashMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
     log: VNodePeer,
     clean_shutdown: bool,

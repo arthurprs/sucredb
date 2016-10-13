@@ -6,6 +6,7 @@ use storage::Storage;
 use inflightmap::InFlightMap;
 use std::time::{Instant, Duration};
 use bincode::serde as bincode_serde;
+use utils::IdHasherBuilder;
 
 const RECOVER_FAST_FORWARD: Version = 1_000_000;
 const SYNC_INFLIGHT_MAX: usize = 10;
@@ -24,13 +25,17 @@ pub enum SyncResult {
 
 // TODO: take mut buffers instead of returning them
 type IteratorFn = Box<FnMut(&Storage) -> Option<(Vec<u8>, DottedCausalContainer<Vec<u8>>)> + Send>;
+type InFlightSyncMsgMap = InFlightMap<u64,
+                                      (Vec<u8>, DottedCausalContainer<Vec<u8>>),
+                                      Instant,
+                                      IdHasherBuilder>;
 
 pub enum Synchronization {
     SyncSender {
         clock_in_peer: BitmappedVersion,
         clock_snapshot: BitmappedVersion,
         iterator: IteratorFn,
-        inflight: InFlightMap<u64, (Vec<u8>, DottedCausalContainer<Vec<u8>>), Instant>,
+        inflight: InFlightSyncMsgMap,
         cookie: Cookie,
         peer: NodeId,
         target: NodeId,
@@ -51,7 +56,7 @@ pub enum Synchronization {
         peer: NodeId,
         clocks_snapshot: BitmappedVersionVector,
         iterator: IteratorFn,
-        inflight: InFlightMap<u64, (Vec<u8>, DottedCausalContainer<Vec<u8>>), Instant>,
+        inflight: InFlightSyncMsgMap,
         count: u64,
         last_receive: Instant,
     },

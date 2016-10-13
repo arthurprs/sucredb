@@ -1,15 +1,16 @@
 use std::collections::{HashMap, BinaryHeap};
-use std::hash::Hash;
+use std::collections::hash_map::RandomState;
+use std::hash::{Hash, BuildHasher};
 use std::cmp::Ordering;
 use std::ops::{Deref, DerefMut};
 
 #[derive(Debug)]
-pub struct InFlightMap<K: Hash + Eq + Copy, V, T: Ord + Copy> {
-    map: HashMap<K, V>,
+pub struct InFlightMap<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher = RandomState> {
+    map: HashMap<K, V, H>,
     heap: BinaryHeap<Pair<T, K>>,
 }
 
-impl<K: Hash + Eq + Copy, V, T: Ord + Copy> InFlightMap<K, V, T> {
+impl<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher + Default> InFlightMap<K, V, T, H> {
     pub fn new() -> Self {
         InFlightMap {
             map: Default::default(),
@@ -51,15 +52,15 @@ impl<K: Hash + Eq + Copy, V, T: Ord + Copy> InFlightMap<K, V, T> {
     }
 }
 
-impl<K: Hash + Eq + Copy, V, T: Ord + Copy> Deref for InFlightMap<K, V, T> {
-    type Target = HashMap<K, V>;
+impl<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher> Deref for InFlightMap<K, V, T, H> {
+    type Target = HashMap<K, V, H>;
 
     fn deref(&self) -> &Self::Target {
         &self.map
     }
 }
 
-impl<K: Hash + Eq + Copy, V, T: Ord + Copy> DerefMut for InFlightMap<K, V, T> {
+impl<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher> DerefMut for InFlightMap<K, V, T, H> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.map
     }

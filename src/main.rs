@@ -1,5 +1,5 @@
 #![feature(custom_derive, plugin, question_mark, arc_counts,
-binary_heap_extras, fnbox, conservative_impl_trait)]
+    binary_heap_extras, fnbox, conservative_impl_trait)]
 #![allow(dead_code)]
 #![plugin(serde_macros)]
 #[macro_use]

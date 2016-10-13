@@ -7,13 +7,12 @@ use std::sync::{Mutex, Arc};
 use std::collections::{VecDeque, HashMap};
 use database::{Database, Token};
 use workers::{WorkerMsg, WorkerSender};
-use futures::{self, Future, IntoFuture};
+use futures::{self, Future};
 use futures::stream::{self, Stream};
 use my_futures;
 use tokio_core as tokio;
 use tokio_core::io::Io;
 use resp::{self, RespValue};
-use utils;
 
 struct RespConnection {
     addr: SocketAddr,
@@ -107,7 +106,6 @@ impl RespConnection {
                     Ok((ctx, s, b, p + r - parser.bytes_consumed()))
                 })
             })
-            .into_future()
             .map(|_| ());
 
         let write_fut = pipe_rx.fold((ctx_tx, sock_tx, Vec::new()), |(ctx, s, mut b), resp| {
@@ -116,7 +114,6 @@ impl RespConnection {
                 resp.serialize_to(&mut b);
                 tokio::io::write_all(s, b).map(move |(s, b)| (ctx, s, b))
             })
-            .into_future()
             .map(|_| ());
 
         Box::new(read_fut.select(write_fut).then(move |_| {

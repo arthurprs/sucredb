@@ -9,9 +9,9 @@ use rand::{thread_rng, Rng};
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
 use bincode::{self, serde as bincode_serde};
 
-use futures::{self, Future, IntoFuture};
+use futures::{self, Future};
 use futures::stream::{self, Stream};
-use my_futures;
+use my_futures::{read_at, SignaledChan, ShortCircuit};
 use tokio_core as tokio;
 use tokio_core::io::Io;
 
@@ -202,7 +202,7 @@ impl Fabric {
                     }
                 }
 
-                my_futures::read_at(s, b, p).and_then(|(s, b, p, r)| {
+                read_at(s, b, p).and_then(|(s, b, p, r)| {
                     let mut end = p + r;
                     let mut start = 0;
                     while end - start > 4 {
@@ -239,19 +239,32 @@ impl Fabric {
                     Ok((ctx, s, b, end))
                 })
             })
-            .into_future()
             .map(|_| ());
 
-        let tx_fut = chan_rx.fold((ctx_tx, sock_tx, Vec::new()), move |(ctx, s, mut b), msg| {
-                debug!("Sending to node {} msg {:?}", ctx.peer, msg);
-                b.clear();
-                b.write_u32::<LittleEndian>(0).unwrap();
-                bincode_serde::serialize_into(&mut b, &msg, bincode::SizeLimit::Infinite).unwrap();
-                let msg_len = b.len() as u32 - 4;
-                (&mut b[0..4]).write_u32::<LittleEndian>(msg_len).unwrap();
-                tokio::io::write_all(s, b).map(|(s, b)| (ctx, s, b))
+        let tx_fut = SignaledChan::new(chan_rx)
+            .fold((ctx_tx, sock_tx, Vec::new()), move |(ctx, s, mut b), msg_opt| {
+                let flush = if let Some(msg) = msg_opt {
+                    debug!("Sending to node {} msg {:?}", ctx.peer, msg);
+                    let offset = b.len();
+                    b.write_u32::<LittleEndian>(0).unwrap();
+                    bincode_serde::serialize_into(&mut b, &msg, bincode::SizeLimit::Infinite)
+                        .unwrap();
+                    let msg_len = (b.len() - offset - 4) as u32;
+                    (&mut b[offset..offset + 4]).write_u32::<LittleEndian>(msg_len).unwrap();
+                    b.len() >= 4 * 1024
+                } else {
+                    true
+                };
+                if flush {
+                    trace!("flushing msgs to node {:?}", ctx.peer);
+                    ShortCircuit::from_future(tokio::io::write_all(s, b).map(|(s, mut b)| {
+                        b.clear();
+                        (ctx, s, b)
+                    }))
+                } else {
+                    ShortCircuit::from_item((ctx, s, b))
+                }
             })
-            .into_future()
             .map(|_| ());
         Box::new(rx_fut.select(tx_fut).map(|_| ()).map_err(|(e, _)| e))
     }
@@ -396,6 +409,8 @@ mod tests {
         let fabric2 = Fabric::new(2, "127.0.0.1:6482".parse().unwrap()).unwrap();
         fabric1.register_node(2, "127.0.0.1:6482".parse().unwrap());
         fabric2.register_node(1, "127.0.0.1:6481".parse().unwrap());
+        thread::sleep(Duration::from_millis(10));
+
         let counter = Arc::new(atomic::AtomicUsize::new(0));
         let counter_ = counter.clone();
         fabric2.register_msg_handler(FabricMsgType::Crud,
@@ -411,7 +426,7 @@ mod tests {
                           })
                 .unwrap();
         }
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(1000));
         assert_eq!(counter.load(atomic::Ordering::Relaxed), 3);
     }
 }

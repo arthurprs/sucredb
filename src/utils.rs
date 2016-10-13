@@ -1,9 +1,43 @@
+use std::hash::Hasher;
 use std::{path, fs};
+use std::hash::BuildHasherDefault;
+use std::collections::HashMap;
 use std::error::Error;
 use serde;
 use serde_yaml;
 
 pub type GenericError = Box<Error + Send + Sync + 'static>;
+
+pub type IdHasherBuilder = BuildHasherDefault<IdHasher>;
+pub type IdHashMap<K, V> = HashMap<K, V, IdHasherBuilder>;
+// quick hasher for identity types
+pub struct IdHasher(u64);
+
+impl Default for IdHasher {
+    #[inline]
+    fn default() -> IdHasher {
+        IdHasher(0)
+    }
+}
+
+impl Hasher for IdHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        debug_assert!(bytes.len() <= 8);
+        unsafe {
+            let mut temp = 0u64;
+            ::std::ptr::copy_nonoverlapping(bytes.as_ptr(),
+                                            &mut temp as *mut _ as *mut u8,
+                                            bytes.len());
+            self.0 ^= temp;
+        }
+    }
+}
 
 pub fn get_or_gen_node_id() -> u64 {
     use std::io;

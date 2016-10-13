@@ -1,5 +1,4 @@
 use std::{net, str, time};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use dht::{self, DHT};
 use version_vector::*;
@@ -9,6 +8,7 @@ use workers::*;
 use resp::RespValue;
 use storage::{StorageManager, Storage};
 use rand::{thread_rng, Rng};
+use utils::IdHashMap;
 pub use types::*;
 
 const MAX_INCOMMING_SYNCS: usize = 0;
@@ -23,7 +23,7 @@ pub struct Database {
     pub meta_storage: Storage,
     pub storage_manager: StorageManager,
     workers: Mutex<WorkerManager>,
-    vnodes: RwLock<HashMap<VNodeId, Mutex<VNode>>>,
+    vnodes: RwLock<IdHashMap<VNodeId, Mutex<VNode>>>,
     pub response_fn: DatabaseResponseFn,
 }
 
