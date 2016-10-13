@@ -9,7 +9,7 @@ use rand::{thread_rng, Rng};
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
 use bincode::{self, serde as bincode_serde};
 
-use futures::{self, Future};
+use futures::{self, Future, IntoFuture};
 use futures::stream::{self, Stream};
 use my_futures::{read_at, SignaledChan, ShortCircuit};
 use tokio_core as tokio;
@@ -21,7 +21,7 @@ use database::NodeId;
 
 pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
 pub type FabricResult<T> = Result<T, GenericError>;
-const RECONNECT_INTERVAL_MS: u64 = 2000;
+const RECONNECT_INTERVAL_MS: u64 = 1000;
 
 struct ReaderContext {
     context: Arc<GlobalContext>,
@@ -126,9 +126,10 @@ impl Fabric {
                 debug!("Stablished fabric connection with {:?}", addr);
                 Self::connection(s, Some(node), addr, context_cloned, handle_cloned)
             })
-            .then(move |r| {
-                debug!("{:?}", r);
-                tokio::reactor::Timeout::new(Duration::from_millis(99999), &handle)
+            .then(move |_| {
+                tokio::reactor::Timeout::new(Duration::from_millis(RECONNECT_INTERVAL_MS), &handle)
+                    .into_future()
+                    .and_then(|t| t)
                     .and_then(move |_| {
                         let still_valid = {
                             let locked = context.nodes_addr.lock().unwrap();
@@ -426,7 +427,7 @@ mod tests {
                           })
                 .unwrap();
         }
-        thread::sleep(Duration::from_millis(1000));
+        thread::sleep(Duration::from_millis(10));
         assert_eq!(counter.load(atomic::Ordering::Relaxed), 3);
     }
 }

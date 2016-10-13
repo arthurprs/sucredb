@@ -26,7 +26,7 @@ impl<T: Stream> Stream for SignaledChan<T> {
             Ok(Async::Ready(Some(t))) => {
                 self.delivered = true;
                 Ok(Async::Ready(Some(Some(t))))
-            },
+            }
             Ok(Async::NotReady) => {
                 if self.delivered {
                     self.delivered = false;
