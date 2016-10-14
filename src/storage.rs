@@ -29,12 +29,14 @@ pub struct Storage {
 
 impl StorageManager {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<StorageManager, GenericError> {
-        let env = try!(lmdb_rs::Environment::new()
-            .map_size(10 * 1024 * 1024)
-            .flags(lmdb_rs::core::EnvCreateNoTls)
+        let mut env = try!(lmdb_rs::Environment::new()
+            .map_size(100 * 1024 * 1024)
+            .flags(lmdb_rs::core::EnvCreateNoTls | lmdb_rs::core::EnvCreateNoMemInit |
+                   lmdb_rs::core::EnvCreateWriteMap)
             .autocreate_dir(true)
             .max_dbs(256)
             .open(path.as_ref(), 0o777));
+        try!(env.set_flags(lmdb_rs::core::EnvNoMetaSync | lmdb_rs::core::EnvNoMemInit, true));
         Ok(StorageManager {
             path: path.as_ref().into(),
             env: env,

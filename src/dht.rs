@@ -74,6 +74,7 @@ macro_rules! try_cas {
 
 impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
     pub fn new(node: NodeId, fabric_addr: net::SocketAddr, cluster: &str,
+                etcd: &str,
                initial: Option<(T, RingDescription)>)
                -> DHT<T> {
         let etcd1 = Default::default();
@@ -366,13 +367,14 @@ mod tests {
     use std::collections::HashMap;
     use super::*;
     use std::net;
+    use config;
 
     #[test]
     fn test_new() {
         let node = 0;
         let addr = "127.0.0.1:9000".parse().unwrap();
         for rf in 1..4 {
-            let dht = DHT::new(node, addr, "test", Some(((), RingDescription::new(rf, 256))));
+            let dht = DHT::new(node, addr, "test", config::DEFAULT_ETCD_ADDR, Some(((), RingDescription::new(rf, 256))));
             assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
             assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
             assert_eq!(dht.members(), [(node, addr)].iter().cloned().collect::<HashMap<_, _>>());

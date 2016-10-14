@@ -10,6 +10,7 @@ use storage::{StorageManager, Storage};
 use rand::{thread_rng, Rng};
 use utils::IdHashMap;
 pub use types::*;
+use config::Config;
 
 const MAX_INCOMMING_SYNCS: usize = 0;
 const WORKERS: usize = 1;
@@ -61,10 +62,8 @@ macro_rules! vnode {
 }
 
 impl Database {
-    pub fn new(fabric_addr: net::SocketAddr, cluster: &str, storage_dir: &str, is_create: bool,
-               response_fn: DatabaseResponseFn)
-               -> Arc<Database> {
-        let storage_manager = StorageManager::new(storage_dir).unwrap();
+    pub fn new(config: &Config, is_create: bool, response_fn: DatabaseResponseFn) -> Arc<Database> {
+        let storage_manager = StorageManager::new(&config.data_dir).unwrap();
         let meta_storage = storage_manager.open(-1, true).unwrap();
 
         let node = if let Some(s_node) = meta_storage.get_vec(b"node") {
@@ -73,18 +72,19 @@ impl Database {
             thread_rng().gen::<i64>().abs() as NodeId
         };
         if let Some(s_cluster) = meta_storage.get_vec(b"cluster") {
-            assert_eq!(s_cluster, cluster.as_bytes(), "Stored cluster name differs!");
+            assert_eq!(s_cluster, config.cluster_name.as_bytes(), "Stored cluster name differs!");
         }
-        meta_storage.set(b"cluster", cluster.as_bytes());
+        meta_storage.set(b"cluster", config.cluster_name.as_bytes());
         meta_storage.set(b"node", node.to_string().as_bytes());
         meta_storage.sync();
 
         let workers = WorkerManager::new(WORKERS, time::Duration::from_millis(WORKER_TIMER_MS));
         let db = Arc::new(Database {
-            fabric: Fabric::new(node, fabric_addr).unwrap(),
+            fabric: Fabric::new(node, config.fabric_addr).unwrap(),
             dht: DHT::new(node,
-                          fabric_addr,
-                          cluster,
+                          config.fabric_addr,
+                          &config.cluster_name,
+                          &config.etcd_addr,
                           if is_create {
                               Some(((), dht::RingDescription::new(3, 64)))
                           } else {
@@ -309,6 +309,7 @@ mod tests {
     use env_logger;
     use bincode::{serde as bincode_serde, SizeLimit};
     use resp::RespValue;
+    use config;
 
     fn sleep_ms(ms: u64) {
         use std::time::Duration;
@@ -321,13 +322,18 @@ mod tests {
     }
 
     impl TestDatabase {
-        fn new(bind_addr: net::SocketAddr, storage_dir: &str, create: bool) -> Self {
+        fn new(fabric_addr: net::SocketAddr, data_dir: &str, create: bool) -> Self {
             let responses1 = Arc::new(Mutex::new(HashMap::new()));
             let responses2 = responses1.clone();
-            let db = Database::new(bind_addr,
-                                   "test",
-                                   storage_dir,
-                                   create,
+            let config = config::Config {
+                data_dir: data_dir.into(),
+                fabric_addr: fabric_addr,
+                listen_addr: config::DEFAULT_LISTEN_ADDR.parse().unwrap(),
+                cluster_name: "test".into(),
+                etcd_addr: config::DEFAULT_ETCD_ADDR.parse().unwrap(),
+            };
+            let db = Database::new(&config,
+                                    create,
                                    Box::new(move |t, v| {
                                        let r = responses1.lock().unwrap().insert(t, v);
                                        assert!(r.is_none(), "replaced a result");
@@ -504,13 +510,11 @@ mod tests {
             sleep_ms(1000);
         }
 
-        // drop(db1);
-
-        // warn!("will check data in db2 after balancing");
-        // for i in 0..TEST_JOIN_SIZE {
-        //     db2.get(i, i.to_string().as_bytes());
-        //     assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
-        // }
+        warn!("will check data in db2 after balancing");
+        for i in 0..TEST_JOIN_SIZE {
+            db2.get(i, i.to_string().as_bytes());
+            assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+        }
     }
 
     #[test]

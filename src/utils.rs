@@ -10,7 +10,7 @@ pub type GenericError = Box<Error + Send + Sync + 'static>;
 
 pub type IdHasherBuilder = BuildHasherDefault<IdHasher>;
 pub type IdHashMap<K, V> = HashMap<K, V, IdHasherBuilder>;
-// quick hasher for identity types
+// quick hasher for types with random bits
 pub struct IdHasher(u64);
 
 impl Default for IdHasher {

@@ -13,6 +13,7 @@ use my_futures;
 use tokio_core as tokio;
 use tokio_core::io::Io;
 use resp::{self, RespValue};
+use config::Config;
 
 struct RespConnection {
     addr: SocketAddr,
@@ -32,7 +33,9 @@ struct GlobalContext {
     token_chans: Arc<Mutex<HashMap<Token, tokio::channel::Sender<RespValue>>>>,
 }
 
-pub struct Server;
+pub struct Server {
+    config: Config,
+}
 
 impl LocalContext {
     fn dispatch(&mut self, req: RespValue) {
@@ -53,7 +56,6 @@ impl LocalContext {
         }
     }
 }
-
 
 impl RespConnection {
     fn new(addr: SocketAddr, token: Token) -> Self {
@@ -124,14 +126,14 @@ impl RespConnection {
 }
 
 impl Server {
-    pub fn new() -> Server {
-        Server {}
+    pub fn new(config: Config) -> Server {
+        Server { config: config }
     }
 
     pub fn run(self) {
         let mut core = tokio::reactor::Core::new().unwrap();
-        let resp_addr = "127.0.0.1:6379".parse().unwrap();
-        let listener = tokio::net::TcpListener::bind(&resp_addr, &core.handle()).unwrap();
+        let listener = tokio::net::TcpListener::bind(&self.config.listen_addr, &core.handle())
+            .unwrap();
 
         let token_chans: Arc<Mutex<HashMap<Token, tokio::channel::Sender<RespValue>>>> =
             Default::default();
@@ -139,11 +141,12 @@ impl Server {
         let response_fn = Box::new(move |token, resp| {
             if let Some(chan) = token_chans_cloned.lock().unwrap().get(&token) {
                 let _ = chan.send(resp);
+            } else {
+                debug!("Can't find response channel for token {:?}", token);
             }
         });
 
-        let database =
-            Database::new("127.0.0.1:9000".parse().unwrap(), "./run/", "test", true, response_fn);
+        let database = Database::new(&self.config, true, response_fn);
 
         let context = Rc::new(GlobalContext {
             db_sender: RefCell::new(database.sender()),
