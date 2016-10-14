@@ -6,9 +6,9 @@ authors = ["arthurprs"]
 [dependencies]
 rand = "*"
 serde = "*"
+serde_derive = "*"
 serde_json = "*"
 serde_yaml = "*"
-serde_macros = "*"
 log = "*"
 env_logger = "*"
 lmdb-rs = "*"

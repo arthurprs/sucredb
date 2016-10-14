@@ -14,6 +14,7 @@ use tokio_core as tokio;
 use tokio_core::io::Io;
 use resp::{self, RespValue};
 use config::Config;
+use utils::IdHashMap;
 
 struct RespConnection {
     addr: SocketAddr,
@@ -30,7 +31,7 @@ struct LocalContext {
 struct GlobalContext {
     database: Arc<Database>,
     db_sender: RefCell<WorkerSender>,
-    token_chans: Arc<Mutex<HashMap<Token, tokio::channel::Sender<RespValue>>>>,
+    token_chans: Arc<Mutex<IdHashMap<Token, tokio::channel::Sender<RespValue>>>>,
 }
 
 pub struct Server {
@@ -135,7 +136,7 @@ impl Server {
         let listener = tokio::net::TcpListener::bind(&self.config.listen_addr, &core.handle())
             .unwrap();
 
-        let token_chans: Arc<Mutex<HashMap<Token, tokio::channel::Sender<RespValue>>>> =
+        let token_chans: Arc<Mutex<IdHashMap<Token, tokio::channel::Sender<RespValue>>>> =
             Default::default();
         let token_chans_cloned = token_chans.clone();
         let response_fn = Box::new(move |token, resp| {

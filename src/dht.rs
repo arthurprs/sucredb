@@ -9,7 +9,7 @@ use serde_yaml;
 use hash::hash;
 use database::{NodeId, VNodeId};
 use etcd;
-use utils::GenericError;
+use utils::{IdHashMap, GenericError};
 
 pub type DHTChangeFn = Box<Fn() + Send + Sync>;
 
@@ -27,7 +27,7 @@ pub struct Ring<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
     vnodes: Vec<LinearMap<NodeId, T>>,
     pending: Vec<LinearMap<NodeId, T>>,
     zombie: Vec<LinearMap<NodeId, T>>,
-    nodes: HashMap<NodeId, net::SocketAddr>,
+    nodes: IdHashMap<NodeId, net::SocketAddr>,
 }
 
 pub struct RingDescription {
@@ -73,8 +73,7 @@ macro_rules! try_cas {
 }
 
 impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
-    pub fn new(node: NodeId, fabric_addr: net::SocketAddr, cluster: &str,
-                etcd: &str,
+    pub fn new(node: NodeId, fabric_addr: net::SocketAddr, cluster: &str, etcd: &str,
                initial: Option<(T, RingDescription)>)
                -> DHT<T> {
         let etcd1 = etcd::Client::new(&[etcd]).unwrap();
@@ -374,7 +373,11 @@ mod tests {
         let node = 0;
         let addr = "127.0.0.1:9000".parse().unwrap();
         for rf in 1..4 {
-            let dht = DHT::new(node, addr, "test", config::DEFAULT_ETCD_ADDR, Some(((), RingDescription::new(rf, 256))));
+            let dht = DHT::new(node,
+                               addr,
+                               "test",
+                               config::DEFAULT_ETCD_ADDR,
+                               Some(((), RingDescription::new(rf, 256))));
             assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
             assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
             assert_eq!(dht.members(), [(node, addr)].iter().cloned().collect::<HashMap<_, _>>());

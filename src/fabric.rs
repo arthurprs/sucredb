@@ -16,7 +16,7 @@ use tokio_core as tokio;
 use tokio_core::io::Io;
 
 pub use fabric_msg::*;
-use utils::GenericError;
+use utils::{GenericError, IdHashMap};
 use database::NodeId;
 
 pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
@@ -40,10 +40,10 @@ struct GlobalContext {
     node: NodeId,
     addr: SocketAddr,
     loop_remote: tokio::reactor::Remote,
-    msg_handlers: Mutex<HashMap<u8, FabricHandlerFn>>,
-    nodes_addr: Mutex<HashMap<NodeId, SocketAddr>>,
+    msg_handlers: Mutex<IdHashMap<u8, FabricHandlerFn>>,
+    nodes_addr: Mutex<IdHashMap<NodeId, SocketAddr>>,
     // FIXME: remove mutex or at least change to RwLock
-    writer_chans: Arc<Mutex<HashMap<NodeId, Vec<tokio::channel::Sender<FabricMsg>>>>>,
+    writer_chans: Arc<Mutex<IdHashMap<NodeId, Vec<tokio::channel::Sender<FabricMsg>>>>>,
 }
 
 pub struct Fabric {

@@ -1,7 +1,6 @@
-#![feature(custom_derive, plugin, question_mark, arc_counts,
+#![feature(question_mark, arc_counts, proc_macro,
     binary_heap_extras, fnbox, conservative_impl_trait)]
 #![allow(dead_code)]
-#![plugin(serde_macros)]
 #[macro_use]
 extern crate log;
 extern crate env_logger;
@@ -9,6 +8,8 @@ extern crate rand;
 extern crate ramp;
 extern crate linear_map;
 extern crate serde;
+#[macro_use]
+extern crate serde_derive;
 extern crate serde_yaml;
 extern crate bincode;
 extern crate tendril;

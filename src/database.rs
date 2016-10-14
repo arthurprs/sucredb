@@ -333,7 +333,7 @@ mod tests {
                 etcd_addr: config::DEFAULT_ETCD_ADDR.parse().unwrap(),
             };
             let db = Database::new(&config,
-                                    create,
+                                   create,
                                    Box::new(move |t, v| {
                                        let r = responses1.lock().unwrap().insert(t, v);
                                        assert!(r.is_none(), "replaced a result");

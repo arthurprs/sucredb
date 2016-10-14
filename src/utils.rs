@@ -10,7 +10,6 @@ pub type GenericError = Box<Error + Send + Sync + 'static>;
 
 pub type IdHasherBuilder = BuildHasherDefault<IdHasher>;
 pub type IdHashMap<K, V> = HashMap<K, V, IdHasherBuilder>;
-// quick hasher for types with random bits
 pub struct IdHasher(u64);
 
 impl Default for IdHasher {
@@ -23,7 +22,16 @@ impl Default for IdHasher {
 impl Hasher for IdHasher {
     #[inline]
     fn finish(&self) -> u64 {
-        self.0
+        // Primes used in XXH64's finalizer.
+        const PRIME_2: u64 = 14029467366897019727;
+        const PRIME_3: u64 = 1609587929392839161;
+        let mut hash = self.0;
+        hash ^= hash >> 33;
+        hash = hash.wrapping_mul(PRIME_2);
+        hash ^= hash >> 29;
+        hash = hash.wrapping_mul(PRIME_3);
+        hash ^= hash >> 32;
+        hash
     }
 
     #[inline]
