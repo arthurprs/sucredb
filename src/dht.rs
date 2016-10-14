@@ -77,8 +77,8 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
                 etcd: &str,
                initial: Option<(T, RingDescription)>)
                -> DHT<T> {
-        let etcd1 = Default::default();
-        let etcd2 = Default::default();
+        let etcd1 = etcd::Client::new(&[etcd]).unwrap();
+        let etcd2 = etcd::Client::new(&[etcd]).unwrap();
         let inner = Arc::new(RwLock::new(Inner {
             ring: Ring {
                 replication_factor: Default::default(),

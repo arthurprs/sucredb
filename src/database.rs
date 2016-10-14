@@ -1,4 +1,4 @@
-use std::{net, str, time};
+use std::{str, time};
 use std::sync::{Arc, Mutex, RwLock};
 use dht::{self, DHT};
 use version_vector::*;
