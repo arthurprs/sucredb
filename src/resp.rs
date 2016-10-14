@@ -140,20 +140,22 @@ impl Parser {
     #[inline]
     fn read(&mut self, len: usize) -> RespResult<ByteTendril> {
         if self.body.len() >= len {
-            let (first_part, second_part) = Self::split_at(self.body.clone(), len);
-            self.body = second_part;
-            Ok(first_part)
+            let result = self.body.subtendril(0, len as u32);
+            self.body.pop_front(len as u32);
+            Ok(result)
         } else {
             Err(RespError::Incomplete)
         }
     }
 
-    fn split_at(mut tendril: ByteTendril, position: usize) -> (ByteTendril, ByteTendril) {
-        let offset = position as u32;
-        let len = tendril.len32() - offset;
-        let second_part = tendril.subtendril(offset, len);
-        tendril.pop_back(len);
-        (tendril, second_part)
+    fn read_with_separator(&mut self, len: usize) -> RespResult<ByteTendril> {
+        let mut result = try!(self.read(len + 2));
+        if &result[len..] != b"\r\n" {
+            Err("Invalid line separator".into())
+        } else {
+            result.pop_back(2);
+            Ok(result)
+        }
     }
 
     fn read_line(&mut self) -> RespResult<ByteTendril> {
@@ -161,12 +163,7 @@ impl Parser {
             Some(nl_pos) => nl_pos,
             None => return Err(RespError::Incomplete),
         };
-        let (first_part, second_part) = Self::split_at(try!(self.read(nl_pos + 2)), nl_pos);
-        if second_part.as_ref() != b"\r\n" {
-            return Err("Invalid line separator".into());
-        }
-
-        Ok(first_part)
+        Ok(try!(self.read_with_separator(nl_pos)))
     }
 
     fn read_string_line(&mut self) -> RespResult<StrTendril> {
@@ -200,11 +197,7 @@ impl Parser {
         if length < 0 {
             Ok(RespValue::Nil)
         } else {
-            let length = length as usize;
-            let (data, line_sep) = Self::split_at(try!(self.read(length + 2)), length);
-            if line_sep.as_ref() != b"\r\n" {
-                return Err("Invalid line separator".into());
-            }
+            let data = try!(self.read_with_separator(length as usize));
             Ok(RespValue::Data(data))
         }
     }
