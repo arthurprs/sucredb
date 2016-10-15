@@ -196,7 +196,7 @@ impl Fabric {
             .fold((ctx_rx, sock_rx, Vec::new(), 0), |(ctx, s, mut b, p), _| {
                 if b.len() - p < 4 * 1024 {
                     unsafe {
-                        b.reserve(4 * 1024);
+                        b.reserve(16 * 1024);
                         let cap = b.capacity();
                         b.set_len(cap);
                     }
@@ -228,7 +228,7 @@ impl Fabric {
                         }
                     }
 
-                    if consumed != 0 {
+                    if end != consumed {
                         unsafe {
                             ::std::ptr::copy(b.as_ptr().offset(consumed as isize),
                                              b.as_ptr() as *mut _,

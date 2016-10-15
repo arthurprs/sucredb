@@ -9,7 +9,7 @@ use database::{Database, Token};
 use workers::{WorkerMsg, WorkerSender};
 use futures::{self, Future};
 use futures::stream::{self, Stream};
-use my_futures;
+use my_futures::read_at;
 use tokio_core as tokio;
 use tokio_core::io::Io;
 use resp::{self, RespValue};
@@ -41,8 +41,10 @@ pub struct Server {
 impl LocalContext {
     fn dispatch(&mut self, req: RespValue) {
         if self.inflight {
+            debug!("Enqueued request ({}) {:?}", self.token, req);
             self.requests.push_back(req);
         } else {
+            debug!("Dispatched request ({}) {:?}", self.token, req);
             self.context.db_sender.borrow_mut().send(WorkerMsg::Command(self.token, req));
             self.inflight = true;
         }
@@ -51,6 +53,7 @@ impl LocalContext {
     fn dispatch_next(&mut self) {
         assert!(self.inflight, "can't cycle if there's nothing inflight");
         if let Some(req) = self.requests.pop_front() {
+            debug!("Dispatched request ({}) {:?}", self.token, req);
             self.context.db_sender.borrow_mut().send(WorkerMsg::Command(self.token, req));
         } else {
             self.inflight = false;
@@ -70,9 +73,10 @@ impl RespConnection {
            context: Rc<GlobalContext>)
            -> Box<Future<Item = (), Error = ()>> {
         debug!("run token {}", self.token);
+        let _ = socket.set_nodelay(true);
+        let (sock_rx, sock_tx) = socket.split();
         let (pipe_tx, pipe_rx) = tokio::channel::channel(&handle).unwrap();
         context.token_chans.lock().unwrap().insert(self.token, pipe_tx);
-        let (sock_rx, sock_tx) = socket.split();
         let ctx_rx = Rc::new(RefCell::new(LocalContext {
             token: self.token,
             context: context,
@@ -85,35 +89,33 @@ impl RespConnection {
             .fold((ctx_rx, sock_rx, Vec::new(), 0), |(ctx, s, mut b, p), _| {
                 if b.len() - p < 4 * 1024 {
                     unsafe {
-                        b.reserve(4 * 1024);
+                        b.reserve(16 * 1024);
                         let cap = b.capacity();
                         b.set_len(cap);
                     }
                 }
 
-                my_futures::read_at(s, b, p).and_then(|(s, b, p, r)| {
+                read_at(s, b, p).and_then(|(s, b, p, r)| {
                     trace!("read {} bytes at [{}..{}]", r, p, b.len());
                     let end = p + r;
                     let mut parser = match resp::Parser::new(&b[..end]) {
                         Ok(parser) => parser,
                         Err(resp::RespError::Incomplete) => return Ok((ctx, s, b, end)),
                         Err(resp::RespError::Invalid(e)) => {
-                            return Err(io::Error::new(io::ErrorKind::Other, e));
+                            return Err(io::Error::new(io::ErrorKind::Other, e))
                         }
+
                     };
                     loop {
                         match parser.parse() {
-                            Ok(req) => {
-                                debug!("Parsed request {:?}", req);
-                                ctx.borrow_mut().dispatch(req);
-                            }
+                            Ok(req) => ctx.borrow_mut().dispatch(req),
                             Err(resp::RespError::Incomplete) => break,
                             Err(resp::RespError::Invalid(e)) => {
-                                return Err(io::Error::new(io::ErrorKind::Other, e));
+                                return Err(io::Error::new(io::ErrorKind::Other, e))
                             }
                         }
                     }
-                    if parser.bytes_consumed() != 0 {
+                    if end != parser.bytes_consumed() {
                         unsafe {
                             ::std::ptr::copy(b.as_ptr().offset(parser.bytes_consumed() as isize),
                                              b.as_ptr() as *mut _,
