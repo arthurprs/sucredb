@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::net::SocketAddr;
 use std::sync::{Mutex, Arc};
-use std::collections::{VecDeque, HashMap};
+use std::collections::VecDeque;
 use database::{Database, Token};
 use workers::{WorkerMsg, WorkerSender};
 use futures::{self, Future};
@@ -82,16 +82,25 @@ impl RespConnection {
         let ctx_tx = ctx_rx.clone();
 
         let read_fut = stream::iter((0..).map(|_| -> Result<(), io::Error> { Ok(()) }))
-            .fold((ctx_rx, sock_rx, resp::ByteTendril::new(), 0), |(ctx, s, mut b, p), _| {
+            .fold((ctx_rx, sock_rx, Vec::new(), 0), |(ctx, s, mut b, p), _| {
                 if b.len() - p < 4 * 1024 {
                     unsafe {
-                        b.push_uninitialized(4 * 1024);
+                        b.reserve(4 * 1024);
+                        let cap = b.capacity();
+                        b.set_len(cap);
                     }
                 }
 
-                my_futures::read_at(s, b, p).and_then(|(s, mut b, p, r)| {
-                    debug!("read {} bytes at [{}..{}]", r, p, b.len());
-                    let mut parser = resp::Parser::new(b.subtendril(0, (p + r) as u32));
+                my_futures::read_at(s, b, p).and_then(|(s, b, p, r)| {
+                    trace!("read {} bytes at [{}..{}]", r, p, b.len());
+                    let end = p + r;
+                    let mut parser = match resp::Parser::new(&b[..end]) {
+                        Ok(parser) => parser,
+                        Err(resp::RespError::Incomplete) => return Ok((ctx, s, b, end)),
+                        Err(resp::RespError::Invalid(e)) => {
+                            return Err(io::Error::new(io::ErrorKind::Other, e));
+                        }
+                    };
                     loop {
                         match parser.parse() {
                             Ok(req) => {
@@ -100,13 +109,18 @@ impl RespConnection {
                             }
                             Err(resp::RespError::Incomplete) => break,
                             Err(resp::RespError::Invalid(e)) => {
-                                debug!("Parser error {:?}", e);
                                 return Err(io::Error::new(io::ErrorKind::Other, e));
                             }
                         }
                     }
-                    b.pop_front(parser.bytes_consumed() as u32);
-                    Ok((ctx, s, b, p + r - parser.bytes_consumed()))
+                    if parser.bytes_consumed() != 0 {
+                        unsafe {
+                            ::std::ptr::copy(b.as_ptr().offset(parser.bytes_consumed() as isize),
+                                             b.as_ptr() as *mut _,
+                                             end - parser.bytes_consumed());
+                        }
+                    }
+                    Ok((ctx, s, b, end - parser.bytes_consumed()))
                 })
             })
             .map(|_| ());

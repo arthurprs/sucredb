@@ -84,11 +84,67 @@ pub struct Parser {
 }
 
 impl Parser {
-    pub fn new<T: Into<ByteTendril>>(body: T) -> Parser {
-        let body = body.into();
-        Parser {
+    pub fn new<T: AsRef<[u8]>>(body: T) -> RespResult<Parser> {
+        let valid_to = try!(Self::speculate_buffer(body.as_ref()));
+        Ok(Parser {
             bytes_consumed: 0,
-            body: body,
+            body: body.as_ref()[..valid_to].into(),
+        })
+    }
+
+    fn speculate_buffer(buf: &[u8]) -> RespResult<usize> {
+        let mut valid = 0;
+        let mut i = 0;
+        let mut values_pending = 0;
+        while i < buf.len() {
+            match buf[i] {
+                b'$' | b'*' => {
+                    let is_multi = buf[i] == b'*';
+                    let mut len = 0i64;
+                    i += 1;
+                    while i < buf.len() {
+                        match buf[i] {
+                            d @ b'0'...b'9' => len = len * 10 + (d - b'0') as i64,
+                            b'-' => {
+                                len = -1;
+                                i += 2;
+                                break;
+                            }
+                            b'\r' => break,
+                            _ => return Err(RespError::Invalid("Invalid digit")),
+                        }
+                        i += 1;
+                    }
+                    if len >= 0 {
+                        if is_multi {
+                            values_pending = len + 1;
+                        } else {
+                            i += 2 + len as usize;
+                        }
+                    }
+                }
+                b':' | b'+' | b'-' => {
+                    i += 1;
+                    while i < buf.len() && buf[i] != b'\r' {
+                        i += 1;
+                    }
+                }
+                b'\r' => (),
+                _ => return Err(RespError::Invalid("Invalid prefix")),
+            }
+            // skip delimiter
+            i += 2;
+            if values_pending > 0 {
+                values_pending -= 1;
+            }
+            if values_pending == 0 && i <= buf.len() {
+                valid = i;
+            }
+        }
+        if valid != 0 {
+            Ok(valid)
+        } else {
+            Err(RespError::Incomplete)
         }
     }
 

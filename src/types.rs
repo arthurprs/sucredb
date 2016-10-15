@@ -12,6 +12,6 @@ impl Cookie {
 
 impl ::std::fmt::Debug for Cookie {
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        write!(f, "{:x}{:x}", self.0, self.1)
+        write!(f, "{:016X}{:016X}", self.0, self.1)
     }
 }

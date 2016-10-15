@@ -2,7 +2,6 @@ use std::{str, io, thread};
 use std::net::SocketAddr;
 use std::time::Duration;
 use std::sync::{Mutex, Arc};
-use std::collections::HashMap;
 use std::collections::hash_map::Entry as HMEntry;
 
 use rand::{thread_rng, Rng};
@@ -194,7 +193,7 @@ impl Fabric {
         ctx_tx.add_writer_chan(chan_tx);
 
         let rx_fut = stream::iter((0..).map(|_| -> Result<(), io::Error> { Ok(()) }))
-            .fold((ctx_rx, sock_rx, Vec::<u8>::new(), 0), |(ctx, s, mut b, p), _| {
+            .fold((ctx_rx, sock_rx, Vec::new(), 0), |(ctx, s, mut b, p), _| {
                 if b.len() - p < 4 * 1024 {
                     unsafe {
                         b.reserve(4 * 1024);
@@ -204,10 +203,10 @@ impl Fabric {
                 }
 
                 read_at(s, b, p).and_then(|(s, b, p, r)| {
-                    let mut end = p + r;
-                    let mut start = 0;
-                    while end - start > 4 {
-                        let mut slice = &b[start..end];
+                    let end = p + r;
+                    let mut consumed = 0;
+                    while end - consumed > 4 {
+                        let mut slice = &b[consumed..end];
                         let msg_len = slice.read_u32::<LittleEndian>().unwrap() as usize;
                         if slice.len() < msg_len {
                             break;
@@ -221,7 +220,7 @@ impl Fabric {
                             Ok(msg) => {
                                 debug!("Received from node {} msg {:?}", ctx.peer, msg);
                                 ctx.dispatch(msg);
-                                start += 4 + msg_len;
+                                consumed += 4 + msg_len;
                             }
                             Err(e) => {
                                 return Err(io::Error::new(io::ErrorKind::Other, e));
@@ -229,15 +228,14 @@ impl Fabric {
                         }
                     }
 
-                    if start != 0 {
+                    if consumed != 0 {
                         unsafe {
-                            ::std::ptr::copy(b.as_ptr().offset(start as isize),
+                            ::std::ptr::copy(b.as_ptr().offset(consumed as isize),
                                              b.as_ptr() as *mut _,
-                                             end - start);
+                                             end - consumed);
                         }
-                        end -= start;
                     }
-                    Ok((ctx, s, b, end))
+                    Ok((ctx, s, b, end - consumed))
                 })
             })
             .map(|_| ());

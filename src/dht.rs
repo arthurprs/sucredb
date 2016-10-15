@@ -164,6 +164,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             let node = r.node.unwrap();
             let ring = Self::deserialize(&node.value.unwrap()).unwrap();
             let ring_version = node.modified_index.unwrap();
+            assert!(ring.vnodes.len().is_power_of_two());
             let mut new_ring = ring.clone();
             new_ring.nodes.insert(self.node, self.addr);
             if self.propose(ring_version, new_ring, true).is_ok() {
@@ -173,6 +174,8 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
     }
 
     fn reset(&self, meta: T, replication_factor: usize, partitions: usize) {
+        assert!(partitions.is_power_of_two());
+        assert!(replication_factor > 0);
         let mut inner = self.inner.write().unwrap();
         let cluster_key = format!("/{}/dht", inner.cluster);
         inner.ring = Ring {
@@ -216,7 +219,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
     pub fn key_vnode(&self, key: &[u8]) -> VNodeId {
         // FIXME: this should be lock free
         let inner = self.inner.read().unwrap();
-        (hash(key) % inner.ring.vnodes.len() as u64) as VNodeId
+        hash(key) as VNodeId & (inner.ring.vnodes.len() - 1) as VNodeId
     }
 
     pub fn vnodes_for_node(&self, node: NodeId) -> (Vec<VNodeId>, Vec<VNodeId>) {

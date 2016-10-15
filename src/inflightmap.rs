@@ -43,7 +43,7 @@ impl<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher + Default> InFlightMa
                 _ => return None,
             };
             if let Some(v) = self.map.get(&key) {
-                self.heap.replace(Pair(expire, key));
+                *self.heap.peek_mut().unwrap() = Pair(expire, key);
                 return Some((key, &v));
             } else {
                 self.heap.pop();

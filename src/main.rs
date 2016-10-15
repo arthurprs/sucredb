@@ -1,5 +1,5 @@
-#![feature(question_mark, arc_counts, proc_macro,
-    binary_heap_extras, fnbox, conservative_impl_trait)]
+#![feature(arc_counts, proc_macro,
+    fnbox, conservative_impl_trait)]
 #![allow(dead_code)]
 #[macro_use]
 extern crate log;
