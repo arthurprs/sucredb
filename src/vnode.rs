@@ -175,13 +175,9 @@ impl ReqState {
 }
 
 impl VNode {
-    pub fn new(db: &Database, num: u16, status: VNodeStatus, is_create: bool) -> VNode {
-        let state = VNodeState::load(num, db, status, is_create);
+    pub fn new(db: &Database, num: u16, status: VNodeStatus) -> VNode {
+        let state = VNodeState::load(num, db, status);
         state.save(db, false);
-
-        if is_create {
-            assert_eq!(status, VNodeStatus::Ready, "Status must be ready when creating");
-        }
 
         let mut vnode = VNode {
             state: state,
@@ -690,7 +686,7 @@ impl VNodeState {
         }
     }
 
-    fn load(num: u16, db: &Database, mut status: VNodeStatus, is_create: bool) -> Self {
+    fn load(num: u16, db: &Database, mut status: VNodeStatus) -> Self {
         info!("Loading vnode {} state", num);
         let saved_state_opt = db.meta_storage
             .get(num.to_string().as_bytes(), |bytes| bincode_serde::deserialize(bytes).unwrap());
@@ -698,7 +694,7 @@ impl VNodeState {
             info!("No saved state");
             return Self::new_empty(num,
                                    db,
-                                   if status == VNodeStatus::Ready && !is_create {
+                                   if status == VNodeStatus::Ready {
                                        VNodeStatus::Recover
                                    } else {
                                        status
@@ -717,7 +713,7 @@ impl VNodeState {
             _ => panic!("Invalid status for load {:?}", status),
         };
 
-        if status == VNodeStatus::Ready && !is_create && !clean_shutdown {
+        if status == VNodeStatus::Ready && !clean_shutdown {
             info!("Unclean shutdown, recovering from the storage");
             status = VNodeStatus::Recover;
             let this_node = db.dht.node();

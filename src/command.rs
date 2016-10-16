@@ -8,18 +8,19 @@ use bincode::{serde as bincode_serde, SizeLimit};
 pub enum CommandError {
     Timeout,
     ProtocolError,
+    UnknownCommand,
 }
 
-fn quick_int(bytes: &[u8]) -> Result<usize, CommandError> {
+fn quick_int(bytes: &[u8]) -> Result<i64, CommandError> {
     if bytes.len() == 1 {
         (bytes[0] as char)
             .to_digit(10)
-            .map(|d| d as usize)
+            .map(|d| d as i64)
             .ok_or(CommandError::ProtocolError)
     } else {
         str::from_utf8(bytes)
             .ok()
-            .and_then(|s| s.parse::<usize>().ok())
+            .and_then(|s| s.parse::<i64>().ok())
             .ok_or(CommandError::ProtocolError)
     }
 }
@@ -58,8 +59,8 @@ impl Database {
             b"ECHO" if args.len() > 0 => {
                 (&self.response_fn)(token, RespValue::Data(args[0].into()))
             }
-            b"CONFIG" => unimplemented!(),
-            _ => unimplemented!(),
+            b"CLUSTER" => self.cmd_cluster(token, args),
+            _ => self.respond_error(token, CommandError::UnknownCommand),
         };
     }
 
@@ -79,6 +80,20 @@ impl Database {
         for w in args.chunks(2) {
             self.set(token, w[0], None, VersionVector::new());
         }
+    }
+
+    fn cmd_cluster(&self, token: u64, args: &[&[u8]]) {
+        match args {
+            &[b"REBALANCE"] => {
+                self.dht.claim(self.dht.node(), ());
+                self.respond_ok(token);
+            }
+            _ => self.respond_error(token, CommandError::UnknownCommand),
+        }
+    }
+
+    pub fn respond_ok(&self, token: Token) {
+        (&self.response_fn)(token, RespValue::Status("OK".into()));
     }
 
     pub fn respond_error(&self, token: Token, error: CommandError) {

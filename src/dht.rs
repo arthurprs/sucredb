@@ -267,8 +267,10 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             let partitions = ring.vnodes.len();
             if members <= ring.replication_factor {
                 for i in 0..ring.vnodes.len() {
-                    ring.pending[i].insert(node, meta.clone());
-                    changes.push(i as VNodeId);
+                    if !ring.vnodes[i].contains_key(&node) &&
+                       ring.pending[i].insert(node, meta.clone()).is_none() {
+                        changes.push(i as VNodeId);
+                    }
                 }
             } else {
                 for _ in 0..partitions * ring.replication_factor / members {

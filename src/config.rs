@@ -13,4 +13,5 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     pub fabric_addr: SocketAddr,
     pub etcd_addr: String,
+    pub cmd_init: bool,
 }

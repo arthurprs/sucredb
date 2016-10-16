@@ -9,9 +9,9 @@ use bincode::serde as bincode_serde;
 use utils::IdHasherBuilder;
 
 const RECOVER_FAST_FORWARD: Version = 1_000_000;
-const SYNC_INFLIGHT_MAX: usize = 10;
+const SYNC_INFLIGHT_MAX: usize = 5;
 const SYNC_INFLIGHT_TIMEOUT_MS: u64 = 2000;
-const SYNC_TIMEOUT_MS: u64 = SYNC_INFLIGHT_TIMEOUT_MS * 31 / 10;
+const SYNC_TIMEOUT_MS: u64 = SYNC_INFLIGHT_TIMEOUT_MS * 51 / 10;
 
 #[derive(Debug)]
 pub enum SyncResult {

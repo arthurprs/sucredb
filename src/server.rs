@@ -163,7 +163,7 @@ impl Server {
             }
         });
 
-        let database = Database::new(&self.config, true, response_fn);
+        let database = Database::new(&self.config, response_fn);
 
         let context = Rc::new(GlobalContext {
             db_sender: RefCell::new(database.sender()),

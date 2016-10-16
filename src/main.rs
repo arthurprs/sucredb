@@ -1,5 +1,9 @@
-#![feature(arc_counts, proc_macro,
-    fnbox, conservative_impl_trait)]
+#![feature(
+    arc_counts,
+    proc_macro,
+    slice_patterns,
+    fnbox,
+    conservative_impl_trait)]
 #![allow(dead_code)]
 #[macro_use]
 extern crate log;
@@ -84,6 +88,9 @@ fn configure() -> config::Config {
             .help("Fabric listen addr")
             .default_value(DEFAULT_FABRIC_ADDR)
             .takes_value(true))
+        .arg(Arg::with_name("init")
+            .long("init")
+            .help("init the cluster"))
         .get_matches();
 
     Config {
@@ -92,6 +99,7 @@ fn configure() -> config::Config {
         listen_addr: matches.value_of("listen_addr").unwrap().parse().unwrap(),
         fabric_addr: matches.value_of("fabric_addr").unwrap().parse().unwrap(),
         etcd_addr: matches.value_of("etcd_addr").unwrap().into(),
+        cmd_init: matches.is_present("init"),
     }
 }
 

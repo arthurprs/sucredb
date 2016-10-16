@@ -62,7 +62,7 @@ macro_rules! vnode {
 }
 
 impl Database {
-    pub fn new(config: &Config, is_create: bool, response_fn: DatabaseResponseFn) -> Arc<Database> {
+    pub fn new(config: &Config, response_fn: DatabaseResponseFn) -> Arc<Database> {
         let storage_manager = StorageManager::new(&config.data_dir).unwrap();
         let meta_storage = storage_manager.open(-1, true).unwrap();
 
@@ -85,7 +85,7 @@ impl Database {
                           config.fabric_addr,
                           &config.cluster_name,
                           &config.etcd_addr,
-                          if is_create {
+                          if config.cmd_init {
                               Some(((), dht::RingDescription::new(3, 64)))
                           } else {
                               None
@@ -145,11 +145,11 @@ impl Database {
             *vnodes = (0..db.dht.partitions() as VNodeId)
                 .map(|i| {
                     let vn = if ready_vnodes.contains(&i) {
-                        VNode::new(&db, i, VNodeStatus::Ready, is_create)
+                        VNode::new(&db, i, VNodeStatus::Ready)
                     } else if pending_vnodes.contains(&i) {
-                        VNode::new(&db, i, VNodeStatus::Bootstrap, is_create)
+                        VNode::new(&db, i, VNodeStatus::Bootstrap)
                     } else {
-                        VNode::new(&db, i, VNodeStatus::Absent, is_create)
+                        VNode::new(&db, i, VNodeStatus::Absent)
                     };
                     (i, Mutex::new(vn))
                 })

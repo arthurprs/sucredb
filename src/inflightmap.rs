@@ -1,5 +1,5 @@
 use std::collections::{HashMap, BinaryHeap};
-use std::collections::hash_map::RandomState;
+use std::collections::hash_map::{Entry, RandomState};
 use std::hash::{Hash, BuildHasher};
 use std::cmp::Ordering;
 use std::ops::{Deref, DerefMut};
@@ -21,6 +21,11 @@ impl<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher + Default> InFlightMa
     pub fn insert(&mut self, key: K, value: V, expire: T) -> Option<V> {
         self.heap.push(Pair(expire, key));
         self.map.insert(key, value)
+    }
+
+    pub fn entry_with_timeout(&mut self, key: K, expire: T) -> Entry<K, V> {
+        self.heap.push(Pair(expire, key));
+        self.map.entry(key)
     }
 
     pub fn pop_expired(&mut self, now: T) -> Option<(K, V)> {
