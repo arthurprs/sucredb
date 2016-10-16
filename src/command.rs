@@ -13,27 +13,25 @@ pub enum CommandError {
 
 fn quick_int(bytes: &[u8]) -> Result<i64, CommandError> {
     if bytes.len() == 1 {
-        (bytes[0] as char)
-            .to_digit(10)
-            .map(|d| d as i64)
-            .ok_or(CommandError::ProtocolError)
+        match bytes[0] {
+            b'0'...b'9' => Ok((bytes[0] - b'0') as i64),
+            _ => Err(CommandError::ProtocolError)
+        }
     } else {
-        str::from_utf8(bytes)
-            .ok()
-            .and_then(|s| s.parse::<i64>().ok())
-            .ok_or(CommandError::ProtocolError)
+        unsafe { str::from_utf8_unchecked(bytes) }
+            .parse::<i64>().map_err(|_| CommandError::ProtocolError)
     }
 }
 
 impl Database {
     pub fn handler_cmd(&self, token: u64, cmd: RespValue) {
-        let mut args: [&[u8]; 32] = [b""; 32];
+        let mut arg_: [&[u8]; 32] = [b""; 32];
         let mut argc = 0;
         match cmd {
-            RespValue::Array(ref a) if a.len() > 0 && a.len() <= args.len() => {
+            RespValue::Array(ref a) if a.len() > 0 && a.len() <= arg_.len() => {
                 for v in a {
                     if let &RespValue::Data(ref d) = v {
-                        args[argc] = d.as_ref();
+                        arg_[argc] = d.as_ref();
                         argc += 1;
                     } else {
                         argc = 0;
@@ -49,8 +47,8 @@ impl Database {
             return;
         }
 
-        let arg0 = args[0];
-        let args = &args[1..argc];
+        let arg0 = arg_[0];
+        let args = &arg_[1..argc];
 
         match arg0 {
             b"GET" | b"MGET" => self.cmd_get(token, args),

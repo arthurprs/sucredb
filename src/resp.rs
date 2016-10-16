@@ -79,7 +79,7 @@ impl fmt::Debug for RespValue {
 
 /// The internal redis response parser.
 pub struct Parser {
-    bytes_consumed: usize,
+    consumed: usize,
     body: ByteTendril,
 }
 
@@ -87,7 +87,7 @@ impl Parser {
     pub fn new<T: AsRef<[u8]>>(body: T) -> RespResult<Parser> {
         let valid_to = try!(Self::speculate_buffer(body.as_ref()));
         Ok(Parser {
-            bytes_consumed: 0,
+            consumed: 0,
             body: body.as_ref()[..valid_to].into(),
         })
     }
@@ -104,8 +104,9 @@ impl Parser {
                     i += 1;
                     while i < buf.len() {
                         match buf[i] {
-                            d @ b'0'...b'9' => len = len * 10 + (d - b'0') as i64,
+                            b'0'...b'9' => len = len * 10 + (buf[i] - b'0') as i64,
                             b'-' => {
+                                // only valid negative len is -1
                                 len = -1;
                                 i += 2;
                                 break;
@@ -129,7 +130,10 @@ impl Parser {
                         i += 1;
                     }
                 }
-                b'\r' => (),
+                b'\r' => {
+                    i += 2;
+                    continue;
+                },
                 _ => return Err(RespError::Invalid("Invalid prefix")),
             }
             // skip delimiter
@@ -148,8 +152,8 @@ impl Parser {
         }
     }
 
-    pub fn bytes_consumed(&self) -> usize {
-        self.bytes_consumed
+    pub fn consumed(&self) -> usize {
+        self.consumed
     }
 
     /// parses a single value out of the stream.  If there are multiple
@@ -158,7 +162,7 @@ impl Parser {
         let saved_len = self.body.len();
         let value = self.parse_value();
         if value.is_ok() {
-            self.bytes_consumed += saved_len - self.body.len();
+            self.consumed += saved_len - self.body.len();
         }
         value
     }

@@ -1,7 +1,6 @@
-use std::hash::Hasher;
-use std::{path, fs};
-use std::hash::BuildHasherDefault;
+use std::hash::{Hasher, BuildHasherDefault};
 use std::collections::HashMap;
+use std::{path, fs};
 use std::error::Error;
 use serde;
 use serde_yaml;
@@ -36,7 +35,7 @@ impl Hasher for IdHasher {
 
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-        debug_assert!(bytes.len() <= 8);
+        assert!(bytes.len() <= 8);
         unsafe {
             let mut temp = 0u64;
             ::std::ptr::copy_nonoverlapping(bytes.as_ptr(),
@@ -44,25 +43,6 @@ impl Hasher for IdHasher {
                                             bytes.len());
             self.0 ^= temp;
         }
-    }
-}
-
-pub fn get_or_gen_node_id() -> u64 {
-    use std::io;
-    use rand::{thread_rng, Rng};
-    let the_path = "_nodeid.yaml";
-    let res = read_yaml_from_file(the_path);
-    let err = match res {
-        Ok(node_id) => return node_id,
-        Err(e) => e,
-    };
-    match err.downcast_ref::<io::Error>() {
-        Some(e) if e.kind() == io::ErrorKind::NotFound => {
-            let id = thread_rng().gen::<i64>().abs() as u64;
-            write_yaml_to_file(&id, the_path).unwrap();
-            return id;
-        }
-        _ => panic!("{}", err),
     }
 }
 

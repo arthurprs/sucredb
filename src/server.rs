@@ -115,14 +115,14 @@ impl RespConnection {
                             }
                         }
                     }
-                    if end != parser.bytes_consumed() {
+                    if end != parser.consumed() {
                         unsafe {
-                            ::std::ptr::copy(b.as_ptr().offset(parser.bytes_consumed() as isize),
+                            ::std::ptr::copy(b.as_ptr().offset(parser.consumed() as isize),
                                              b.as_ptr() as *mut _,
-                                             end - parser.bytes_consumed());
+                                             end - parser.consumed());
                         }
                     }
-                    Ok((ctx, s, b, end - parser.bytes_consumed()))
+                    Ok((ctx, s, b, end - parser.consumed()))
                 })
             })
             .map(|_| ());
