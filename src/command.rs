@@ -15,11 +15,12 @@ fn quick_int(bytes: &[u8]) -> Result<i64, CommandError> {
     if bytes.len() == 1 {
         match bytes[0] {
             b'0'...b'9' => Ok((bytes[0] - b'0') as i64),
-            _ => Err(CommandError::ProtocolError)
+            _ => Err(CommandError::ProtocolError),
         }
     } else {
         unsafe { str::from_utf8_unchecked(bytes) }
-            .parse::<i64>().map_err(|_| CommandError::ProtocolError)
+            .parse::<i64>()
+            .map_err(|_| CommandError::ProtocolError)
     }
 }
 

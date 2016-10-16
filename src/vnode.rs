@@ -295,6 +295,7 @@ impl VNode {
                     .collect::<Vec<_>>()
             };
             for (cookie, result) in terminated {
+                self.syncs.remove(&cookie).unwrap().on_remove(db, &mut self.state);
                 match result {
                     SyncResult::RetryBoostrap => {
                         info!("Retrying bootstrap {:?}", cookie);
@@ -302,7 +303,6 @@ impl VNode {
                     }
                     _ => (),
                 }
-                self.syncs.remove(&cookie).unwrap().on_remove(db, &mut self.state);
             }
         }
 
@@ -345,6 +345,7 @@ impl VNode {
 
     pub fn do_set(&mut self, db: &Database, token: Token, key: &[u8], value_opt: Option<&[u8]>,
                   vv: VersionVector) {
+        // TODO: can't coordinate in all states!
         let nodes = db.dht.nodes_for_vnode(self.state.num, true);
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(1000);
@@ -450,7 +451,13 @@ impl VNode {
     }
 
     pub fn handler_set_remote(&mut self, db: &Database, from: NodeId, msg: MsgRemoteSet) {
-        check_status!(self, VNodeStatus::Ready, db, from, msg, MsgRemoteSetAck, inflight_set);
+        check_status!(self,
+                      VNodeStatus::Ready | VNodeStatus::Bootstrap,
+                      db,
+                      from,
+                      msg,
+                      MsgRemoteSetAck,
+                      inflight_set);
         let MsgRemoteSet { key, container, vnode, cookie } = msg;
         let result = self.state.storage_set_remote(db, &key, container);
         db.fabric

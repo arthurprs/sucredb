@@ -133,7 +133,7 @@ impl Parser {
                 b'\r' => {
                     i += 2;
                     continue;
-                },
+                }
                 _ => return Err(RespError::Invalid("Invalid prefix")),
             }
             // skip delimiter
