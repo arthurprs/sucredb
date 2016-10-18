@@ -147,7 +147,7 @@ impl Fabric {
 
     fn connection(socket: tokio::net::TcpStream, expected_node: Option<NodeId>, addr: SocketAddr,
                   context: Arc<GlobalContext>, handle: tokio::reactor::Handle)
-                  -> Box<Future<Item=(), Error=io::Error>> {
+                  -> Box<Future<Item = (), Error = io::Error>> {
         let _ = socket.set_nodelay(true);
         let _ = socket.set_keepalive_ms(Some(2000));
         let mut buffer = [0u8; 8];
@@ -176,7 +176,7 @@ impl Fabric {
 
     fn steady_connection(socket: tokio::net::TcpStream, peer: NodeId, peer_addr: SocketAddr,
                          context: Arc<GlobalContext>, handle: tokio::reactor::Handle)
-                         -> Box<Future<Item=(), Error=io::Error>> {
+                         -> Box<Future<Item = (), Error = io::Error>> {
         let (sock_rx, sock_tx) = socket.split();
         let (chan_tx, chan_rx) = tokio::channel::channel::<FabricMsg>(&handle).unwrap();
         let ctx_rx = ReaderContext {

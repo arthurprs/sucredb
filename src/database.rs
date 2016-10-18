@@ -1,3 +1,4 @@
+
 use std::{str, time};
 use std::sync::{Arc, Mutex, RwLock};
 use dht::{self, DHT};
@@ -49,15 +50,7 @@ macro_rules! vnode {
     ($s: expr, $k: expr, $ok: expr) => ({
         let vnodes = $s.vnodes.read().unwrap();
         vnodes.get(&$k).map(|vn| vn.lock().unwrap()).map($ok);
-    });
-    ($s: expr, $k: expr, $status: expr, $ok: expr) => ({
-        let vnodes = $s.vnodes.read().unwrap();
-        match vnodes.get(&$k).map(|vn| vn.lock().unwrap()).and_then(|vn| {
-            match vn.status() {
-                status => Some(vn),
-                _ => None
-            }
-        }).map($ok);
+        return;
     });
 }
 
@@ -331,9 +324,9 @@ mod tests {
                 listen_addr: config::DEFAULT_LISTEN_ADDR.parse().unwrap(),
                 cluster_name: "test".into(),
                 etcd_addr: config::DEFAULT_ETCD_ADDR.parse().unwrap(),
+                cmd_init: create,
             };
             let db = Database::new(&config,
-                                   create,
                                    Box::new(move |t, v| {
                                        let r = responses1.lock().unwrap().insert(t, v);
                                        assert!(r.is_none(), "replaced a result");

@@ -4,6 +4,27 @@ use utils::*;
 use std::str;
 use std::sync::{Mutex, Arc};
 use nodrop::NoDrop;
+use std::collections::HashMap;
+use linear_map::LinearMap;
+
+const BUFFER_LIM: usize = 32;
+type Buffer = Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>;
+
+pub struct StorageManager {
+    path: PathBuf,
+    env: lmdb_rs::Environment,
+    storages_handle: Arc<Mutex<LinearMap<i32, Buffer>>>,
+}
+
+pub struct Storage {
+    env: lmdb_rs::Environment,
+    db_h: lmdb_rs::DbHandle,
+    storages_handle: Arc<Mutex<LinearMap<i32, Buffer>>>,
+    // FIXME: this is ridicullous, but so is lmdb write performance
+    buffer: Buffer,
+    num: i32,
+    iterators_handle: Arc<()>,
+}
 
 pub struct StorageIterator {
     env: NoDrop<Box<lmdb_rs::Environment>>,
@@ -14,23 +35,13 @@ pub struct StorageIterator {
     iterators_handle: Arc<()>,
 }
 
-pub struct StorageManager {
-    path: PathBuf,
-    env: lmdb_rs::Environment,
-    storages_handle: Arc<Mutex<()>>,
-}
-
-pub struct Storage {
-    env: lmdb_rs::Environment,
-    db_h: lmdb_rs::DbHandle,
-    storages_handle: Arc<Mutex<()>>,
-    iterators_handle: Arc<()>,
-}
+unsafe impl Send for StorageIterator {}
+unsafe impl Sync for StorageIterator {}
 
 impl StorageManager {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<StorageManager, GenericError> {
         let mut env = try!(lmdb_rs::Environment::new()
-            .map_size(100 * 1024 * 1024)
+            .map_size(1024 * 1024 * 1024)
             .flags(lmdb_rs::core::EnvCreateNoTls | lmdb_rs::core::EnvCreateNoMemInit |
                    lmdb_rs::core::EnvCreateWriteMap)
             .autocreate_dir(true)
@@ -45,30 +56,39 @@ impl StorageManager {
     }
 
     pub fn open(&self, db_num: i32, create: bool) -> Result<Storage, GenericError> {
-        let _wlock = self.storages_handle.lock().unwrap();
+        let mut wlock = self.storages_handle.lock().unwrap();
         let db_name = db_num.to_string();
         let db_h = try!(if create {
             self.env.create_db(&db_name, lmdb_rs::DbFlags::empty())
         } else {
             self.env.get_db(&db_name, lmdb_rs::DbFlags::empty())
         });
+        let buffer: Buffer = Default::default();
+        wlock.insert(db_num, buffer.clone());
+
         Ok(Storage {
+            num: db_num,
             env: self.env.clone(),
             db_h: db_h,
             storages_handle: self.storages_handle.clone(),
             iterators_handle: Arc::new(()),
+            buffer: buffer,
         })
     }
 }
 
 impl Storage {
     pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
-        let r: Option<&[u8]> = self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok();
+        let buffer = self.buffer.lock().unwrap();
+        let r: Option<&[u8]> = buffer.get(key)
+            .map(|k| k.as_slice())
+            .or_else(|| self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok());
         trace!("get {:?} ({:?} bytes)", str::from_utf8(key), r.map(|x| x.len()));
         r.map(|r| callback(r))
     }
 
     pub fn iterator(&self) -> StorageIterator {
+        self.flush_buffer();
         let env = NoDrop::new(Box::new(self.env.clone()));
         let db_h = NoDrop::new(Box::new(self.db_h.clone()));
         let tx = NoDrop::new(Box::new(env.get_reader().unwrap()));
@@ -93,36 +113,51 @@ impl Storage {
 
     pub fn set(&self, key: &[u8], value: &[u8]) {
         trace!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
-        let _wlock = self.storages_handle.lock().unwrap();
-        let txn = self.env.new_transaction().unwrap();
-        txn.bind(&self.db_h).set(&key, &value).unwrap();
-        txn.commit().unwrap();
+        let flush = {
+            let mut buffer = self.buffer.lock().unwrap();
+            buffer.insert(key.into(), value.into());
+            buffer.len() >= BUFFER_LIM
+        };
+        if flush {
+            self.flush_buffer();
+        }
     }
 
     pub fn del(&self, key: &[u8]) {
-        let r = {
-            let _wlock = self.storages_handle.lock().unwrap();
-            let txn = self.env.new_transaction().unwrap();
-            let r = match txn.bind(&self.db_h).del(&key) {
-                Ok(_) => true,
-                Err(lmdb_rs::MdbError::NotFound) => false,
-                Err(e) => panic!("del error {:?}", e),
-            };
-            txn.commit().unwrap();
-            r
+        let r1 = self.buffer.lock().unwrap().remove(key).is_some();
+        let _wlock = self.storages_handle.lock().unwrap();
+        let txn = self.env.new_transaction().unwrap();
+        let r2 = match txn.bind(&self.db_h).del(&key) {
+            Ok(_) => true,
+            Err(lmdb_rs::MdbError::NotFound) => false,
+            Err(e) => panic!("del error {:?}", e),
         };
-        trace!("del {:?} ({})", str::from_utf8(key), r);
+        txn.commit().unwrap();
+        trace!("del {:?} ({})", str::from_utf8(key), r1 || r2);
     }
 
     pub fn clear(&self) {
+        self.buffer.lock().unwrap().clear();
         let _wlock = self.storages_handle.lock().unwrap();
         let txn = self.env.new_transaction().unwrap();
         txn.bind(&self.db_h).clear().unwrap();
         txn.commit().unwrap();
     }
 
+    fn flush_buffer(&self) {
+        let wlock = self.storages_handle.lock().unwrap();
+        let txn = self.env.new_transaction().unwrap();
+        for s in wlock.values() {
+            let mut locked = s.lock().unwrap();
+            for (k, v) in locked.drain(){
+                txn.bind(&self.db_h).set(&k, &v).unwrap();
+            }
+        }
+        txn.commit().unwrap();
+    }
+
     pub fn sync(&self) {
-        let _wlock = self.storages_handle.lock().unwrap();
+        self.flush_buffer();
         self.env.sync(true).unwrap();
     }
 }
@@ -140,9 +175,6 @@ impl Drop for Storage {
         assert!(c == 1, "{} pending iterators", c - 1);
     }
 }
-
-unsafe impl Send for StorageIterator {}
-unsafe impl Sync for StorageIterator {}
 
 impl StorageIterator {
     pub fn iter<'a>(&'a mut self) -> StorageIter<'a> {

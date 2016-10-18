@@ -8,7 +8,6 @@ use std::time::{Instant, Duration};
 use bincode::serde as bincode_serde;
 use utils::IdHasherBuilder;
 
-const RECOVER_FAST_FORWARD: Version = 1_000_000;
 const SYNC_INFLIGHT_MAX: usize = 5;
 const SYNC_INFLIGHT_TIMEOUT_MS: u64 = 2000;
 const SYNC_TIMEOUT_MS: u64 = SYNC_INFLIGHT_TIMEOUT_MS * 51 / 10;
@@ -317,8 +316,7 @@ impl Synchronization {
                     assert_eq!(state.status(), VNodeStatus::Recover);
                     state.pending_recoveries -= 1;
                     if state.pending_recoveries == 0 {
-                        state.set_status(VNodeStatus::Ready);
-                        state.clocks.advance(db.dht.node(), RECOVER_FAST_FORWARD);
+                        state.set_status(db, VNodeStatus::Ready);
                     }
                 }
             }
@@ -391,7 +389,7 @@ impl Synchronization {
                     state.save(db, false);
                     state.storage.sync();
                     // now we're ready!
-                    state.set_status(VNodeStatus::Ready);
+                    state.set_status(db, VNodeStatus::Ready);
                     db.dht.promote_pending_node(state.num(), db.dht.node()).unwrap();
                     // send it back as a form of ack-ack
                     db.fabric.send_msg(peer, msg).unwrap();

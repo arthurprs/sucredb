@@ -16,6 +16,7 @@ use utils::{IdHashMap, IdHasherBuilder};
 // 1MB of storage considering key avg length of 32B and 16B overhead
 const PEER_LOG_SIZE: usize = 1024 * 1024 / (32 + 16);
 const ZOMBIE_TIMEOUT_MS: u64 = 5000;
+const RECOVER_FAST_FORWARD: Version = 1_000_000;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum VNodeStatus {
@@ -257,19 +258,19 @@ impl VNode {
                 }
 
                 if self.status() == VNodeStatus::Recover {
-                    self.state.set_status(VNodeStatus::Absent);
+                    self.state.set_status(db, VNodeStatus::Absent);
                 } else {
-                    self.state.set_status(VNodeStatus::Zombie);
+                    self.state.set_status(db, VNodeStatus::Zombie);
                 }
             }
             (VNodeStatus::Zombie, VNodeStatus::Absent) => (),
             (VNodeStatus::Zombie, VNodeStatus::Ready) => {
                 // fast-recomission!
-                self.state.set_status(VNodeStatus::Ready);
+                self.state.set_status(db, VNodeStatus::Ready);
             }
             (VNodeStatus::Absent, VNodeStatus::Ready) => {
                 // recomission by bootstrap
-                self.state.set_status(VNodeStatus::Bootstrap);
+                self.state.set_status(db, VNodeStatus::Bootstrap);
                 self.start_bootstrap(db);
             }
             (VNodeStatus::Bootstrap, VNodeStatus::Ready) |
@@ -315,7 +316,7 @@ impl VNode {
         if self.state.status == VNodeStatus::Zombie && self.syncs.is_empty() &&
            self.inflight.is_empty() &&
            self.state.last_status_change.elapsed() > Duration::from_millis(ZOMBIE_TIMEOUT_MS) {
-            self.state.set_status(VNodeStatus::Absent);
+            self.state.set_status(db, VNodeStatus::Absent);
         }
     }
 
@@ -578,7 +579,7 @@ impl VNode {
             assert!(self.syncs.insert(cookie, bootstrap).is_none());
             return;
         }
-        self.state.set_status(VNodeStatus::Ready);
+        self.state.set_status(db, VNodeStatus::Ready);
     }
 
     pub fn maybe_start_sync(&mut self, db: &Database) -> usize {
@@ -598,7 +599,7 @@ impl VNode {
                    (VNodeStatus::Recover, 0),
                    "Status must be Reverse before starting a reverse sync");
         if self.do_start_sync(db, true) == 0 {
-            self.state.set_status(VNodeStatus::Ready);
+            self.state.set_status(db, VNodeStatus::Ready);
         }
     }
 
@@ -645,7 +646,7 @@ impl VNodeState {
         self.status
     }
 
-    pub fn set_status(&mut self, new: VNodeStatus) {
+    pub fn set_status(&mut self, db: &Database, new: VNodeStatus) {
         debug!("VNode {} status change {:?} -> {:?}", self.num, self.status, new);
         if new != self.status {
             match new {
@@ -656,6 +657,7 @@ impl VNodeState {
                 }
                 VNodeStatus::Ready => {
                     if self.status == VNodeStatus::Recover {
+                        self.clocks.fast_foward(db.dht.node(), RECOVER_FAST_FORWARD);
                         assert_eq!(self.pending_recoveries, 0);
                     }
                 }

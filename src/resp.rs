@@ -288,7 +288,7 @@ mod tests {
     use std::io::Write;
 
     fn parse(slice: &[u8]) -> RespResult<RespValue> {
-        Parser::new(slice).parse()
+        try!(Parser::new(slice)).parse()
     }
 
     #[test]
@@ -323,7 +323,7 @@ mod tests {
     fn parser_multiple2() {
         let mut parser =
             Parser::new(b"*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n"
-                .as_ref());
+                .as_ref()).unwrap();
         for _ in 0..2 {
             let r = parser.parse();
             assert!(r.is_ok(), "{:?} not ok", r.unwrap_err());
@@ -339,7 +339,7 @@ mod tests {
     fn message_response() {
         let mut parser = Parser::new(
             b"*2\r\n*2\r\n:7270781675605147315\r\n$25\r\nmessage 1 from producer 0\r\n*2\r\n:4590316895040267280\r\n$25\r\nmessage 2 from producer 0\r\n".as_ref(),
-        );
+        ).unwrap();
         let r = parser.parse();
         assert!(r.is_ok(), "{:?} not ok", r.unwrap_err());
         assert_eq!(parser.body.len(), 0);
