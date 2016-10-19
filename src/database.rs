@@ -78,8 +78,9 @@ impl Database {
                           config.fabric_addr,
                           &config.cluster_name,
                           &config.etcd_addr,
+                          (),
                           if config.cmd_init {
-                              Some(((), dht::RingDescription::new(3, 64)))
+                              Some(dht::RingDescription::new(3, 64))
                           } else {
                               None
                           }),
@@ -442,7 +443,7 @@ mod tests {
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        db2.dht.claim(db2.dht.node(), ());
+        db2.dht.claim(db2.dht.node());
 
         sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
@@ -488,7 +489,7 @@ mod tests {
             assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
-        db2.dht.claim(db2.dht.node(), ());
+        db2.dht.claim(db2.dht.node());
 
         // warn!("will check data in db2 during balancing");
         // for i in 0..TEST_JOIN_SIZE {
@@ -516,7 +517,7 @@ mod tests {
         let _ = env_logger::init();
         let mut db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        db2.dht.claim(db2.dht.node(), ());
+        db2.dht.claim(db2.dht.node());
 
         sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
@@ -563,7 +564,7 @@ mod tests {
         let _ = env_logger::init();
         let mut db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        db2.dht.claim(db2.dht.node(), ());
+        db2.dht.claim(db2.dht.node());
 
         sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {

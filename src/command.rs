@@ -84,7 +84,7 @@ impl Database {
     fn cmd_cluster(&self, token: u64, args: &[&[u8]]) {
         match args {
             &[b"REBALANCE"] => {
-                self.dht.claim(self.dht.node(), ());
+                self.dht.claim(self.dht.node()).unwrap();
                 self.respond_ok(token);
             }
             _ => self.respond_error(token, CommandError::UnknownCommand),

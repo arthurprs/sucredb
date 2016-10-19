@@ -2,7 +2,7 @@ use std::{thread, net};
 use std::time::Duration;
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
-use linear_map::LinearMap;
+use linear_map::set::LinearSet;
 use rand::{thread_rng, Rng};
 use serde::{Serialize, Deserialize};
 use serde_yaml;
@@ -24,10 +24,10 @@ pub struct DHT<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Ring<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
     replication_factor: usize,
-    vnodes: Vec<LinearMap<NodeId, T>>,
-    pending: Vec<LinearMap<NodeId, T>>,
-    zombie: Vec<LinearMap<NodeId, T>>,
-    nodes: IdHashMap<NodeId, net::SocketAddr>,
+    vnodes: Vec<LinearSet<NodeId>>,
+    pending: Vec<LinearSet<NodeId>>,
+    zombie: Vec<LinearSet<NodeId>>,
+    nodes: IdHashMap<NodeId, (net::SocketAddr, T)>,
 }
 
 pub struct RingDescription {
@@ -74,7 +74,8 @@ macro_rules! try_cas {
 
 impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
     pub fn new(node: NodeId, fabric_addr: net::SocketAddr, cluster: &str, etcd: &str,
-               initial: Option<(T, RingDescription)>)
+                meta: T,
+               initial: Option<RingDescription>)
                -> DHT<T> {
         let etcd1 = etcd::Client::new(&[etcd]).unwrap();
         let etcd2 = etcd::Client::new(&[etcd]).unwrap();
@@ -99,10 +100,10 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             inner: inner.clone(),
             thread: None,
         };
-        if let Some((meta, description)) = initial {
+        if let Some(description) = initial {
             dht.reset(meta, description.replication_factor, description.partitions);
         } else {
-            dht.join();
+            dht.join(meta);
         }
         dht.thread = Some(thread::Builder::new()
             .name(format!("DHT:{}", node))
@@ -157,7 +158,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         debug!("exiting dht thread");
     }
 
-    fn join(&self) {
+    fn join(&self, meta: T) {
         let cluster_key = format!("/{}/dht", self.inner.read().unwrap().cluster);
         loop {
             let r = self.inner.read().unwrap().etcd.get(&cluster_key, false, false, false).unwrap();
@@ -166,7 +167,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             let ring_version = node.modified_index.unwrap();
             assert!(ring.vnodes.len().is_power_of_two());
             let mut new_ring = ring.clone();
-            new_ring.nodes.insert(self.node, self.addr);
+            new_ring.nodes.insert(self.node, (self.addr, meta.clone()));
             if self.propose(ring_version, new_ring, true).is_ok() {
                 break;
             }
@@ -180,10 +181,10 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         let cluster_key = format!("/{}/dht", inner.cluster);
         inner.ring = Ring {
             replication_factor: replication_factor,
-            vnodes: vec![[(self.node, meta)].iter().cloned().collect(); partitions],
+            vnodes: vec![[self.node].iter().cloned().collect(); partitions],
             pending: vec![Default::default(); partitions],
             zombie: vec![Default::default(); partitions],
-            nodes: vec![(self.node, self.addr)].into_iter().collect(),
+            nodes: vec![(self.node, (self.addr, meta))].into_iter().collect(),
         };
         let new = Self::serialize(&inner.ring).unwrap();
         let r = inner.etcd.set(&cluster_key, &new, None).unwrap();
@@ -227,10 +228,10 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         let mut pending = Vec::new();
         let inner = self.inner.read().unwrap();
         for (i, (v, p)) in inner.ring.vnodes.iter().zip(inner.ring.pending.iter()).enumerate() {
-            if v.contains_key(&node) {
+            if v.contains(&node) {
                 insync.push(i as VNodeId);
             }
-            if p.contains_key(&node) {
+            if p.contains(&node) {
                 pending.push(i as VNodeId);
             }
         }
@@ -241,16 +242,16 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         // FIXME: this shouldn't alloc
         let mut result = Vec::new();
         let inner = self.inner.read().unwrap();
-        result.extend(inner.ring.vnodes[vnode as usize].keys());
+        result.extend(&inner.ring.vnodes[vnode as usize]);
         if include_pending {
-            result.extend(inner.ring.pending[vnode as usize].keys());
+            result.extend(&inner.ring.pending[vnode as usize]);
         }
         result
     }
 
     pub fn members(&self) -> HashMap<NodeId, net::SocketAddr> {
         let inner = self.inner.read().unwrap();
-        inner.ring.nodes.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        inner.ring.nodes.iter().map(|(k, v)| (k.clone(), v.0.clone())).collect()
     }
 
     fn ring_clone(&self) -> (Ring<T>, u64) {
@@ -258,7 +259,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         (inner.ring.clone(), inner.ring_version)
     }
 
-    pub fn claim(&self, node: NodeId, meta: T) -> Result<Vec<VNodeId>, GenericError> {
+    pub fn claim(&self, node: NodeId) -> Result<Vec<VNodeId>, GenericError> {
         let mut changes = Vec::new();
         try_cas!(self, {
             changes.clear();
@@ -267,8 +268,8 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             let partitions = ring.vnodes.len();
             if members <= ring.replication_factor {
                 for i in 0..ring.vnodes.len() {
-                    if !ring.vnodes[i].contains_key(&node) &&
-                       ring.pending[i].insert(node, meta.clone()).is_none() {
+                    if !ring.vnodes[i].contains(&node) &&
+                       ring.pending[i].insert(node) {
                         changes.push(i as VNodeId);
                     }
                 }
@@ -276,12 +277,9 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
                 for _ in 0..partitions * ring.replication_factor / members {
                     loop {
                         let r = thread_rng().gen::<usize>() % partitions;
-                        if let Some(pending) = ring.pending.get(r) {
-                            if pending.contains_key(&node) {
+                        if !ring.pending[r].insert(node) {
                                 continue;
                             }
-                        }
-                        ring.pending[r].insert(node, meta.clone());
                         changes.push(r as VNodeId);
                         break;
                     }
@@ -292,13 +290,13 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         Ok(changes)
     }
 
-    pub fn add_pending_node(&self, vnode: VNodeId, node: NodeId, meta: T)
+    pub fn add_pending_node(&self, vnode: VNodeId, node: NodeId)
                             -> Result<(), GenericError> {
         try_cas!(self, {
             let (mut ring, ring_version) = self.ring_clone();
             {
                 let pending = &mut ring.pending[vnode as usize];
-                assert!(pending.insert(node, meta.clone()).is_none());
+                assert!(pending.insert(node));
             }
             (ring_version, ring)
         });
@@ -310,7 +308,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             let (mut ring, ring_version) = self.ring_clone();
             {
                 let pending = &mut ring.pending[vnode as usize];
-                pending.remove(&node).unwrap();
+                assert!(pending.remove(&node));
             }
             (ring_version, ring)
         });
@@ -320,12 +318,12 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
     pub fn promote_pending_node(&self, vnode: VNodeId, node: NodeId) -> Result<(), GenericError> {
         try_cas!(self, {
             let (mut ring, ring_version) = self.ring_clone();
-            let new_meta = {
+            {
                 let pending = &mut ring.pending[vnode as usize];
-                pending.remove(&node).unwrap()
-            };
+                assert!(pending.remove(&node));
+            }
 
-            assert!(ring.vnodes[vnode as usize].insert(node, new_meta).is_none());
+            assert!(ring.vnodes[vnode as usize].insert(node));
             (ring_version, ring)
         });
         Ok(())
@@ -382,7 +380,8 @@ mod tests {
                                addr,
                                "test",
                                config::DEFAULT_ETCD_ADDR,
-                               Some(((), RingDescription::new(rf, 256))));
+                               (),
+                               Some(RingDescription::new(rf, 256)));
             assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
             assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
             assert_eq!(dht.members(), [(node, addr)].iter().cloned().collect::<HashMap<_, _>>());

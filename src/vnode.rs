@@ -53,7 +53,7 @@ pub struct VNodeState {
     pub pending_recoveries: usize,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct SavedVNodeState {
     peers: IdHashMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
@@ -61,7 +61,7 @@ struct SavedVNodeState {
     clean_shutdown: bool,
 }
 
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct VNodePeer {
     knowledge: Version,
     log: BTreeMap<Version, Vec<u8>>,
@@ -658,6 +658,8 @@ impl VNodeState {
                 VNodeStatus::Ready => {
                     if self.status == VNodeStatus::Recover {
                         self.clocks.fast_foward(db.dht.node(), RECOVER_FAST_FORWARD);
+                        // need to save meta, otherwise bitmaps can get too sparse for recovery
+                        self.save(db, false);
                         assert_eq!(self.pending_recoveries, 0);
                     }
                 }
@@ -743,7 +745,7 @@ impl VNodeState {
                 }
                 count += 1;
                 if count % 1000 == 0 {
-                    debug!("Recovered {} keys", count)
+                    debug!("Recovered {} keys", count);
                 }
             }
             debug!("Recovered {} keys in total", count);
@@ -776,6 +778,7 @@ impl VNodeState {
             log: log,
             clean_shutdown: shutdown,
         };
+        debug!("Saving state {:?}", saved_state);
         let serialized_saved_state =
             bincode_serde::serialize(&saved_state, bincode::SizeLimit::Infinite).unwrap();
         db.meta_storage.set(self.num.to_string().as_bytes(), &serialized_saved_state);
