@@ -217,7 +217,10 @@ impl BitmappedVersionVector {
             }
             Entry::Occupied(mut ocu) => {
                 let bv = ocu.get_mut();
-                debug_assert!(n > bv.bitmap.bit_length() as Version, "{} > {}", n, bv.bitmap.bit_length());
+                debug_assert!(n > bv.bitmap.bit_length() as Version,
+                              "{} > {}",
+                              n,
+                              bv.bitmap.bit_length());
                 bv.bitmap = ramp::Int::zero();
                 bv.base += n;
             }

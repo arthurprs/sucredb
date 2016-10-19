@@ -41,7 +41,7 @@ impl Hasher for IdHasher {
             ::std::ptr::copy_nonoverlapping(bytes.as_ptr(),
                                             &mut temp as *mut _ as *mut u8,
                                             bytes.len());
-            self.0 ^= temp;
+            self.0 = self.0.rotate_left(32) ^ temp;
         }
     }
 }

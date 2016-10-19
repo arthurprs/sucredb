@@ -78,7 +78,8 @@ impl WriterContext {
         if let HMEntry::Occupied(mut o) = locked.entry(self.peer) {
             o.get_mut().retain(|i| unsafe {
                 use ::std::mem::transmute_copy;
-                transmute_copy::<_, usize>(i) != transmute_copy::<_, usize>(sender)
+                transmute_copy::<tokio::channel::Sender<FabricMsg>, usize>(i) !=
+                transmute_copy::<tokio::channel::Sender<FabricMsg>, usize>(sender)
             });
             if o.get().is_empty() {
                 o.remove();

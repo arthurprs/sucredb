@@ -149,7 +149,7 @@ impl Storage {
         let txn = self.env.new_transaction().unwrap();
         for s in wlock.values() {
             let mut locked = s.lock().unwrap();
-            for (k, v) in locked.drain(){
+            for (k, v) in locked.drain() {
                 txn.bind(&self.db_h).set(&k, &v).unwrap();
             }
         }
@@ -171,6 +171,8 @@ impl Drop for StorageManager {
 
 impl Drop for Storage {
     fn drop(&mut self) {
+        let mut wlock = self.storages_handle.lock().unwrap();
+        wlock.remove(&self.num);
         let c = Arc::strong_count(&self.iterators_handle);
         assert!(c == 1, "{} pending iterators", c - 1);
     }

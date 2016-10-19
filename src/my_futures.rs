@@ -1,4 +1,3 @@
-use std::ops::DerefMut;
 use std::mem;
 use futures::{Future, Poll, Async};
 use futures::stream::Stream;
@@ -72,7 +71,7 @@ impl<T: Future> Future for ShortCircuit<T> {
 /// buffer once the read operation is completed.
 pub fn read_at<R, T>(rd: R, buf: T, at: usize) -> ReadAt<R, T>
     where R: ::std::io::Read,
-          T: DerefMut<Target = [u8]>
+          T: AsMut<[u8]>
 {
     ReadAt {
         state: ReadAtState::Pending {
@@ -98,7 +97,7 @@ pub struct ReadAt<R, T> {
 
 impl<R, T> Future for ReadAt<R, T>
     where R: ::std::io::Read,
-          T: DerefMut<Target = [u8]>
+          T: AsMut<[u8]>
 {
     type Item = (R, T, usize, usize);
     type Error = ::std::io::Error;
@@ -106,7 +105,7 @@ impl<R, T> Future for ReadAt<R, T>
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let nread = match self.state {
             ReadAtState::Pending { ref mut rd, ref mut buf, at } => {
-                try_nb!(rd.read(&mut buf[at..]))
+                try_nb!(rd.read(&mut buf.as_mut()[at..]))
             }
             ReadAtState::Empty => panic!("poll a Read after it's done"),
         };

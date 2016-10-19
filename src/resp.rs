@@ -93,6 +93,9 @@ impl Parser {
     }
 
     fn speculate_buffer(buf: &[u8]) -> RespResult<usize> {
+        if buf.len() >= 64 && &buf[buf.len() - 2..] == b"\r\n" {
+            return Ok(buf.len());
+        }
         let mut valid = 0;
         let mut i = 0;
         let mut values_pending = 0;
@@ -323,7 +326,8 @@ mod tests {
     fn parser_multiple2() {
         let mut parser =
             Parser::new(b"*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n"
-                .as_ref()).unwrap();
+                    .as_ref())
+                .unwrap();
         for _ in 0..2 {
             let r = parser.parse();
             assert!(r.is_ok(), "{:?} not ok", r.unwrap_err());
