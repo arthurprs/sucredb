@@ -12,7 +12,7 @@ use vnode_sync::*;
 use rand::{Rng, thread_rng};
 use utils::{IdHashMap, IdHasherBuilder};
 
-// FIXME: use a more efficient ring buffer
+// FIXME: use a more efficient log data structure
 // 1MB of storage considering key avg length of 32B and 16B overhead
 const PEER_LOG_SIZE: usize = 1024 * 1024 / (32 + 16);
 const ZOMBIE_TIMEOUT_MS: u64 = 5000;
@@ -322,6 +322,7 @@ impl VNode {
 
     // CLIENT CRUD
     pub fn do_get(&mut self, db: &Database, token: Token, key: &[u8]) {
+        // TODO: lots of optimizations to be done here
         let nodes = db.dht.nodes_for_vnode(self.state.num, false);
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(1000);
@@ -352,8 +353,7 @@ impl VNode {
         let expire = Instant::now() + Duration::from_millis(1000);
         assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len()), expire).is_none());
 
-        let dcc = self.state
-            .storage_set_local(db, key, value_opt, &vv);
+        let dcc = self.state.storage_set_local(db, key, value_opt, &vv);
         self.process_set(db, cookie, true);
         for node in nodes {
             if node != db.dht.node() {
@@ -522,8 +522,6 @@ impl VNode {
     }
 
     pub fn handler_sync_fin(&mut self, db: &Database, from: NodeId, msg: MsgSyncFin) {
-        // TODO: need a way to control reverse syncs logic
-        // TODO: need a way to promote recover -> ready
         check_status!(self,
                       VNodeStatus::Ready | VNodeStatus::Recover | VNodeStatus::Zombie |
                       VNodeStatus::Bootstrap,
@@ -545,7 +543,7 @@ impl VNode {
             }
             result
         } else {
-            // if msg is success send an error reply
+            // only send error if Ok, otherwise the message will be sent back and forth forever
             if msg.result.is_ok() {
                 fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::CookieNotFound);
             }
@@ -562,10 +560,10 @@ impl VNode {
 
     /// //////
     pub fn start_bootstrap(&mut self, db: &Database) {
-        // TODO: clear storage
         assert_eq!((self.state.status, self.syncs.len()),
                    (VNodeStatus::Bootstrap, 0),
                    "status must be Bootstrap before starting bootstrap");
+        self.state.storage.clear();
         let cookie = self.gen_cookie();
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false);
         thread_rng().shuffle(&mut nodes);

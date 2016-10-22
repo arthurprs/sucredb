@@ -337,6 +337,7 @@ impl Fabric {
         ::std::thread::sleep(::std::time::Duration::from_millis(500));
     }
 
+    // TODO: take msgs as references and buffer serialized bytes instead
     pub fn send_msg<T: Into<FabricMsg>>(&self, node: NodeId, msg: T) -> FabricResult<()> {
         if node == self.context.node {
             panic!("Can't send message to self");

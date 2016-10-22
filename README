@@ -9,13 +9,13 @@
 * [x] convert resp into command to the database
 * [x] send responses to the resp server
 * [ ] proper resp protocol
-* [ ] support specifying R/W for the request
+* [ ] support specifying R/W/Timeout for the request
 * [x] worker threads
 * [x] handling timeouts for crud
 * [x] generic sync normal/reverse
 * [x] resending sync/bootstrap data from sender side
 * [x] resending sync/bootstrap start from receiver side
-* [ ] generic sync/bootstrap code?
+* [x] generic sync/bootstrap code?
 * [x] when log isn't enough to satisfy sync, iter the database sending necessary dots
 * [x] propagate dht notifications to vnodes and take actions
 * [ ] dead node handling
