@@ -13,7 +13,6 @@ pub struct VersionVector(LinearMap<Id, Version>);
 pub struct BitmappedVersion {
     base: Version,
     #[serde(serialize_with="serialize_ramp", deserialize_with="deserialize_ramp")]
-    // TODO: this isn't really optimal, specially for sparse bitmaps
     bitmap: ramp::Int,
 }
 

@@ -48,7 +48,7 @@ pub struct VNodeState {
     pub storage: Storage,
     pub unflushed_coord_writes: usize,
     // sync
-    pub sync_nodes: HashSet<NodeId>,
+    pub sync_nodes: HashSet<NodeId, IdHasherBuilder>,
     // rev syncs
     pub pending_recoveries: usize,
 }
@@ -656,11 +656,10 @@ impl VNodeState {
                     self.storage.clear();
                 }
                 VNodeStatus::Ready => {
+                    assert_eq!(self.pending_recoveries, 0);
                     if self.status == VNodeStatus::Recover {
+                        assert_eq!(self.sync_nodes.len(), 0);
                         self.clocks.fast_foward(db.dht.node(), RECOVER_FAST_FORWARD);
-                        // need to save meta, otherwise bitmaps can get too sparse for recovery
-                        self.save(db, false);
-                        assert_eq!(self.pending_recoveries, 0);
                     }
                 }
                 VNodeStatus::Absent => {
@@ -670,11 +669,18 @@ impl VNodeState {
                     self.peers.clear();
                     self.storage.clear();
                 }
-                _ => (),
+                VNodeStatus::Zombie => {
+                    assert_eq!(self.pending_recoveries, 0);
+                }
+                VNodeStatus::Recover => {
+                    panic!("Can only set status to Recover on load");
+                }
             }
 
             self.last_status_change = Instant::now();
             self.status = new;
+            // not important in all cases but nice to do
+            self.save(db, false);
         }
     }
 

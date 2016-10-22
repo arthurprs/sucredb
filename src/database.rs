@@ -79,8 +79,9 @@ impl Database {
                           &config.cluster_name,
                           &config.etcd_addr,
                           (),
-                          if config.cmd_init {
-                              Some(dht::RingDescription::new(3, 64))
+                          if let Some(init) = config.cmd_init.as_ref() {
+                              Some(dht::RingDescription::new(init.replication_factor,
+                                                             init.partitions))
                           } else {
                               None
                           }),

@@ -7,6 +7,8 @@ use nodrop::NoDrop;
 use std::collections::HashMap;
 use linear_map::LinearMap;
 
+// FIXME: this is ridicullous, but so is lmdb write performance
+// FIXME: this module needs to be rewriten to use something like rocksdb
 const BUFFER_LIM: usize = 32;
 type Buffer = Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>;
 
@@ -20,7 +22,6 @@ pub struct Storage {
     env: lmdb_rs::Environment,
     db_h: lmdb_rs::DbHandle,
     storages_handle: Arc<Mutex<LinearMap<i32, Buffer>>>,
-    // FIXME: this is ridicullous, but so is lmdb write performance
     buffer: Buffer,
     num: i32,
     iterators_handle: Arc<()>,
@@ -88,7 +89,7 @@ impl Storage {
     }
 
     pub fn iterator(&self) -> StorageIterator {
-        self.flush_buffer();
+        self.flush_buffer(true);
         let env = NoDrop::new(Box::new(self.env.clone()));
         let db_h = NoDrop::new(Box::new(self.db_h.clone()));
         let tx = NoDrop::new(Box::new(env.get_reader().unwrap()));
@@ -119,7 +120,7 @@ impl Storage {
             buffer.len() >= BUFFER_LIM
         };
         if flush {
-            self.flush_buffer();
+            self.flush_buffer(false);
         }
     }
 
@@ -137,15 +138,23 @@ impl Storage {
     }
 
     pub fn clear(&self) {
-        self.buffer.lock().unwrap().clear();
-        let _wlock = self.storages_handle.lock().unwrap();
+        let wlock = self.storages_handle.lock().unwrap();
+        for s in wlock.values() {
+            s.lock().unwrap().clear();
+        }
         let txn = self.env.new_transaction().unwrap();
         txn.bind(&self.db_h).clear().unwrap();
         txn.commit().unwrap();
     }
 
-    fn flush_buffer(&self) {
-        let wlock = self.storages_handle.lock().unwrap();
+    fn flush_buffer(&self, force: bool) {
+        let wlock = if force {
+            self.storages_handle.lock().unwrap()
+        } else if let Ok(wlock) = self.storages_handle.try_lock() {
+            wlock
+        } else {
+            return;
+        };
         let txn = self.env.new_transaction().unwrap();
         for s in wlock.values() {
             let mut locked = s.lock().unwrap();
@@ -157,7 +166,7 @@ impl Storage {
     }
 
     pub fn sync(&self) {
-        self.flush_buffer();
+        self.flush_buffer(true);
         self.env.sync(true).unwrap();
     }
 }

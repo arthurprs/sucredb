@@ -52,7 +52,7 @@ mod config;
 
 fn configure() -> config::Config {
     use config::*;
-    use clap::{Arg, App};
+    use clap::{Arg, App, SubCommand};
 
     let matches = App::new("SucreDB")
         .version("0.0")
@@ -88,9 +88,16 @@ fn configure() -> config::Config {
             .help("Fabric listen addr")
             .default_value(DEFAULT_FABRIC_ADDR)
             .takes_value(true))
-        .arg(Arg::with_name("init")
-            .long("init")
-            .help("init the cluster"))
+        .subcommand(SubCommand::with_name("init")
+            .about("Init and configure the cluster")
+            .arg(Arg::with_name("replication_factor")
+                .short("r")
+                .help("Number of replicas")
+                .default_value(DEFAULT_REPLICATION_FACTOR))
+            .arg(Arg::with_name("partitions")
+                .short("p")
+                .help("Number of partitions")
+                .default_value(DEFAULT_PARTITIONS)))
         .get_matches();
 
     Config {
@@ -99,7 +106,15 @@ fn configure() -> config::Config {
         listen_addr: matches.value_of("listen_addr").unwrap().parse().unwrap(),
         fabric_addr: matches.value_of("fabric_addr").unwrap().parse().unwrap(),
         etcd_addr: matches.value_of("etcd_addr").unwrap().into(),
-        cmd_init: matches.is_present("init"),
+        cmd_init: matches.subcommand_matches("init").map(|matches| {
+            InitCommand {
+                partitions: matches.value_of("partitions").unwrap().parse().unwrap(),
+                replication_factor: matches.value_of("replication_factor")
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+            }
+        }),
     }
 }
 
