@@ -9,20 +9,25 @@ use linear_map::LinearMap;
 
 // FIXME: this is ridicullous, but so is lmdb write performance
 // FIXME: this module needs to be rewriten to use something like rocksdb
-const BUFFER_LIM: usize = 32;
-type Buffer = Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>;
+const BUFFER_SOFT_LIM: usize = 32;
+const BUFFER_HARD_LIM: usize = 36;
+
+struct Buffer {
+    map: HashMap<Vec<u8>, Vec<u8>>,
+    db_h: lmdb_rs::DbHandle,
+}
 
 pub struct StorageManager {
     path: PathBuf,
     env: lmdb_rs::Environment,
-    storages_handle: Arc<Mutex<LinearMap<i32, Buffer>>>,
+    storages_handle: Arc<Mutex<LinearMap<i32, Arc<Mutex<Buffer>>>>>,
 }
 
 pub struct Storage {
     env: lmdb_rs::Environment,
     db_h: lmdb_rs::DbHandle,
-    storages_handle: Arc<Mutex<LinearMap<i32, Buffer>>>,
-    buffer: Buffer,
+    storages_handle: Arc<Mutex<LinearMap<i32, Arc<Mutex<Buffer>>>>>,
+    buffer: Arc<Mutex<Buffer>>,
     num: i32,
     iterators_handle: Arc<()>,
 }
@@ -64,7 +69,11 @@ impl StorageManager {
         } else {
             self.env.get_db(&db_name, lmdb_rs::DbFlags::empty())
         });
-        let buffer: Buffer = Default::default();
+        let buffer = Arc::new(Mutex::new(
+            Buffer {
+            map: Default::default(),
+            db_h: db_h.clone(),
+        }));
         wlock.insert(db_num, buffer.clone());
 
         Ok(Storage {
@@ -81,7 +90,7 @@ impl StorageManager {
 impl Storage {
     pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
         let buffer = self.buffer.lock().unwrap();
-        let r: Option<&[u8]> = buffer.get(key)
+        let r: Option<&[u8]> = buffer.map.get(key)
             .map(|k| k.as_slice())
             .or_else(|| self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok());
         trace!("get {:?} ({:?} bytes)", str::from_utf8(key), r.map(|x| x.len()));
@@ -114,18 +123,18 @@ impl Storage {
 
     pub fn set(&self, key: &[u8], value: &[u8]) {
         trace!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
-        let flush = {
+        let buffer_len = {
             let mut buffer = self.buffer.lock().unwrap();
-            buffer.insert(key.into(), value.into());
-            buffer.len() >= BUFFER_LIM
+            buffer.map.insert(key.into(), value.into());
+            buffer.map.len()
         };
-        if flush {
-            self.flush_buffer(false);
+        if buffer_len >= BUFFER_SOFT_LIM {
+            self.flush_buffer(buffer_len >= BUFFER_HARD_LIM);
         }
     }
 
     pub fn del(&self, key: &[u8]) {
-        let r1 = self.buffer.lock().unwrap().remove(key).is_some();
+        let r1 = self.buffer.lock().unwrap().map.remove(key).is_some();
         let _wlock = self.storages_handle.lock().unwrap();
         let txn = self.env.new_transaction().unwrap();
         let r2 = match txn.bind(&self.db_h).del(&key) {
@@ -140,7 +149,7 @@ impl Storage {
     pub fn clear(&self) {
         let wlock = self.storages_handle.lock().unwrap();
         for s in wlock.values() {
-            s.lock().unwrap().clear();
+            s.lock().unwrap().map.clear();
         }
         let txn = self.env.new_transaction().unwrap();
         txn.bind(&self.db_h).clear().unwrap();
@@ -158,8 +167,9 @@ impl Storage {
         let txn = self.env.new_transaction().unwrap();
         for s in wlock.values() {
             let mut locked = s.lock().unwrap();
-            for (k, v) in locked.drain() {
-                txn.bind(&self.db_h).set(&k, &v).unwrap();
+            let db = txn.bind(&locked.db_h);
+            for (k, v) in locked.map.drain() {
+                db.set(&k, &v).unwrap();
             }
         }
         txn.commit().unwrap();

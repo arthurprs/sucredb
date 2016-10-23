@@ -16,7 +16,7 @@ use utils::{IdHashMap, IdHasherBuilder};
 // 1MB of storage considering key avg length of 32B and 16B overhead
 const PEER_LOG_SIZE: usize = 1024 * 1024 / (32 + 16);
 const ZOMBIE_TIMEOUT_MS: u64 = 5000;
-const RECOVER_FAST_FORWARD: Version = 1_000_000;
+const RECOVER_FAST_FORWARD: Version = 100_000;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum VNodeStatus {
@@ -233,6 +233,7 @@ impl VNode {
     // DHT Changes
     pub fn handler_dht_change(&mut self, db: &Database, x_status: VNodeStatus) {
         match (self.status(), x_status) {
+            (a, b) if a == b => (),
             (VNodeStatus::Ready, VNodeStatus::Absent) |
             (VNodeStatus::Bootstrap, VNodeStatus::Absent) |
             (VNodeStatus::Recover, VNodeStatus::Absent) => {
@@ -263,7 +264,9 @@ impl VNode {
                     self.state.set_status(db, VNodeStatus::Zombie);
                 }
             }
-            (VNodeStatus::Zombie, VNodeStatus::Absent) => (),
+            (VNodeStatus::Zombie, VNodeStatus::Absent) => {
+                self.state.set_status(db, VNodeStatus::Absent);
+            },
             (VNodeStatus::Zombie, VNodeStatus::Ready) => {
                 // fast-recomission!
                 self.state.set_status(db, VNodeStatus::Ready);
@@ -273,10 +276,10 @@ impl VNode {
                 self.state.set_status(db, VNodeStatus::Bootstrap);
                 self.start_bootstrap(db);
             }
-            (VNodeStatus::Bootstrap, VNodeStatus::Ready) |
-            (VNodeStatus::Recover, VNodeStatus::Ready) => (),
-            (a, b) if a == b => (),
-            (a, b) => panic!("Invalid change {:?} -> {:?}", a, b),
+            (VNodeStatus::Bootstrap, VNodeStatus::Ready) => {
+                self.state.set_status(db, VNodeStatus::Ready);
+            },
+            (a, b) => panic!("Invalid status change from dht {:?} -> {:?}", a, b),
         }
     }
 
@@ -316,7 +319,7 @@ impl VNode {
         if self.state.status == VNodeStatus::Zombie && self.syncs.is_empty() &&
            self.inflight.is_empty() &&
            self.state.last_status_change.elapsed() > Duration::from_millis(ZOMBIE_TIMEOUT_MS) {
-            self.state.set_status(db, VNodeStatus::Absent);
+            db.dht.stepdown_zombie_node(db.dht.node(), self.state.num()).unwrap();
         }
     }
 
@@ -782,7 +785,7 @@ impl VNodeState {
             log: log,
             clean_shutdown: shutdown,
         };
-        debug!("Saving state {:?}", saved_state);
+        debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
         let serialized_saved_state =
             bincode_serde::serialize(&saved_state, bincode::SizeLimit::Infinite).unwrap();
         db.meta_storage.set(self.num.to_string().as_bytes(), &serialized_saved_state);

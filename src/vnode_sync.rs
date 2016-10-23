@@ -234,7 +234,7 @@ impl Synchronization {
     }
 
     fn send_next(&mut self, db: &Database, state: &mut VNodeState) {
-        match *self {
+        let exausted = match *self {
             Synchronization::SyncSender { peer,
                                           cookie,
                                           ref mut iterator,
@@ -280,16 +280,15 @@ impl Synchronization {
                         break;
                     }
                 }
-                if !inflight.is_empty() {
-                    debug!("sync/bootstrap {:?} has {} inflight msgs", cookie, inflight.len());
-                    return;
-                }
+                inflight.is_empty()
             }
             _ => unreachable!(),
+        };
+
+        if exausted {
+            // FIXME: check when we sent the last one
+            self.send_success_fin(db, state);
         }
-        // if we get here, inflight is empty and we need to send the success fin
-        // FIXME: check when we sent the last one
-        self.send_success_fin(db, state);
     }
 
     pub fn on_cancel(&mut self, db: &Database, state: &mut VNodeState) {
@@ -389,8 +388,7 @@ impl Synchronization {
                     state.save(db, false);
                     state.storage.sync();
                     // now we're ready!
-                    state.set_status(db, VNodeStatus::Ready);
-                    db.dht.promote_pending_node(state.num(), db.dht.node()).unwrap();
+                    db.dht.promote_pending_node(db.dht.node(), state.num()).unwrap();
                     // send it back as a form of ack-ack
                     db.fabric.send_msg(peer, msg).unwrap();
                 } else {

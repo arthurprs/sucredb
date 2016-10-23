@@ -257,20 +257,6 @@ impl Database {
         }
     }
 
-    fn send_set(&self, addr: NodeId, vnode: VNodeId, cookie: Cookie, key: &[u8],
-                value_opt: Option<&[u8]>, vv: VersionVector) {
-        self.fabric
-            .send_msg(addr,
-                      FabricMsg::Set(MsgSet {
-                          cookie: cookie,
-                          vnode: vnode,
-                          key: key.into(),
-                          value: value_opt.map(|x| x.into()),
-                          version_vector: vv,
-                      }))
-            .unwrap();
-    }
-
     // CLIENT CRUD
     pub fn set(&self, token: Token, key: &[u8], value: Option<&[u8]>, vv: VersionVector) {
         let vnode = self.dht.key_vnode(key);
@@ -326,7 +312,14 @@ mod tests {
                 listen_addr: config::DEFAULT_LISTEN_ADDR.parse().unwrap(),
                 cluster_name: "test".into(),
                 etcd_addr: config::DEFAULT_ETCD_ADDR.parse().unwrap(),
-                cmd_init: create,
+                cmd_init: if create {
+                    Some(config::InitCommand{
+                        replication_factor: 3,
+                        partitions: 64,
+                    })
+                } else {
+                    None
+                },
             };
             let db = Database::new(&config,
                                    Box::new(move |t, v| {
@@ -444,7 +437,7 @@ mod tests {
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        db2.dht.claim(db2.dht.node());
+        db2.dht.rebalance();
 
         sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
@@ -490,7 +483,7 @@ mod tests {
             assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
-        db2.dht.claim(db2.dht.node());
+        db2.dht.rebalance();
 
         // warn!("will check data in db2 during balancing");
         // for i in 0..TEST_JOIN_SIZE {
@@ -518,7 +511,7 @@ mod tests {
         let _ = env_logger::init();
         let mut db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        db2.dht.claim(db2.dht.node());
+        db2.dht.rebalance();
 
         sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
@@ -565,7 +558,7 @@ mod tests {
         let _ = env_logger::init();
         let mut db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        db2.dht.claim(db2.dht.node());
+        db2.dht.rebalance();
 
         sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {

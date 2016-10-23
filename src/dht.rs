@@ -44,6 +44,116 @@ impl RingDescription {
     }
 }
 
+impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> Ring<T> {
+    fn leave_node(&mut self, node: NodeId) -> Result<(), GenericError> {
+        for i in 0..self.vnodes.len() {
+            if self.vnodes[i].remove(&node) {
+                self.zombie[i].insert(node);
+            }
+            self.pending[i].remove(&node);
+        }
+        Ok(())
+    }
+
+    fn join_node(&mut self, node: NodeId, addr: net::SocketAddr,  meta: T) -> Result<(), GenericError> {
+        self.nodes.insert(node, (addr, meta));
+        Ok(())
+    }
+
+    fn remove_node(&mut self, node: NodeId) -> Result<(), GenericError> {
+        self.nodes.remove(&node);
+        for i in 0..self.vnodes.len() {
+            self.vnodes[i].remove(&node);
+            self.zombie[i].remove(&node);
+            self.pending[i].remove(&node);
+        }
+        Ok(())
+    }
+
+    fn promote_pending_node(&mut self, node: NodeId, vn: VNodeId) -> Result<(), GenericError> {
+        self.pending[vn as usize].remove(&node);
+        self.vnodes[vn as usize].insert(node);
+        Ok(())
+    }
+
+    fn stepdown_zombie_node(&mut self, node: NodeId, vn: VNodeId) -> Result<(), GenericError> {
+        self.zombie[vn as usize].remove(&node);
+        Ok(())
+    }
+
+    fn rebalance(&mut self) -> Result<(), GenericError> {
+        // fast path when #nodes <= replication factor
+        if self.nodes.len() <= self.replication_factor {
+            for (vn_num, vn_replicas) in self.vnodes.iter_mut().enumerate() {
+                for node in self.nodes.keys().cloned() {
+                    if vn_replicas.insert(node) {
+                        self.pending[vn_num].insert(node);
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        // simple 2-steps eager rebalancing
+        // 1. take from who is doing too much work and give to who is doing little
+        // 2. assing replicas for under replicated based on who is doing less work
+        let mut node_partitions = HashMap::new();
+        for (v_num, vn) in self.vnodes.iter().enumerate() {
+            for &node in vn {
+                node_partitions.entry(node).or_insert(Vec::new()).push(v_num);
+            }
+        }
+
+        let ppn = self.vnodes.len() * self.replication_factor / self.nodes.len();
+        loop {
+            let mut with_little: Vec<NodeId> =
+                node_partitions.iter().filter(|kv| kv.1.len() < ppn).map(|kv| *kv.0).collect();
+            let mut with_much: Vec<NodeId> =
+                node_partitions.iter().filter(|kv| kv.1.len() > ppn).map(|kv| *kv.0).collect();
+            if with_little.is_empty() || with_much.is_empty() {
+                break;
+            }
+            thread_rng().shuffle(&mut with_little);
+            thread_rng().shuffle(&mut with_much);
+            while !with_little.is_empty() && !with_much.is_empty() {
+                let from = with_much.pop().unwrap();
+                let vn = node_partitions.get_mut(&from).unwrap().pop().unwrap();
+                self.vnodes[vn].remove(&from);
+                self.zombie[vn].insert(from);
+                let to = with_little.pop().unwrap();
+                node_partitions.entry(to).or_insert(Vec::new()).push(vn);
+                self.vnodes[vn].insert(to);
+                self.pending[vn].insert(to);
+            }
+        }
+
+        loop {
+            let under_replicated: Vec<usize> = self.vnodes
+                .iter()
+                .enumerate()
+                .filter(|kv| kv.1.len() < self.replication_factor)
+                .map(|kv| kv.0)
+                .collect();
+            if under_replicated.is_empty() {
+                break;
+            }
+            let mut with_little: Vec<NodeId> =
+                node_partitions.iter().filter(|kv| kv.1.len() < ppn).map(|kv| *kv.0).collect();
+            let mut with_normal: Vec<NodeId> =
+                node_partitions.iter().filter(|kv| kv.1.len() == ppn).map(|kv| *kv.0).collect();
+            thread_rng().shuffle(&mut with_little);
+            thread_rng().shuffle(&mut with_normal);
+            for vn in under_replicated {
+                let taker = with_little.pop().or_else(|| with_normal.pop()).unwrap();
+                node_partitions.get_mut(&taker).unwrap().push(vn);
+                self.vnodes[vn].insert(taker);
+                self.pending[vn].insert(taker);
+            }
+        }
+        Ok(())
+    }
+}
+
 struct Inner<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
     ring: Ring<T>,
     ring_version: u64,
@@ -219,7 +329,8 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
     pub fn key_vnode(&self, key: &[u8]) -> VNodeId {
         // FIXME: this should be lock free
         let inner = self.inner.read().unwrap();
-        hash(key) as VNodeId & (inner.ring.vnodes.len() - 1) as VNodeId
+        debug!("h: {} vnode: {}", hash(key), (hash(key) % inner.ring.vnodes.len() as u64) as VNodeId);
+        (hash(key) % inner.ring.vnodes.len() as u64) as VNodeId
     }
 
     pub fn vnodes_for_node(&self, node: NodeId) -> (Vec<VNodeId>, Vec<VNodeId>) {
@@ -237,11 +348,13 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         (insync, pending)
     }
 
+    // TODO: split into read_ and write_
     pub fn nodes_for_vnode(&self, vnode: VNodeId, include_pending: bool) -> Vec<NodeId> {
         // FIXME: this shouldn't alloc
         let mut result = Vec::new();
         let inner = self.inner.read().unwrap();
         result.extend(&inner.ring.vnodes[vnode as usize]);
+        result.extend(&inner.ring.zombie[vnode as usize]);
         if include_pending {
             result.extend(&inner.ring.pending[vnode as usize]);
         }
@@ -258,34 +371,13 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         (inner.ring.clone(), inner.ring_version)
     }
 
-    pub fn claim(&self, node: NodeId) -> Result<Vec<VNodeId>, GenericError> {
-        let mut changes = Vec::new();
+    pub fn rebalance(&self) -> Result<(), GenericError> {
         try_cas!(self, {
-            changes.clear();
             let (mut ring, ring_version) = self.ring_clone();
-            let members = self.members().len() + 1;
-            let partitions = ring.vnodes.len();
-            if members <= ring.replication_factor {
-                for i in 0..ring.vnodes.len() {
-                    if !ring.vnodes[i].contains(&node) && ring.pending[i].insert(node) {
-                        changes.push(i as VNodeId);
-                    }
-                }
-            } else {
-                for _ in 0..partitions * ring.replication_factor / members {
-                    loop {
-                        let r = thread_rng().gen::<usize>() % partitions;
-                        if !ring.pending[r].insert(node) {
-                            continue;
-                        }
-                        changes.push(r as VNodeId);
-                        break;
-                    }
-                }
-            }
+            try!(ring.rebalance());
             (ring_version, ring)
         });
-        Ok(changes)
+        Ok(())
     }
 
     pub fn add_pending_node(&self, vnode: VNodeId, node: NodeId) -> Result<(), GenericError> {
@@ -300,27 +392,37 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
         Ok(())
     }
 
-    pub fn remove_pending_node(&self, vnode: VNodeId, node: NodeId) -> Result<(), GenericError> {
+    pub fn remove_node(&self, node: NodeId) -> Result<(), GenericError> {
         try_cas!(self, {
             let (mut ring, ring_version) = self.ring_clone();
-            {
-                let pending = &mut ring.pending[vnode as usize];
-                assert!(pending.remove(&node));
-            }
+            try!(ring.remove_node(node));
             (ring_version, ring)
         });
         Ok(())
     }
 
-    pub fn promote_pending_node(&self, vnode: VNodeId, node: NodeId) -> Result<(), GenericError> {
+    pub fn leave_node(&self, node: NodeId) -> Result<(), GenericError> {
         try_cas!(self, {
             let (mut ring, ring_version) = self.ring_clone();
-            {
-                let pending = &mut ring.pending[vnode as usize];
-                assert!(pending.remove(&node));
-            }
+            try!(ring.leave_node(node));
+            (ring_version, ring)
+        });
+        Ok(())
+    }
 
-            assert!(ring.vnodes[vnode as usize].insert(node));
+    pub fn promote_pending_node(&self, node: NodeId, vnode: VNodeId) -> Result<(), GenericError> {
+        try_cas!(self, {
+            let (mut ring, ring_version) = self.ring_clone();
+            try!(ring.promote_pending_node(node, vnode));
+            (ring_version, ring)
+        });
+        Ok(())
+    }
+
+    pub fn stepdown_zombie_node(&self, node: NodeId, vnode: VNodeId) -> Result<(), GenericError> {
+        try_cas!(self, {
+            let (mut ring, ring_version) = self.ring_clone();
+            try!(ring.stepdown_zombie_node(node, vnode));
             (ring_version, ring)
         });
         Ok(())

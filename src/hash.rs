@@ -1,9 +1,9 @@
 #[allow(deprecated)]
-use std::hash::{Hasher, Hash, SipHasher};
+use std::hash::{Hasher, SipHasher};
 
 #[allow(deprecated)]
-pub fn hash<T: Hash>(key: T) -> u64 {
+pub fn hash(key: &[u8]) -> u64 {
     let mut hasher = SipHasher::new();
-    key.hash(&mut hasher);
+    hasher.write(key);
     hasher.finish()
 }

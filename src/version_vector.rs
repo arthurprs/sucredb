@@ -87,7 +87,7 @@ impl BitmappedVersion {
             base: other.base,
             ones: ones,
             bself: self.bitmap.clone(),
-            bother: other.bitmap.clone(),
+            other: other.bitmap.clone(),
             pos: 0,
             len: len,
         }
@@ -98,7 +98,7 @@ pub struct BitmappedVersionDelta {
     base: Version,
     ones: usize,
     bself: ramp::Int,
-    bother: ramp::Int,
+    other: ramp::Int,
     pos: usize,
     len: usize,
 }
@@ -110,7 +110,7 @@ impl Iterator for BitmappedVersionDelta {
     fn next(&mut self) -> Option<Self::Item> {
         while self.pos < self.len {
             if (self.pos < self.ones || self.bself.bit((self.pos - self.ones) as u32)) &&
-               (!self.bother.bit(self.pos as u32)) {
+               (!self.other.bit(self.pos as u32)) {
                 self.pos += 1;
                 return Some(self.base + self.pos as Version);
             }
