@@ -69,8 +69,7 @@ impl StorageManager {
         } else {
             self.env.get_db(&db_name, lmdb_rs::DbFlags::empty())
         });
-        let buffer = Arc::new(Mutex::new(
-            Buffer {
+        let buffer = Arc::new(Mutex::new(Buffer {
             map: Default::default(),
             db_h: db_h.clone(),
         }));
@@ -90,7 +89,8 @@ impl StorageManager {
 impl Storage {
     pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
         let buffer = self.buffer.lock().unwrap();
-        let r: Option<&[u8]> = buffer.map.get(key)
+        let r: Option<&[u8]> = buffer.map
+            .get(key)
             .map(|k| k.as_slice())
             .or_else(|| self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok());
         trace!("get {:?} ({:?} bytes)", str::from_utf8(key), r.map(|x| x.len()));

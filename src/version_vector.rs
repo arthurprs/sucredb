@@ -159,7 +159,7 @@ impl BitmappedVersionVector {
     }
 
     pub fn add(&mut self, id: Id, version: Version) {
-        self.0.entry(id).or_insert_with(|| Default::default()).add(version);
+        self.0.entry(id).or_insert_with(Default::default).add(version);
     }
 
     pub fn get_mut(&mut self, id: Id) -> Option<&mut BitmappedVersion> {
@@ -171,7 +171,7 @@ impl BitmappedVersionVector {
     }
 
     pub fn entry_or_default(&mut self, id: Id) -> &mut BitmappedVersion {
-        self.0.entry(id).or_insert_with(|| Default::default())
+        self.0.entry(id).or_insert_with(Default::default)
     }
 
     pub fn join(&mut self, other: &Self) {
@@ -326,7 +326,7 @@ impl<T> DottedCausalContainer<T> {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.dots.0.is_empty()
+        self.dots.0.is_empty() && self.vv.0.is_empty()
     }
 
     pub fn sync(&mut self, mut other: Self) {

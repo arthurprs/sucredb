@@ -107,7 +107,7 @@ impl Synchronization {
             .map(move |_| {
                 storage_iterator.iter().next().map(|(k, v)| {
                     (k.into(),
-                     bincode_serde::deserialize::<DottedCausalContainer<Vec<u8>>>(&v).unwrap())
+                     bincode_serde::deserialize::<DottedCausalContainer<_>>(&v).unwrap())
                 })
             })
             .take_while(|o| o.is_some())
@@ -130,6 +130,9 @@ impl Synchronization {
         let target = msg.target.unwrap();
         let clock_in_peer = msg.clock_in_peer.clone().unwrap();
         let clock_snapshot = state.clocks.get(db.dht.node()).cloned().unwrap_or_default();
+        // snapshot clocks to fill the outgoing dccs
+        // TODO: this should be done in the remote
+        let clocks_snapshot = state.clocks.clone();
 
         let log_snapshot = if target == db.dht.node() {
             state.log.clone()
@@ -143,7 +146,12 @@ impl Synchronization {
                 iter.by_ref()
                     .filter_map(|k| {
                         storage.get_vec(&k)
-                            .map(|v| (k, bincode_serde::deserialize(&v).unwrap()))
+                            .map(|v| {
+                                let mut dcc: DottedCausalContainer<_> =
+                                    bincode_serde::deserialize(&v).unwrap();
+                                dcc.fill(&clocks_snapshot);
+                                (k, dcc)
+                            })
                     })
                     .next()
             })
@@ -154,14 +162,18 @@ impl Synchronization {
                 .map(move |_| {
                     storage_iterator.iter().next().map(|(k, v)| {
                         (k.into(),
-                         bincode_serde::deserialize::<DottedCausalContainer<Vec<u8>>>(&v).unwrap())
+                         bincode_serde::deserialize::<DottedCausalContainer<_>>(&v).unwrap())
                     })
                 })
                 .take_while(|o| o.is_some())
                 .map(|o| o.unwrap())
-                .filter(move |&(_, ref dcc)| {
-                    dcc.versions()
-                        .any(|&(node, version)| node == target && version > clock_in_peer_base)
+                .filter_map(move |(k, mut dcc)| {
+                    if dcc.versions().any(|&(n, v)| n == target && v > clock_in_peer_base) {
+                        dcc.fill(&clocks_snapshot);
+                        Some((k, dcc))
+                    } else {
+                        None
+                    }
                 });
             Box::new(move |_| iter.next())
         };
@@ -378,7 +390,7 @@ impl Synchronization {
                 //     state
                 //         .peers
                 //         .entry(peer)
-                //         .or_insert_with(|| Default::default())
+                //         .or_insert_with(Default::default)
                 //         .advance_knowledge(clock_in_peer.base());
                 // }
             }

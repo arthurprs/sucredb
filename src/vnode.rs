@@ -266,7 +266,7 @@ impl VNode {
             }
             (VNodeStatus::Zombie, VNodeStatus::Absent) => {
                 self.state.set_status(db, VNodeStatus::Absent);
-            },
+            }
             (VNodeStatus::Zombie, VNodeStatus::Ready) => {
                 // fast-recomission!
                 self.state.set_status(db, VNodeStatus::Ready);
@@ -278,7 +278,7 @@ impl VNode {
             }
             (VNodeStatus::Bootstrap, VNodeStatus::Ready) => {
                 self.state.set_status(db, VNodeStatus::Ready);
-            },
+            }
             (a, b) => panic!("Invalid status change from dht {:?} -> {:?}", a, b),
         }
     }
@@ -746,7 +746,7 @@ impl VNodeState {
                         log.log(version, k.into());
                     } else if peer_nodes.contains(&node) {
                         peers.entry(node)
-                            .or_insert_with(|| Default::default())
+                            .or_insert_with(Default::default)
                             .log(version, k.into());
                     }
                 }
@@ -854,7 +854,7 @@ impl VNodeState {
             } else {
                 self.peers
                     .entry(node)
-                    .or_insert_with(|| Default::default())
+                    .or_insert_with(Default::default)
                     .log(version, key.into());
             }
         }

@@ -21,21 +21,16 @@ impl Default for IdHasher {
 impl Hasher for IdHasher {
     #[inline]
     fn finish(&self) -> u64 {
-        // Primes used in XXH64's finalizer.
-        const PRIME_2: u64 = 14029467366897019727;
-        const PRIME_3: u64 = 1609587929392839161;
         let mut hash = self.0;
         hash ^= hash >> 33;
-        hash = hash.wrapping_mul(PRIME_2);
-        hash ^= hash >> 29;
-        hash = hash.wrapping_mul(PRIME_3);
-        hash ^= hash >> 32;
+        hash = hash.wrapping_mul(0xc4ceb9fe1a85ec53);
+        hash ^= hash >> 33;
         hash
     }
 
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-        assert!(bytes.len() <= 8);
+        debug_assert!(bytes.len() <= 8);
         unsafe {
             let mut temp = 0u64;
             ::std::ptr::copy_nonoverlapping(bytes.as_ptr(),

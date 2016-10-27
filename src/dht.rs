@@ -55,7 +55,8 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> Ring<T> {
         Ok(())
     }
 
-    fn join_node(&mut self, node: NodeId, addr: net::SocketAddr,  meta: T) -> Result<(), GenericError> {
+    fn join_node(&mut self, node: NodeId, addr: net::SocketAddr, meta: T)
+                 -> Result<(), GenericError> {
         self.nodes.insert(node, (addr, meta));
         Ok(())
     }
@@ -329,7 +330,6 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
     pub fn key_vnode(&self, key: &[u8]) -> VNodeId {
         // FIXME: this should be lock free
         let inner = self.inner.read().unwrap();
-        debug!("h: {} vnode: {}", hash(key), (hash(key) % inner.ring.vnodes.len() as u64) as VNodeId);
         (hash(key) % inner.ring.vnodes.len() as u64) as VNodeId
     }
 

@@ -313,7 +313,7 @@ mod tests {
                 cluster_name: "test".into(),
                 etcd_addr: config::DEFAULT_ETCD_ADDR.parse().unwrap(),
                 cmd_init: if create {
-                    Some(config::InitCommand{
+                    Some(config::InitCommand {
                         replication_factor: 3,
                         partitions: 64,
                     })
