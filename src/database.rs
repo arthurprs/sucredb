@@ -535,8 +535,10 @@ mod tests {
         }
 
         // sim unclean shutdown
+        for i in 0..64 {
+            db1.storage_manager.open(i, false).map(|s| s.clear());
+        }
         drop(db1);
-        let _ = fs::remove_dir_all("t/db1");
         db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", false);
 
         sleep_ms(1000);
@@ -566,6 +568,9 @@ mod tests {
             sleep_ms(1000);
         }
 
+        // sim partition
+        drop(db2);
+
         for i in 0..TEST_JOIN_SIZE {
             db1.set(i,
                     i.to_string().as_bytes(),
@@ -576,14 +581,9 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             db1.get(i, i.to_string().as_bytes());
             let result1 = db1.response(i);
-            db2.get(i, i.to_string().as_bytes());
-            let result2 = db2.response(i);
-            assert_eq!(result1, result2);
         }
 
-        // sim unclean shutdown
-        drop(db2);
-        let _ = fs::remove_dir_all("t/db2");
+        // sim partition heal
         db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
 
         sleep_ms(1000);
@@ -593,6 +593,7 @@ mod tests {
         }
 
         // force some syncs
+        warn!("starting syncs");
         for i in 0..64u16 {
             db2.start_sync(i, false);
         }

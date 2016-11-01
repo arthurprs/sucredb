@@ -73,6 +73,10 @@ impl BitmappedVersion {
         self.base
     }
 
+    pub fn contains(&self, v: Version) -> bool {
+        self.base >= v || self.bitmap.bit((v - self.base - 1) as u32)
+    }
+
     pub fn delta(&self, other: &Self) -> BitmappedVersionDelta {
         // impl is generic but let's restrict it just in case
         assert!(self.base >= other.base);
@@ -210,6 +214,10 @@ impl BitmappedVersionVector {
         }
     }
 
+    pub fn contains(&self, id: Id, v: Version) -> bool {
+        self.0.get(&id).map_or(false, |bv| bv.contains(v))
+    }
+
     pub fn fast_foward(&mut self, id: Id, n: Version) {
         match self.0.entry(id) {
             Entry::Vacant(vac) => {
@@ -230,12 +238,13 @@ impl BitmappedVersionVector {
     pub fn iter(&self) -> linear_map::Iter<Id, BitmappedVersion> {
         self.0.iter()
     }
+
     // pub fn reset(&mut self) {
     //     for (_, bitmap_version) in &mut self.0 {
     //         bitmap_version.bitmap = ramp::Int::zero();
     //     }
     // }
-    //
+
     // pub fn clone_base(&self) -> Self {
     //     let mut new = Self::new();
     //     new.0.reserve(self.0.len());
@@ -344,6 +353,10 @@ impl<T> DottedCausalContainer<T> {
         for &(id, version) in self.dots.0.keys() {
             other.add(id, version);
         }
+    }
+
+    pub fn contained(&self, bvv: &BitmappedVersionVector) -> bool {
+        self.dots.0.keys().all(|&(id, v)| bvv.contains(id, v))
     }
 
     pub fn discard(&mut self, vv: &VersionVector) {

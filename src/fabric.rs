@@ -131,11 +131,11 @@ impl Fabric {
                     .into_future()
                     .and_then(|t| t)
                     .and_then(move |_| {
-                        let still_valid = {
+                        let addr_opt = {
                             let locked = context.nodes_addr.lock().unwrap();
-                            locked.get(&node).map_or(false, |&a| a == addr)
+                            locked.get(&node).cloned()
                         };
-                        if still_valid {
+                        if let Some(addr) = addr_opt {
                             debug!("Reconnecting fabric connection to node {:?}", addr);
                             handle.spawn(Self::connect(node, addr, context, handle.clone()));
                         }

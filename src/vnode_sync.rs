@@ -31,8 +31,8 @@ type InFlightSyncMsgMap = InFlightMap<u64,
 
 pub enum Synchronization {
     SyncSender {
-        clock_in_peer: BitmappedVersion,
-        clock_snapshot: BitmappedVersion,
+        clocks_in_peer: BitmappedVersionVector,
+        clocks_snapshot: BitmappedVersionVector,
         iterator: IteratorFn,
         inflight: InFlightSyncMsgMap,
         cookie: Cookie,
@@ -42,7 +42,7 @@ pub enum Synchronization {
         last_receive: Instant,
     },
     SyncReceiver {
-        clock_in_peer: BitmappedVersion,
+        clocks_in_peer: BitmappedVersionVector,
         cookie: Cookie,
         peer: NodeId,
         target: NodeId,
@@ -51,11 +51,11 @@ pub enum Synchronization {
         starts_sent: u32,
     },
     BootstrapSender {
-        cookie: Cookie,
-        peer: NodeId,
         clocks_snapshot: BitmappedVersionVector,
         iterator: IteratorFn,
         inflight: InFlightSyncMsgMap,
+        cookie: Cookie,
+        peer: NodeId,
         count: u64,
         last_receive: Instant,
     },
@@ -73,7 +73,7 @@ impl Synchronization {
                              cookie: Cookie)
                              -> Self {
         let mut sync = Synchronization::SyncReceiver {
-            clock_in_peer: state.clocks.get(peer).cloned().unwrap_or_default(),
+            clocks_in_peer: state.clocks.clone(),
             peer: peer,
             cookie: cookie,
             count: 0,
@@ -106,12 +106,11 @@ impl Synchronization {
         let mut iter = (0..)
             .map(move |_| {
                 storage_iterator.iter().next().map(|(k, v)| {
-                    (k.into(),
-                     bincode_serde::deserialize::<DottedCausalContainer<_>>(&v).unwrap())
+                    (k.into(), bincode_serde::deserialize::<DottedCausalContainer<_>>(&v).unwrap())
                 })
             })
-            .take_while(|o| o.is_some())
-            .map(|o| o.unwrap());
+            .take_while(|i| i.is_some())
+            .filter_map(|i| i);
 
         Synchronization::BootstrapSender {
             cookie: cookie,
@@ -126,38 +125,49 @@ impl Synchronization {
 
     pub fn new_sync_sender(db: &Database, state: &mut VNodeState, peer: NodeId, msg: MsgSyncStart)
                            -> Self {
-        let cookie = msg.cookie;
+        let iterator: IteratorFn;
+        let clocks_snapshot: BitmappedVersionVector;
         let target = msg.target.unwrap();
-        let clock_in_peer = msg.clock_in_peer.clone().unwrap();
-        let clock_snapshot = state.clocks.get(db.dht.node()).cloned().unwrap_or_default();
-        // snapshot clocks to fill the outgoing dccs
-        // TODO: this should be done in the remote
-        let clocks_snapshot = state.clocks.clone();
+        let clocks_in_peer = msg.clocks_in_peer.clone();
+        let clock_in_peer = clocks_in_peer.get(target).cloned().unwrap_or_default();
+        let clock_snapshot = state.clocks.get(target).cloned().unwrap_or_default();
+
+        debug!("Creating SyncSender {:?} for target {:?} from {:?} to {:?}", msg.cookie, target,
+            clocks_in_peer, state.clocks);
 
         let log_snapshot = if target == db.dht.node() {
             state.log.clone()
         } else {
             state.peers.get(&target).cloned().unwrap_or_default()
         };
-        let iterator: IteratorFn = if log_snapshot.min_version() <= clock_in_peer.base() {
+        if log_snapshot.min_version() <= clock_in_peer.base() {
+            // TODO: also send dots from other logs
+            let clocks = state.clocks.clone();
+            clocks_snapshot = BitmappedVersionVector::from_version(target,
+                                                                   clocks.get(target)
+                                                                       .cloned()
+                                                                       .unwrap_or_default());
             let mut iter = clock_snapshot.delta(&clock_in_peer)
                 .filter_map(move |v| log_snapshot.get(v));
-            Box::new(move |storage| {
+            iterator = Box::new(move |storage| {
                 iter.by_ref()
                     .filter_map(|k| {
                         storage.get_vec(&k)
                             .map(|v| {
                                 let mut dcc: DottedCausalContainer<_> =
                                     bincode_serde::deserialize(&v).unwrap();
-                                dcc.fill(&clocks_snapshot);
+                                // TODO: fill should be done in the remote
+                                dcc.fill(&clocks);
                                 (k, dcc)
                             })
                     })
                     .next()
-            })
+            });
         } else {
+            debug!("SyncSender {:?} using a scan", msg.cookie);
+            clocks_snapshot = state.clocks.clone();
+            let clocks = clocks_snapshot.clone();
             let mut storage_iterator = state.storage.iterator();
-            let clock_in_peer_base = clock_in_peer.base();
             let mut iter = (0..)
                 .map(move |_| {
                     storage_iterator.iter().next().map(|(k, v)| {
@@ -165,25 +175,26 @@ impl Synchronization {
                          bincode_serde::deserialize::<DottedCausalContainer<_>>(&v).unwrap())
                     })
                 })
-                .take_while(|o| o.is_some())
-                .map(|o| o.unwrap())
+                .take_while(|i| i.is_some())
+                .filter_map(|i| i)
                 .filter_map(move |(k, mut dcc)| {
-                    if dcc.versions().any(|&(n, v)| n == target && v > clock_in_peer_base) {
-                        dcc.fill(&clocks_snapshot);
+                    if !dcc.contained(&clocks_in_peer) {
+                        // TODO: fill should be done in the remote
+                        dcc.fill(&clocks);
                         Some((k, dcc))
                     } else {
                         None
                     }
                 });
-            Box::new(move |_| iter.next())
-        };
+            iterator = Box::new(move |_| iter.next());
+        }
 
         Synchronization::SyncSender {
-            clock_in_peer: clock_in_peer,
-            clock_snapshot: clock_snapshot,
+            clocks_in_peer: msg.clocks_in_peer,
+            clocks_snapshot: clocks_snapshot,
             iterator: iterator,
             inflight: InFlightMap::new(),
-            cookie: cookie,
+            cookie: msg.cookie,
             target: target,
             peer: peer,
             count: 0,
@@ -192,57 +203,51 @@ impl Synchronization {
     }
 
     fn send_start(&mut self, db: &Database, state: &mut VNodeState) {
-        let (peer, msg) = match *self {
+        let (peer, cookie, target, clocks_in_peer) = match *self {
             Synchronization::SyncReceiver { cookie,
                                             peer,
                                             target,
-                                            ref clock_in_peer,
                                             ref mut last_receive,
+                                            ref clocks_in_peer,
                                             .. } => {
                 // reset last receives
                 *last_receive = Instant::now();
-                (peer,
-                 MsgSyncStart {
-                    cookie: cookie,
-                    vnode: state.num(),
-                    target: Some(target),
-                    clock_in_peer: Some(clock_in_peer.clone()),
-                })
+                (peer, cookie, Some(target), clocks_in_peer.clone())
             }
             Synchronization::BootstrapReceiver { peer, cookie, ref mut last_receive, .. } => {
                 // reset last receives
                 *last_receive = Instant::now();
-                (peer,
-                 MsgSyncStart {
-                    cookie: cookie,
-                    vnode: state.num(),
-                    target: None,
-                    clock_in_peer: None,
-                })
-            }
-            _ => unreachable!(),
-        };
-        db.fabric.send_msg(peer, msg).unwrap();
-    }
-
-    fn send_success_fin(&mut self, db: &Database, state: &mut VNodeState) {
-        let (peer, cookie, clocks_snapshot) = match *self {
-            Synchronization::SyncSender { peer, cookie, target, ref clock_snapshot, .. } => {
-                (peer, cookie, BitmappedVersionVector::from_version(target, clock_snapshot.clone()))
-            }
-            Synchronization::BootstrapSender { peer, cookie, ref clocks_snapshot, .. } => {
-                (peer, cookie, clocks_snapshot.clone())
+                (peer, cookie, None, BitmappedVersionVector::new())
             }
             _ => unreachable!(),
         };
         db.fabric
             .send_msg(peer,
-                      MsgSyncFin {
+                      MsgSyncStart {
                           cookie: cookie,
                           vnode: state.num(),
-                          result: Ok(clocks_snapshot),
+                          clocks_in_peer: clocks_in_peer,
+                          target: target,
                       })
             .unwrap();
+    }
+
+    fn send_success_fin(&mut self, db: &Database, state: &mut VNodeState) {
+        match *self {
+            Synchronization::SyncSender { peer, cookie, ref clocks_snapshot, .. } |
+            Synchronization::BootstrapSender { peer, cookie, ref clocks_snapshot, .. } => {
+                db.fabric
+                    .send_msg(peer,
+                              MsgSyncFin {
+                                  cookie: cookie,
+                                  vnode: state.num(),
+                                  result: Ok(clocks_snapshot.clone()),
+                              })
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        };
+
     }
 
     fn send_next(&mut self, db: &Database, state: &mut VNodeState) {

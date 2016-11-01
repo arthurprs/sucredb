@@ -357,6 +357,7 @@ impl VNode {
         assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len()), expire).is_none());
 
         let dcc = self.state.storage_set_local(db, key, value_opt, &vv);
+        debug!("set_local {} {:?}", String::from_utf8_lossy(key), dcc);
         self.process_set(db, cookie, true);
         for node in nodes {
             if node != db.dht.node() {
@@ -486,16 +487,15 @@ impl VNode {
             fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::BadVNodeStatus);
         } else if !self.syncs.contains_key(&msg.cookie) {
             let cookie = msg.cookie;
-            let sync = match (msg.target.clone(), msg.clock_in_peer.as_ref()) {
-                (None, None) => {
+            let sync = match msg.target {
+                None => {
                     info!("starting bootstrap sender {:?} peer:{}", cookie, from);
                     Synchronization::new_bootstrap_sender(db, &mut self.state, from, msg)
                 }
-                (Some(target), Some(_)) => {
+                Some(target) => {
                     info!("starting sync sender {:?} target:{:?} peer:{}", cookie, target, from);
                     Synchronization::new_sync_sender(db, &mut self.state, from, msg)
                 }
-                _ => unreachable!(),
             };
             self.syncs.insert(cookie, sync);
             self.syncs.get_mut(&cookie).unwrap().on_start(db, &mut self.state);
@@ -807,10 +807,9 @@ impl VNodeState {
                              -> DottedCausalContainer<Vec<u8>> {
         let mut dcc = self.storage_get(key);
         dcc.discard(vv);
-        let node = db.dht.node();
-        let dot = self.clocks.event(node);
+        let dot = self.clocks.event(db.dht.node());
         if let Some(value) = value_opt {
-            dcc.add(node, dot, value.into());
+            dcc.add(db.dht.node(), dot, value.into());
         }
         dcc.strip(&self.clocks);
 

@@ -105,8 +105,8 @@ pub struct MsgSetAck {
 pub struct MsgSyncStart {
     pub vnode: VNodeId,
     pub cookie: Cookie,
+    pub clocks_in_peer: BitmappedVersionVector,
     pub target: Option<NodeId>,
-    pub clock_in_peer: Option<BitmappedVersion>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
