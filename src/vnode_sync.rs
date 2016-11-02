@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use vnode::{VNodeState, VNodeStatus};
 use fabric::*;
 use version_vector::*;
@@ -126,31 +127,45 @@ impl Synchronization {
     pub fn new_sync_sender(db: &Database, state: &mut VNodeState, peer: NodeId, msg: MsgSyncStart)
                            -> Self {
         let iterator: IteratorFn;
-        let clocks_snapshot: BitmappedVersionVector;
+        let mut clocks_snapshot: BitmappedVersionVector;
+
+        let clocks = state.clocks.clone();
         let target = msg.target.unwrap();
         let clocks_in_peer = msg.clocks_in_peer.clone();
         let clock_in_peer = clocks_in_peer.get(target).cloned().unwrap_or_default();
-        let clock_snapshot = state.clocks.get(target).cloned().unwrap_or_default();
 
-        debug!("Creating SyncSender {:?} for target {:?} from {:?} to {:?}", msg.cookie, target,
-            clocks_in_peer, state.clocks);
+        debug!("Creating SyncSender {:?} for target {:?} from {:?} to {:?}",
+               msg.cookie,
+               target,
+               clocks_in_peer,
+               state.clocks);
 
-        let log_snapshot = if target == db.dht.node() {
-            state.log.clone()
+        let target_log_base = if target == db.dht.node() {
+            state.log.clone().min_version()
         } else {
-            state.peers.get(&target).cloned().unwrap_or_default()
+            state.peers.get(&target).cloned().unwrap_or_default().min_version()
         };
-        if log_snapshot.min_version() <= clock_in_peer.base() {
-            // TODO: also send dots from other logs
-            let clocks = state.clocks.clone();
-            clocks_snapshot = BitmappedVersionVector::from_version(target,
-                                                                   clocks.get(target)
-                                                                       .cloned()
-                                                                       .unwrap_or_default());
-            let mut iter = clock_snapshot.delta(&clock_in_peer)
-                .filter_map(move |v| log_snapshot.get(v));
+        if target_log_base <= clock_in_peer.base() {
+            clocks_snapshot = BitmappedVersionVector::new();
+            let mut keys: HashSet<Vec<u8>> = HashSet::new();
+            let empty_bv = BitmappedVersion::new(0, 0);
+
+            for (&node, log) in state.peers.iter().chain(::std::iter::once((&db.dht.node(), &state.log))) {
+                let n_bv = clocks.get(node).unwrap_or(&empty_bv);
+                let p_bv = clocks_in_peer.get(node).unwrap_or(&empty_bv);
+                clocks_snapshot.add_bv(node, n_bv);
+                let dots_delta = n_bv.delta(p_bv);
+                keys.reserve(dots_delta.size_hint().0);
+                for dot in dots_delta {
+                    if let Some(k) = log.get(dot) {
+                        keys.insert(k.into());
+                    }
+                }
+            }
+
+            let mut keys = keys.into_iter();
             iterator = Box::new(move |storage| {
-                iter.by_ref()
+                keys.by_ref()
                     .filter_map(|k| {
                         storage.get_vec(&k)
                             .map(|v| {
@@ -165,8 +180,7 @@ impl Synchronization {
             });
         } else {
             debug!("SyncSender {:?} using a scan", msg.cookie);
-            clocks_snapshot = state.clocks.clone();
-            let clocks = clocks_snapshot.clone();
+            clocks_snapshot = clocks.clone();
             let mut storage_iterator = state.storage.iterator();
             let mut iter = (0..)
                 .map(move |_| {

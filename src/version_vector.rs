@@ -78,15 +78,11 @@ impl BitmappedVersion {
     }
 
     pub fn delta(&self, other: &Self) -> BitmappedVersionDelta {
-        // impl is generic but let's restrict it just in case
-        assert!(self.base >= other.base);
-        assert!(self.base + self.bitmap.bit_length() as Version >=
-                other.base + other.bitmap.bit_length() as Version);
         if self.base < other.base {
             return other.delta(self);
         }
         let ones = (self.base - other.base) as usize;
-        let len = ones + cmp::max(self.bitmap.bit_length(), other.bitmap.bit_length()) as usize;
+        let len = ones + self.bitmap.bit_length() as usize;
         BitmappedVersionDelta {
             base: other.base,
             ones: ones,
@@ -111,6 +107,7 @@ impl ExactSizeIterator for BitmappedVersionDelta {}
 
 impl Iterator for BitmappedVersionDelta {
     type Item = Version;
+
     fn next(&mut self) -> Option<Self::Item> {
         while self.pos < self.len {
             if (self.pos < self.ones || self.bself.bit((self.pos - self.ones) as u32)) &&
@@ -164,6 +161,10 @@ impl BitmappedVersionVector {
 
     pub fn add(&mut self, id: Id, version: Version) {
         self.0.entry(id).or_insert_with(Default::default).add(version);
+    }
+
+    pub fn add_bv(&mut self, id: Id, bv: &BitmappedVersion) {
+        self.0.entry(id).or_insert_with(Default::default).join(bv);
     }
 
     pub fn get_mut(&mut self, id: Id) -> Option<&mut BitmappedVersion> {
