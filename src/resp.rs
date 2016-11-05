@@ -93,7 +93,7 @@ impl Parser {
     }
 
     fn speculate_buffer(buf: &[u8]) -> RespResult<usize> {
-        if buf.len() >= 64 && &buf[buf.len() - 2..] == b"\r\n" {
+        if &buf[buf.len() - 2..] == b"\r\n" {
             return Ok(buf.len());
         }
         let mut valid = 0;
@@ -288,7 +288,6 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::{RespResult, RespError, Parser, RespValue};
-    use std::io::Write;
 
     fn parse(slice: &[u8]) -> RespResult<RespValue> {
         try!(Parser::new(slice)).parse()

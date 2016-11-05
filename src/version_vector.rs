@@ -1,6 +1,7 @@
-use std::cmp;
+use std::{str, cmp};
 use linear_map::{self, LinearMap, Entry};
 use ramp;
+use byteorder::{WriteBytesExt, ReadBytesExt, LittleEndian};
 use serde;
 
 pub type Version = u64;
@@ -77,10 +78,8 @@ impl BitmappedVersion {
         self.base >= v || self.bitmap.bit((v - self.base - 1) as u32)
     }
 
+    /// self - other
     pub fn delta(&self, other: &Self) -> BitmappedVersionDelta {
-        if self.base < other.base {
-            return other.delta(self);
-        }
         let ones = (self.base - other.base) as usize;
         let len = ones + self.bitmap.bit_length() as usize;
         BitmappedVersionDelta {
@@ -125,27 +124,33 @@ impl Iterator for BitmappedVersionDelta {
     }
 }
 
-
 pub fn serialize_ramp<S>(value: &ramp::Int, serializer: &mut S) -> Result<(), S::Error>
     where S: serde::Serializer
 {
-    let hex = value.to_str_radix(36, true);
-    serializer.serialize_str(&hex)
+    let bit_length = value.bit_length();
+    let trailing_zeros = value.trailing_zeros();
+    // every base32 char encodes 4 bits
+    let mut buffer = Vec::with_capacity(4 + ((bit_length - trailing_zeros) / 4) as usize + 1);
+    buffer.write_u32::<LittleEndian>(trailing_zeros).unwrap();
+    (value >> trailing_zeros as usize).write_radix(&mut buffer, 32, true).unwrap();
+    serializer.serialize_bytes(&buffer)
 }
 
 pub fn deserialize_ramp<D>(deserializer: &mut D) -> Result<ramp::Int, D::Error>
     where D: serde::Deserializer
 {
     use serde::de::Error;
-    struct StringVisitor;
-    impl serde::de::Visitor for StringVisitor {
-        type Value = String;
-        fn visit_string<E>(&mut self, v: String) -> Result<Self::Value, E> where E: Error {
-            Ok(v)
-        }
-    }
-    deserializer.deserialize_string(StringVisitor)
-        .and_then(|s| ramp::Int::from_str_radix(&s, 36).map_err(|e| Error::custom(e.to_string())))
+    use serde::de::impls::VecVisitor;
+
+    deserializer.deserialize_bytes(VecVisitor::new())
+        .and_then(|b| {
+            let mut b = &b[..];
+            let trailing_zeros = try!(b.read_u32::<LittleEndian>()
+                .map_err(|e| Error::custom(e.to_string())));
+            let value = try!(ramp::Int::from_str_radix(unsafe { str::from_utf8_unchecked(b) }, 32)
+                .map_err(|e| Error::custom(e.to_string())));
+            Ok(value << trailing_zeros as usize)
+        })
 }
 
 impl BitmappedVersionVector {
@@ -401,6 +406,25 @@ impl<T> DottedCausalContainer<T> {
 
     pub fn version_vector(&self) -> &VersionVector {
         &self.vv
+    }
+}
+
+#[cfg(test)]
+mod test_bv {
+    use super::*;
+    use bincode::{self, serde as bincode_serde};
+
+    #[test]
+    fn test_bv_serde() {
+        for &base in &[0u64, 123] {
+            for &bits in &[0u32, 0b10000000000000, 0b10000000000001, 0b10000000000010]{
+                let bv1 = BitmappedVersion::new(base, bits);
+                let buffer = bincode_serde::serialize(&bv1, bincode::SizeLimit::Infinite).unwrap();
+                let bv2: BitmappedVersion = bincode_serde::deserialize(&buffer).unwrap();
+                assert_eq!(bv1.base, bv2.base);
+                assert_eq!(bv1.bitmap, bv2.bitmap);
+            }
+        }
     }
 }
 

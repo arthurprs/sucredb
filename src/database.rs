@@ -13,7 +13,7 @@ use utils::IdHashMap;
 pub use types::*;
 use config::Config;
 
-const MAX_INCOMMING_SYNCS: usize = 0;
+const MAX_INCOMMING_SYNCS: usize = 1;
 const WORKERS: usize = 1;
 const WORKER_TIMER_MS: u64 = 1000;
 
@@ -604,7 +604,6 @@ mod tests {
             sleep_ms(1000);
         }
 
-        // FIXME: this is broken until we can specify R=1
         warn!("will check data in db2 after sync");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes());

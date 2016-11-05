@@ -92,7 +92,7 @@ impl VNodePeer {
     // }
 
     pub fn log(&mut self, version: Version, key: Vec<u8>) {
-        let min = self.min_version();
+        let min = self.min_version().unwrap_or(0);
         if version > min {
             if cfg!(debug) {
                 if let Some(removed) = self.log.insert(version, key.clone()) {
@@ -111,8 +111,8 @@ impl VNodePeer {
         self.log.get(&version).cloned()
     }
 
-    pub fn min_version(&self) -> Version {
-        self.log.keys().next().cloned().unwrap_or(0)
+    pub fn min_version(&self) -> Option<Version> {
+        self.log.keys().next().cloned()
     }
 
     pub fn clear(&mut self) {

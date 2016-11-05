@@ -1,4 +1,4 @@
-use std::{thread, net};
+use std::{fmt, thread, net};
 use std::time::Duration;
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
@@ -12,8 +12,13 @@ use etcd;
 use utils::{IdHashMap, GenericError};
 
 pub type DHTChangeFn = Box<Fn() + Send + Sync>;
+pub trait Metadata
+    : Clone + Serialize + Deserialize + Sync + Send + fmt::Debug + 'static {
+}
 
-pub struct DHT<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
+impl<T: Clone + Serialize + Deserialize + Sync + Send + fmt::Debug + 'static> Metadata for T {}
+
+pub struct DHT<T: Metadata> {
     node: NodeId,
     cluster: String,
     addr: net::SocketAddr,
@@ -21,8 +26,8 @@ pub struct DHT<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
     thread: Option<thread::JoinHandle<()>>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct Ring<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Ring<T: Metadata> {
     replication_factor: usize,
     vnodes: Vec<LinearSet<NodeId>>,
     pending: Vec<LinearSet<NodeId>>,
@@ -44,7 +49,7 @@ impl RingDescription {
     }
 }
 
-impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> Ring<T> {
+impl<T: Metadata> Ring<T> {
     fn leave_node(&mut self, node: NodeId) -> Result<(), GenericError> {
         for i in 0..self.vnodes.len() {
             if self.vnodes[i].remove(&node) {
@@ -85,9 +90,9 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> Ring<T> {
     fn rebalance(&mut self) -> Result<(), GenericError> {
         // fast path when #nodes <= replication factor
         if self.nodes.len() <= self.replication_factor {
-            for (vn_num, vn_replicas) in self.vnodes.iter_mut().enumerate() {
+            for (vn_num, vn_replicas) in self.vnodes.iter().enumerate() {
                 for node in self.nodes.keys().cloned() {
-                    if vn_replicas.insert(node) {
+                    if !vn_replicas.contains(&node) {
                         self.pending[vn_num].insert(node);
                     }
                 }
@@ -123,7 +128,6 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> Ring<T> {
                 self.zombie[vn].insert(from);
                 let to = with_little.pop().unwrap();
                 node_partitions.entry(to).or_insert(Vec::new()).push(vn);
-                self.vnodes[vn].insert(to);
                 self.pending[vn].insert(to);
             }
         }
@@ -147,7 +151,6 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> Ring<T> {
             for vn in under_replicated {
                 let taker = with_little.pop().or_else(|| with_normal.pop()).unwrap();
                 node_partitions.get_mut(&taker).unwrap().push(vn);
-                self.vnodes[vn].insert(taker);
                 self.pending[vn].insert(taker);
             }
         }
@@ -155,7 +158,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> Ring<T> {
     }
 }
 
-struct Inner<T: Clone + Serialize + Deserialize + Sync + Send + 'static> {
+struct Inner<T: Metadata> {
     ring: Ring<T>,
     ring_version: u64,
     cluster: String,
@@ -183,7 +186,7 @@ macro_rules! try_cas {
     );
 }
 
-impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
+impl<T: Metadata> DHT<T> {
     pub fn new(node: NodeId, fabric_addr: net::SocketAddr, cluster: &str, etcd: &str, meta: T,
                initial: Option<RingDescription>)
                -> DHT<T> {
@@ -245,6 +248,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             let node = r.node.unwrap();
             let ring = Self::deserialize(&node.value.unwrap()).unwrap();
             let ring_version = node.modified_index.unwrap();
+            debug!("Callback with new ring {:?} version {}", ring, ring_version);
             // update state
             {
                 let mut inner = inner.write().unwrap();
@@ -257,7 +261,6 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
                 }
             }
 
-            debug!("Callback with new ring version {}", ring_version);
             // call callback
 
             let callback = inner.write().unwrap().callback.take().unwrap();
@@ -443,7 +446,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
             let mut inner = self.inner.write().unwrap();
             inner.ring = new_ring;
             inner.ring_version = r.node.unwrap().modified_index.unwrap();
-            debug!("Updated ring to version {}", inner.ring_version);
+            debug!("Updated ring to {:?} version {}", inner.ring, inner.ring_version);
         }
         Ok(())
     }
@@ -457,7 +460,7 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> DHT<T> {
     }
 }
 
-impl<T: Clone + Serialize + Deserialize + Sync + Send + 'static> Drop for DHT<T> {
+impl<T: Metadata> Drop for DHT<T> {
     fn drop(&mut self) {
         let _ = self.inner.write().map(|mut inner| inner.running = false);
     }

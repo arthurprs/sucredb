@@ -145,12 +145,14 @@ impl Synchronization {
         } else {
             state.peers.get(&target).cloned().unwrap_or_default().min_version()
         };
-        if target_log_base <= clock_in_peer.base() {
+        if target_log_base.is_some() && target_log_base.unwrap() <= clock_in_peer.base() {
             clocks_snapshot = BitmappedVersionVector::new();
             let mut keys: HashSet<Vec<u8>> = HashSet::new();
             let empty_bv = BitmappedVersion::new(0, 0);
 
-            for (&node, log) in state.peers.iter().chain(::std::iter::once((&db.dht.node(), &state.log))) {
+            for (&node, log) in state.peers
+                .iter()
+                .chain(::std::iter::once((&db.dht.node(), &state.log))) {
                 let n_bv = clocks.get(node).unwrap_or(&empty_bv);
                 let p_bv = clocks_in_peer.get(node).unwrap_or(&empty_bv);
                 clocks_snapshot.add_bv(node, n_bv);

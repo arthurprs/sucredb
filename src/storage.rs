@@ -13,7 +13,7 @@ const BUFFER_SOFT_LIM: usize = 32;
 const BUFFER_HARD_LIM: usize = 36;
 
 struct Buffer {
-    map: HashMap<Vec<u8>, Vec<u8>>,
+    map: HashMap<Vec<u8>, Option<Vec<u8>>>,
     db_h: lmdb_rs::DbHandle,
 }
 
@@ -89,10 +89,11 @@ impl StorageManager {
 impl Storage {
     pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
         let buffer = self.buffer.lock().unwrap();
-        let r: Option<&[u8]> = buffer.map
-            .get(key)
-            .map(|k| k.as_slice())
-            .or_else(|| self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok());
+        let r: Option<&[u8]> = match buffer.map.get(key) {
+            Some(&Some(ref v)) => Some(v.as_slice()),
+            Some(&None) => None,
+            None => self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok(),
+        };
         trace!("get {:?} ({:?} bytes)", str::from_utf8(key), r.map(|x| x.len()));
         r.map(|r| callback(r))
     }
@@ -125,7 +126,7 @@ impl Storage {
         trace!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
         let buffer_len = {
             let mut buffer = self.buffer.lock().unwrap();
-            buffer.map.insert(key.into(), value.into());
+            buffer.map.insert(key.into(), Some(value.into()));
             buffer.map.len()
         };
         if buffer_len >= BUFFER_SOFT_LIM {
@@ -134,23 +135,20 @@ impl Storage {
     }
 
     pub fn del(&self, key: &[u8]) {
-        let r1 = self.buffer.lock().unwrap().map.remove(key).is_some();
-        let _wlock = self.storages_handle.lock().unwrap();
-        let txn = self.env.new_transaction().unwrap();
-        let r2 = match txn.bind(&self.db_h).del(&key) {
-            Ok(_) => true,
-            Err(lmdb_rs::MdbError::NotFound) => false,
-            Err(e) => panic!("del error {:?}", e),
+        trace!("del {:?}", str::from_utf8(key));
+        let buffer_len = {
+            let mut buffer = self.buffer.lock().unwrap();
+            buffer.map.insert(key.into(), None);
+            buffer.map.len()
         };
-        txn.commit().unwrap();
-        trace!("del {:?} ({})", str::from_utf8(key), r1 || r2);
+        if buffer_len >= BUFFER_SOFT_LIM {
+            self.flush_buffer(buffer_len >= BUFFER_HARD_LIM);
+        }
     }
 
     pub fn clear(&self) {
-        let wlock = self.storages_handle.lock().unwrap();
-        for s in wlock.values() {
-            s.lock().unwrap().map.clear();
-        }
+        self.buffer.lock().unwrap().map.clear();
+        let _wlock = self.storages_handle.lock().unwrap();
         let txn = self.env.new_transaction().unwrap();
         txn.bind(&self.db_h).clear().unwrap();
         txn.commit().unwrap();
@@ -168,8 +166,16 @@ impl Storage {
         for s in wlock.values() {
             let mut locked = s.lock().unwrap();
             let db = txn.bind(&locked.db_h);
-            for (k, v) in locked.map.drain() {
-                db.set(&k, &v).unwrap();
+            for (k, v_opt) in locked.map.drain() {
+                if let Some(v) = v_opt {
+                    db.set(&k, &v).unwrap();
+                } else {
+                    match db.del(&k) {
+                        Ok(_) => (),
+                        Err(lmdb_rs::MdbError::NotFound) => (),
+                        Err(e) => panic!("del error {:?}", e),
+                    }
+                }
             }
         }
         txn.commit().unwrap();
@@ -177,6 +183,7 @@ impl Storage {
 
     pub fn sync(&self) {
         self.flush_buffer(true);
+        let _wlock = self.storages_handle.lock().unwrap();
         self.env.sync(true).unwrap();
     }
 }
