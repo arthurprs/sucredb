@@ -417,7 +417,7 @@ mod test_bv {
     #[test]
     fn test_bv_serde() {
         for &base in &[0u64, 123] {
-            for &bits in &[0u32, 0b10000000000000, 0b10000000000001, 0b10000000000010]{
+            for &bits in &[0u32, 0b10000000000000, 0b10000000000001, 0b10000000000010] {
                 let bv1 = BitmappedVersion::new(base, bits);
                 let buffer = bincode_serde::serialize(&bv1, bincode::SizeLimit::Infinite).unwrap();
                 let bv2: BitmappedVersion = bincode_serde::deserialize(&buffer).unwrap();
