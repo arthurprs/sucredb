@@ -42,14 +42,14 @@ pub struct VNodeState {
     num: u16,
     status: VNodeStatus,
     last_status_change: Instant,
+    unflushed_coord_writes: usize,
     pub clocks: BitmappedVersionVector,
     pub log: VNodePeer,
     pub peers: IdHashMap<NodeId, VNodePeer>,
     pub storage: Storage,
-    pub unflushed_coord_writes: usize,
-    // sync
+    // state for sync
     pub sync_nodes: HashSet<NodeId, IdHasherBuilder>,
-    // rev syncs
+    // state for rev syncs
     pub pending_recoveries: usize,
 }
 
@@ -86,6 +86,7 @@ impl VNodePeer {
         }
     }
 
+    // TODO: gc log
     // fn advance_knowledge(&mut self, until: Version) {
     //     debug_assert!(until >= self.knowledge);
     //     self.knowledge = until;
@@ -94,12 +95,8 @@ impl VNodePeer {
     pub fn log(&mut self, version: Version, key: Vec<u8>) {
         let min = self.min_version().unwrap_or(0);
         if version > min {
-            if cfg!(debug) {
-                if let Some(removed) = self.log.insert(version, key.clone()) {
-                    debug_assert!(removed == key);
-                }
-            } else {
-                self.log.insert(version, key);
+            if let Some(removed) = self.log.insert(version, key.clone()) {
+                debug_assert!(removed == key);
             }
             if self.log.len() > PEER_LOG_SIZE {
                 self.log.remove(&min).unwrap();
@@ -107,8 +104,8 @@ impl VNodePeer {
         }
     }
 
-    pub fn get(&self, version: Version) -> Option<Vec<u8>> {
-        self.log.get(&version).cloned()
+    pub fn get(&self, version: Version) -> Option<&Vec<u8>> {
+        self.log.get(&version)
     }
 
     pub fn min_version(&self) -> Option<Version> {

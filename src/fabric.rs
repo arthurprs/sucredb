@@ -10,7 +10,7 @@ use bincode::{self, serde as bincode_serde};
 
 use futures::{self, Future, IntoFuture};
 use futures::stream::{self, Stream};
-use my_futures::{read_at, SignaledChan, ShortCircuit};
+use extra_futures::{read_at, SignaledChan, ShortCircuit};
 use tokio_core as tokio;
 use tokio_core::io::Io;
 
@@ -209,6 +209,7 @@ impl Fabric {
                     while end - consumed > 4 {
                         let mut slice = &b[consumed..end];
                         let msg_len = slice.read_u32::<LittleEndian>().unwrap() as usize;
+                        // TODO: sanity check msg_len
                         if slice.len() < msg_len {
                             break;
                         }
@@ -230,6 +231,8 @@ impl Fabric {
                     }
 
                     if end != consumed {
+                        // TODO: this should be abstracted away
+                        // copy remaining to start of buffer
                         unsafe {
                             ::std::ptr::copy(b.as_ptr().offset(consumed as isize),
                                              b.as_ptr() as *mut _,

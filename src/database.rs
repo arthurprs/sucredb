@@ -24,9 +24,9 @@ pub struct Database {
     pub fabric: Fabric,
     pub meta_storage: Storage,
     pub storage_manager: StorageManager,
+    pub response_fn: DatabaseResponseFn,
     workers: Mutex<WorkerManager>,
     vnodes: RwLock<IdHashMap<VNodeId, Mutex<VNode>>>,
-    pub response_fn: DatabaseResponseFn,
 }
 
 macro_rules! fabric_send_error{
@@ -166,8 +166,8 @@ impl Database {
     }
 
     fn handler_dht_change(&self) {
-        for (node, meta) in self.dht.members() {
-            self.fabric.register_node(node, meta);
+        for (node, addr) in self.dht.members() {
+            self.fabric.register_node(node, addr);
         }
 
         for (&i, vn) in self.vnodes.read().unwrap().iter() {

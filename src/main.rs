@@ -30,7 +30,7 @@ extern crate tokio_core;
 #[macro_use]
 mod utils;
 mod types;
-mod my_futures;
+mod extra_futures;
 mod version_vector;
 // mod gossip;
 mod inflightmap;

@@ -16,7 +16,7 @@ tendril="*"
 byteorder="*"
 nodrop="*"
 ramp="*"
-futures="0.1"
+futures = { git = "https://github.com/alexcrichton/futures-rs" }
 clap="*"
 
 [dependencies.tokio-core]

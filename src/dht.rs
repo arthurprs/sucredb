@@ -64,9 +64,11 @@ impl<T: Metadata> Ring<T> {
     fn leave_node(&mut self, node: NodeId) -> Result<(), GenericError> {
         for i in 0..self.vnodes.len() {
             if self.vnodes[i].remove(&node) {
-                self.zombie[i].insert(node);
+                assert!(self.zombie[i].insert(node));
+                assert!(!self.pending[i].remove(&node));
+            } else {
+                assert!(self.pending[i].remove(&node));
             }
-            self.pending[i].remove(&node);
         }
         Ok(())
     }
@@ -88,13 +90,19 @@ impl<T: Metadata> Ring<T> {
     }
 
     fn promote_pending_node(&mut self, node: NodeId, vn: VNodeId) -> Result<(), GenericError> {
-        self.pending[vn as usize].remove(&node);
-        self.vnodes[vn as usize].insert(node);
+        if !self.pending[vn as usize].remove(&node) {
+            return Err(format!("{} is not in pending[{}]", node, vn).into())
+        }
+        if !self.vnodes[vn as usize].insert(node) {
+            return Err(format!("{} is already in vnodes[{}]", node, vn).into())
+        }
         Ok(())
     }
 
     fn stepdown_zombie_node(&mut self, node: NodeId, vn: VNodeId) -> Result<(), GenericError> {
-        self.zombie[vn as usize].remove(&node);
+        if !self.zombie[vn as usize].remove(&node) {
+            return Err(format!("{} is already in vnodes[{}]", node, vn).into());
+        }
         Ok(())
     }
 
@@ -152,7 +160,7 @@ impl<T: Metadata> Ring<T> {
         // partitions per node
         let ppn = self.vnodes.len() * self.replication_factor / self.nodes.len();
         if ppn == 0 {
-            panic!();
+            panic!("partitions per node is 0!");
         }
 
         let mut with_much: Vec<NodeId> = Vec::new();
@@ -268,12 +276,11 @@ impl<T: Metadata> Ring<T> {
                     return Err(format!("vn {} has {:?}{:?} replicas", vn, v, p).into());
                 }
             }
-            return Ok(());
-        }
-
-        for (vn, (v, p)) in self.vnodes.iter().zip(self.pending.iter()).enumerate() {
-            if v.len() + p.len() != self.replication_factor {
-                return Err(format!("vn {} has {:?}{:?} replicas", vn, v, p).into());
+        } else {
+            for (vn, (v, p)) in self.vnodes.iter().zip(self.pending.iter()).enumerate() {
+                if v.len() + p.len() != self.replication_factor {
+                    return Err(format!("vn {} has {:?}{:?} replicas", vn, v, p).into());
+                }
             }
         }
         Ok(())
@@ -494,18 +501,6 @@ impl<T: Metadata> DHT<T> {
         try_cas!(self, {
             let (mut ring, ring_version) = self.ring_clone();
             try!(ring.rebalance());
-            (ring_version, ring)
-        });
-        Ok(())
-    }
-
-    pub fn add_pending_node(&self, vnode: VNodeId, node: NodeId) -> Result<(), GenericError> {
-        try_cas!(self, {
-            let (mut ring, ring_version) = self.ring_clone();
-            {
-                let pending = &mut ring.pending[vnode as usize];
-                assert!(pending.insert(node));
-            }
             (ring_version, ring)
         });
         Ok(())

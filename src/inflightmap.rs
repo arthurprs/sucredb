@@ -4,6 +4,8 @@ use std::hash::{Hash, BuildHasher};
 use std::cmp::Ordering;
 use std::ops::{Deref, DerefMut};
 
+// TODO: need a more efficient implementation and possibly more flexibility
+
 #[derive(Debug)]
 pub struct InFlightMap<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher = RandomState> {
     map: HashMap<K, V, H>,

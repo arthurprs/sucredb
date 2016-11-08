@@ -9,7 +9,7 @@ use database::{Database, Token};
 use workers::{WorkerMsg, WorkerSender};
 use futures::{self, Future};
 use futures::stream::{self, Stream};
-use my_futures::read_at;
+use extra_futures::read_at;
 use tokio_core as tokio;
 use tokio_core::io::Io;
 use resp::{self, RespValue};
@@ -116,6 +116,8 @@ impl RespConnection {
                         }
                     }
                     if end != parser.consumed() {
+                        // TODO: this should be abstracted away
+                        // copy remaining to start of buffer
                         unsafe {
                             ::std::ptr::copy(b.as_ptr().offset(parser.consumed() as isize),
                                              b.as_ptr() as *mut _,

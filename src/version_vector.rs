@@ -310,6 +310,7 @@ impl<T> Dots<T> {
     }
 
     fn merge(&mut self, other: &mut Self, vv1: &VersionVector, vv2: &VersionVector) {
+        // TODO: use a smallvec for dups
         let mut dups: LinearMap<(Id, Version), ()> = LinearMap::new();
         // drain self into other
         for (dot, value) in self.0.drain() {
@@ -366,7 +367,7 @@ impl<T> DottedCausalContainer<T> {
     }
 
     pub fn discard(&mut self, vv: &VersionVector) {
-        // FIXME: can use the underlining vec to be allocless
+        // FIXME: shouldn't allocate
         let new = self.dots
             .0
             .drain()
@@ -377,7 +378,7 @@ impl<T> DottedCausalContainer<T> {
     }
 
     pub fn strip(&mut self, bvv: &BitmappedVersionVector) {
-        // FIXME:can use the underlining vec to be allocless
+        // FIXME: shouldn't allocate
         let new = self.vv
             .0
             .drain()

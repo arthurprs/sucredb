@@ -93,6 +93,9 @@ impl Parser {
     }
 
     fn speculate_buffer(buf: &[u8]) -> RespResult<usize> {
+        if buf.len() < 3 {
+            return Err(RespError::Incomplete);
+        }
         if &buf[buf.len() - 2..] == b"\r\n" {
             return Ok(buf.len());
         }

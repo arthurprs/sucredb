@@ -23,7 +23,7 @@ pub enum SyncResult {
     RetryBoostrap,
 }
 
-// TODO: take mut buffers instead of returning them
+// TODO: take &mut buffers instead of returning them
 type IteratorFn = Box<FnMut(&Storage) -> Option<(Vec<u8>, DottedCausalContainer<Vec<u8>>)> + Send>;
 type InFlightSyncMsgMap = InFlightMap<u64,
                                       (Vec<u8>, DottedCausalContainer<Vec<u8>>),
@@ -32,24 +32,29 @@ type InFlightSyncMsgMap = InFlightMap<u64,
 
 pub enum Synchronization {
     SyncSender {
+        // bvv in peer at the time of sync start
         clocks_in_peer: BitmappedVersionVector,
+        // local bvv at the time of sync start
         clocks_snapshot: BitmappedVersionVector,
         iterator: IteratorFn,
         inflight: InFlightSyncMsgMap,
         cookie: Cookie,
         peer: NodeId,
         target: NodeId,
+        // exact count of sent keys (includes inflight)
         count: u64,
-        last_receive: Instant,
+        last_recv: Instant,
     },
     SyncReceiver {
+        // local bvv at the time of sync start
         clocks_in_peer: BitmappedVersionVector,
         cookie: Cookie,
         peer: NodeId,
         target: NodeId,
-        count: u64,
-        last_receive: Instant,
-        starts_sent: u32,
+        // non-exact count of received keys
+        recv_count: u64,
+        start_count: u32,
+        last_recv: Instant,
     },
     BootstrapSender {
         clocks_snapshot: BitmappedVersionVector,
@@ -57,15 +62,17 @@ pub enum Synchronization {
         inflight: InFlightSyncMsgMap,
         cookie: Cookie,
         peer: NodeId,
+        // exact count of sent keys (includes inflight)
         count: u64,
-        last_receive: Instant,
+        last_recv: Instant,
     },
     BootstrapReceiver {
         cookie: Cookie,
         peer: NodeId,
-        count: u64,
-        last_receive: Instant,
-        starts_sent: u32,
+        // non-exact count of received keys
+        recv_count: u64,
+        start_count: u32,
+        last_recv: Instant,
     },
 }
 
@@ -77,10 +84,10 @@ impl Synchronization {
             clocks_in_peer: state.clocks.clone(),
             peer: peer,
             cookie: cookie,
-            count: 0,
+            recv_count: 0,
             target: target,
-            last_receive: Instant::now(),
-            starts_sent: 0,
+            last_recv: Instant::now(),
+            start_count: 0,
         };
         sync.send_start(db, state);
         sync
@@ -91,9 +98,9 @@ impl Synchronization {
         let mut sync = Synchronization::BootstrapReceiver {
             cookie: cookie,
             peer: peer,
-            count: 0,
-            last_receive: Instant::now(),
-            starts_sent: 0,
+            recv_count: 0,
+            last_recv: Instant::now(),
+            start_count: 0,
         };
         sync.send_start(db, state);
         sync
@@ -120,7 +127,7 @@ impl Synchronization {
             inflight: InFlightMap::new(),
             peer: peer,
             count: 0,
-            last_receive: Instant::now(),
+            last_recv: Instant::now(),
         }
     }
 
@@ -160,7 +167,7 @@ impl Synchronization {
                 keys.reserve(dots_delta.size_hint().0);
                 for dot in dots_delta {
                     if let Some(k) = log.get(dot) {
-                        keys.insert(k.into());
+                        keys.insert(k.to_vec());
                     }
                 }
             }
@@ -173,7 +180,7 @@ impl Synchronization {
                             .map(|v| {
                                 let mut dcc: DottedCausalContainer<_> =
                                     bincode_serde::deserialize(&v).unwrap();
-                                // TODO: fill should be done in the remote
+                                // TODO: fill should be done in the remote?
                                 dcc.fill(&clocks);
                                 (k, dcc)
                             })
@@ -195,7 +202,7 @@ impl Synchronization {
                 .filter_map(|i| i)
                 .filter_map(move |(k, mut dcc)| {
                     if !dcc.contained(&clocks_in_peer) {
-                        // TODO: fill should be done in the remote
+                        // TODO: fill should be done in the remote?
                         dcc.fill(&clocks);
                         Some((k, dcc))
                     } else {
@@ -214,7 +221,7 @@ impl Synchronization {
             target: target,
             peer: peer,
             count: 0,
-            last_receive: Instant::now(),
+            last_recv: Instant::now(),
         }
     }
 
@@ -223,16 +230,16 @@ impl Synchronization {
             Synchronization::SyncReceiver { cookie,
                                             peer,
                                             target,
-                                            ref mut last_receive,
+                                            ref mut last_recv,
                                             ref clocks_in_peer,
                                             .. } => {
                 // reset last receives
-                *last_receive = Instant::now();
+                *last_recv = Instant::now();
                 (peer, cookie, Some(target), clocks_in_peer.clone())
             }
-            Synchronization::BootstrapReceiver { peer, cookie, ref mut last_receive, .. } => {
+            Synchronization::BootstrapReceiver { peer, cookie, ref mut last_recv, .. } => {
                 // reset last receives
-                *last_receive = Instant::now();
+                *last_recv = Instant::now();
                 (peer, cookie, None, BitmappedVersionVector::new())
             }
             _ => unreachable!(),
@@ -358,17 +365,17 @@ impl Synchronization {
 
     pub fn on_tick(&mut self, db: &Database, state: &mut VNodeState) -> SyncResult {
         match *self {
-            Synchronization::SyncSender { last_receive, cookie, .. } |
-            Synchronization::BootstrapSender { last_receive, cookie, .. } => {
-                if last_receive.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
+            Synchronization::SyncSender { last_recv, cookie, .. } |
+            Synchronization::BootstrapSender { last_recv, cookie, .. } => {
+                if last_recv.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
                     warn!("sync/boostrap sender timed out {:?}", cookie);
                     return SyncResult::Done;
                 }
                 self.send_next(db, state);
             }
-            Synchronization::SyncReceiver { last_receive, count, cookie, .. } |
-            Synchronization::BootstrapReceiver { last_receive, count, cookie, .. } => {
-                if last_receive.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
+            Synchronization::SyncReceiver { last_recv, recv_count, cookie, .. } |
+            Synchronization::BootstrapReceiver { last_recv, recv_count, cookie, .. } => {
+                if last_recv.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
                     warn!("sync/boostrap receiver timed out {:?}", cookie);
                     match *self {
                         Synchronization::BootstrapReceiver { .. } => {
@@ -376,8 +383,8 @@ impl Synchronization {
                         }
                         _ => return SyncResult::Done,
                     }
-                } else if count == 0 &&
-                          last_receive.elapsed() > Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
+                } else if recv_count == 0 &&
+                          last_recv.elapsed() > Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
                     self.send_start(db, state);
                 }
             }
@@ -405,8 +412,9 @@ impl Synchronization {
                 }
             }
             Synchronization::SyncSender { /*ref clock_in_peer, peer,*/ .. } => {
+                // TODO: gc log
                 // TODO: advance to the snapshot base instead? Is it safe to do so?
-                // FIXME: this won't happen if we don't get the ack-ack back
+                // FIXME: this won't happen if the ack-ack is dropped
                 // if msg.result.is_ok() {
                 //     state
                 //         .peers
@@ -435,10 +443,10 @@ impl Synchronization {
 
     pub fn on_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncSend) {
         match *self {
-            Synchronization::SyncReceiver { peer, ref mut count, ref mut last_receive, .. } |
+            Synchronization::SyncReceiver { peer, ref mut recv_count, ref mut last_recv, .. } |
             Synchronization::BootstrapReceiver { peer,
-                                                 ref mut count,
-                                                 ref mut last_receive,
+                                                 ref mut recv_count,
+                                                 ref mut last_recv,
                                                  .. } => {
                 state.storage_set_remote(db, &msg.key, msg.container);
 
@@ -451,8 +459,8 @@ impl Synchronization {
                               })
                     .unwrap();
 
-                *count += 1;
-                *last_receive = Instant::now();
+                *recv_count += 1;
+                *last_recv = Instant::now();
             }
             _ => unreachable!(),
         }
@@ -460,10 +468,10 @@ impl Synchronization {
 
     pub fn on_ack(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncAck) {
         match *self {
-            Synchronization::SyncSender { ref mut inflight, ref mut last_receive, .. } |
-            Synchronization::BootstrapSender { ref mut inflight, ref mut last_receive, .. } => {
+            Synchronization::SyncSender { ref mut inflight, ref mut last_recv, .. } |
+            Synchronization::BootstrapSender { ref mut inflight, ref mut last_recv, .. } => {
                 inflight.remove(&msg.seq);
-                *last_receive = Instant::now();
+                *last_recv = Instant::now();
             }
             _ => unreachable!(),
         }
