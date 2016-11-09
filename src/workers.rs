@@ -27,10 +27,11 @@ pub struct WorkerManager {
     thread_count: usize,
     threads: Vec<thread::JoinHandle<()>>,
     channels: Vec<mpsc::Sender<WorkerMsg>>,
+    node: NodeId,
 }
 
 impl WorkerManager {
-    pub fn new(thread_count: usize, ticker_interval: time::Duration) -> Self {
+    pub fn new(node: NodeId, thread_count: usize, ticker_interval: time::Duration) -> Self {
         assert!(thread_count > 0);
         WorkerManager {
             ticker_interval: ticker_interval,
@@ -39,6 +40,7 @@ impl WorkerManager {
             thread_count: thread_count,
             threads: Vec::new(),
             channels: Vec::new(),
+            node: node,
         }
     }
 
@@ -50,7 +52,7 @@ impl WorkerManager {
             let worker_fn = worker_fn_gen();
             let (tx, rx) = mpsc::channel();
             self.threads.push(thread::Builder::new()
-                .name(format!("Worker:{}-{}", -1, i))
+                .name(format!("Worker:{}-{}", self.node, i))
                 .spawn(move || worker_fn(rx))
                 .unwrap());
             self.channels.push(tx);

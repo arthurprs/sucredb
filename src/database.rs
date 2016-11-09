@@ -50,7 +50,6 @@ macro_rules! vnode {
     ($s: expr, $k: expr, $ok: expr) => ({
         let vnodes = $s.vnodes.read().unwrap();
         vnodes.get(&$k).map(|vn| vn.lock().unwrap()).map($ok);
-        return;
     });
 }
 
@@ -71,7 +70,7 @@ impl Database {
         meta_storage.set(b"node", node.to_string().as_bytes());
         meta_storage.sync();
 
-        let workers = WorkerManager::new(WORKERS, time::Duration::from_millis(WORKER_TIMER_MS));
+        let workers = WorkerManager::new(node, WORKERS, time::Duration::from_millis(WORKER_TIMER_MS));
         let db = Arc::new(Database {
             fabric: Fabric::new(node, config.fabric_addr).unwrap(),
             dht: DHT::new(node,
@@ -362,10 +361,10 @@ mod tests {
         let mut db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
 
         db.get(1, b"test");
-        assert!(db.response(1).unwrap().is_empty());
+        assert!(db.response(1).unwrap().values().len() == 0);
 
         db.set(1, b"test", Some(b"value1"), VersionVector::new());
-        assert!(db.response(1).unwrap().is_empty());
+        assert!(db.response(1).unwrap().values().len() == 0);
 
         db.get(1, b"test");
         assert!(db.response(1).unwrap().values().eq(vec![b"value1"]));
@@ -402,33 +401,33 @@ mod tests {
         let _ = env_logger::init();
         let db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
         db.get(1, b"test");
-        assert!(db.response(1).unwrap().is_empty());
+        assert!(db.response(1).unwrap().values().len() == 0);
 
         db.set(1, b"test", Some(b"value1"), VersionVector::new());
-        assert!(db.response(1).unwrap().is_empty());
+        assert!(db.response(1).unwrap().values().len() == 0);
 
         db.get(1, b"test");
         assert!(db.response(1).unwrap().values().eq(vec![b"value1"]));
 
         db.set(1, b"test", Some(b"value2"), VersionVector::new());
-        assert!(db.response(1).unwrap().is_empty());
+        assert!(db.response(1).unwrap().values().len() == 0);
 
         db.get(1, b"test");
         let state = db.response(1).unwrap();
         assert!(state.values().eq(vec![b"value1", b"value2"]));
 
         db.set(1, b"test", Some(b"value12"), state.version_vector().clone());
-        assert!(db.response(1).unwrap().is_empty());
+        assert!(db.response(1).unwrap().values().len() == 0);
 
         db.get(1, b"test");
         let state = db.response(1).unwrap();
         assert!(state.values().eq(vec![b"value12"]));
 
         db.set(1, b"test", None, state.version_vector().clone());
-        assert!(db.response(1).unwrap().is_empty());
+        assert!(db.response(1).unwrap().values().len() == 0);
 
         db.get(1, b"test");
-        assert!(db.response(1).unwrap().is_empty());
+        assert!(db.response(1).unwrap().values().len() == 0);
     }
 
     #[test]
@@ -446,10 +445,10 @@ mod tests {
         }
 
         db1.get(1, b"test");
-        assert!(db1.response(1).unwrap().is_empty());
+        assert!(db1.response(1).unwrap().values().len() == 0);
 
         db1.set(1, b"test", Some(b"value1"), VersionVector::new());
-        assert!(db1.response(1).unwrap().is_empty());
+        assert!(db1.response(1).unwrap().values().len() == 0);
 
         for &db in &[&db1, &db2] {
             db.get(1, b"test");
@@ -510,7 +509,7 @@ mod tests {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
         let mut db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
-        let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.rebalance();
 
         sleep_ms(1000);
@@ -526,6 +525,7 @@ mod tests {
                     VersionVector::new());
             db1.response(i).unwrap();
         }
+        sleep_ms(1000);
         for i in 0..TEST_JOIN_SIZE {
             db1.get(i, i.to_string().as_bytes());
             let result1 = db1.response(i);
@@ -558,7 +558,7 @@ mod tests {
     fn test_join_sync_normal() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
-        let mut db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.rebalance();
 

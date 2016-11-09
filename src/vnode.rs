@@ -810,7 +810,7 @@ impl VNodeState {
         }
         dcc.strip(&self.clocks);
 
-        if dcc.is_empty() {
+        if dcc.is_dcc_empty() {
             self.storage.del(key);
         } else {
             let bytes = bincode_serde::serialize(&dcc, bincode::SizeLimit::Infinite).unwrap();
@@ -837,7 +837,7 @@ impl VNodeState {
         new_dcc.sync(old_dcc);
         new_dcc.strip(&self.clocks);
 
-        if new_dcc.is_empty() {
+        if new_dcc.is_dcc_empty() {
             self.storage.del(key);
         } else {
             let bytes = bincode_serde::serialize(&new_dcc, bincode::SizeLimit::Infinite).unwrap();

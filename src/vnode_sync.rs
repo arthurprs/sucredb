@@ -1,3 +1,5 @@
+use std::iter;
+use std::time::{Instant, Duration};
 use std::collections::HashSet;
 use vnode::{VNodeState, VNodeStatus};
 use fabric::*;
@@ -5,7 +7,6 @@ use version_vector::*;
 use database::*;
 use storage::Storage;
 use inflightmap::InFlightMap;
-use std::time::{Instant, Duration};
 use bincode::serde as bincode_serde;
 use utils::IdHasherBuilder;
 
@@ -159,7 +160,7 @@ impl Synchronization {
 
             for (&node, log) in state.peers
                 .iter()
-                .chain(::std::iter::once((&db.dht.node(), &state.log))) {
+                .chain(iter::once((&db.dht.node(), &state.log))) {
                 let n_bv = clocks.get(node).unwrap_or(&empty_bv);
                 let p_bv = clocks_in_peer.get(node).unwrap_or(&empty_bv);
                 clocks_snapshot.add_bv(node, n_bv);

@@ -80,6 +80,16 @@ impl BitmappedVersion {
 
     /// self - other
     pub fn delta(&self, other: &Self) -> BitmappedVersionDelta {
+        if other.base > self.base {
+            return BitmappedVersionDelta {
+                base: 0,
+                ones: 0,
+                bself: ramp::Int::zero(),
+                other: ramp::Int::zero(),
+                pos: 0,
+                len: 0,
+            };
+        }
         let ones = (self.base - other.base) as usize;
         let len = ones + self.bitmap.bit_length() as usize;
         BitmappedVersionDelta {
@@ -341,7 +351,8 @@ impl<T> DottedCausalContainer<T> {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
+    /// Returns true if dcc has no values AND causal context is empty
+    pub fn is_dcc_empty(&self) -> bool {
         self.dots.0.is_empty() && self.vv.0.is_empty()
     }
 
