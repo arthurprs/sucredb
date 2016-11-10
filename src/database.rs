@@ -535,9 +535,7 @@ mod tests {
         }
 
         // sim unclean shutdown
-        for i in 0..64 {
-            db1.storage_manager.open(i, false).map(|s| s.clear());
-        }
+        assert!(db1.storage_manager.drop_buffer() > 0);
         drop(db1);
         db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", false);
 

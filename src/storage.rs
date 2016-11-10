@@ -61,6 +61,18 @@ impl StorageManager {
         })
     }
 
+    #[cfg(test)]
+    pub fn drop_buffer(&self) -> usize {
+        let mut result = 0;
+        let mut wlock = self.storages_handle.lock().unwrap();
+        for s in wlock.values() {
+            let mut locked = s.lock().unwrap();
+            result += locked.map.len();
+            locked.map.clear();
+        }
+        result
+    }
+
     pub fn open(&self, db_num: i32, create: bool) -> Result<Storage, GenericError> {
         let mut wlock = self.storages_handle.lock().unwrap();
         let db_name = db_num.to_string();
