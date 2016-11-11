@@ -72,7 +72,6 @@ struct ReqState {
     succesfull: u8,
     required: u8,
     total: u8,
-    proxied: bool,
     // only used for get
     container: DottedCausalContainer<Vec<u8>>,
     token: Token,
@@ -165,7 +164,6 @@ impl ReqState {
             total: nodes as u8,
             replies: 0,
             succesfull: 0,
-            proxied: false,
             container: DottedCausalContainer::new(),
             token: token,
         }
@@ -262,7 +260,7 @@ impl VNode {
                 }
             }
             (VNodeStatus::Zombie, VNodeStatus::Absent) => {
-                self.state.set_status(db, VNodeStatus::Absent);
+                // do nothing, zombie will timeout and switch to absent eventually
             }
             (VNodeStatus::Zombie, VNodeStatus::Ready) => {
                 // fast-recomission!
@@ -316,7 +314,7 @@ impl VNode {
         if self.state.status == VNodeStatus::Zombie && self.syncs.is_empty() &&
            self.inflight.is_empty() &&
            self.state.last_status_change.elapsed() > Duration::from_millis(ZOMBIE_TIMEOUT_MS) {
-            db.dht.stepdown_zombie_node(db.dht.node(), self.state.num()).unwrap();
+            self.state.set_status(db, VNodeStatus::Absent);
         }
     }
 
@@ -345,9 +343,34 @@ impl VNode {
         }
     }
 
+    fn respond_cant_coordinate(&mut self, db: &Database, token: Token, status: VNodeStatus) {
+        let mut nodes = db.dht.write_members_for_vnode(self.state.num());
+        thread_rng().shuffle(&mut nodes);
+        for (node, (_, addr)) in nodes {
+            if node != db.dht.node() {
+                match status {
+                    VNodeStatus::Absent => {
+                        db.respond_move(token, self.state.num, addr);
+                    }
+                    VNodeStatus::Bootstrap | VNodeStatus::Recover => {
+                        db.respond_ask(token, self.state.num, addr);
+                    }
+                    VNodeStatus::Ready | VNodeStatus::Zombie => unreachable!(),
+                }
+                return;
+            }
+        }
+
+        db.respond_error(token, CommandError::Unavailable);
+    }
+
     pub fn do_set(&mut self, db: &Database, token: Token, key: &[u8], value_opt: Option<&[u8]>,
                   vv: VersionVector) {
-        // TODO: can't coordinate in all states!
+        match self.status() {
+            VNodeStatus::Ready | VNodeStatus::Zombie => (),
+            status => return self.respond_cant_coordinate(db, token, status),
+        }
+
         let nodes = db.dht.nodes_for_vnode(self.state.num, true);
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(1000);

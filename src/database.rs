@@ -1,5 +1,4 @@
-
-use std::{str, time};
+use std::{str, time, net};
 use std::sync::{Arc, Mutex, RwLock};
 use dht::{self, DHT};
 use version_vector::*;
@@ -15,12 +14,13 @@ use config::Config;
 
 const MAX_INCOMMING_SYNCS: usize = 1;
 const WORKERS: usize = 1;
-const WORKER_TIMER_MS: u64 = 1000;
+// TODO: move to config file
+const WORKER_TIMER_MS: u64 = 2000;
 
 pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;
 
 pub struct Database {
-    pub dht: DHT<()>,
+    pub dht: DHT<net::SocketAddr>,
     pub fabric: Fabric,
     pub meta_storage: Storage,
     pub storage_manager: StorageManager,
@@ -77,7 +77,7 @@ impl Database {
                           config.fabric_addr,
                           &config.cluster_name,
                           &config.etcd_addr,
-                          (),
+                          config.listen_addr,
                           if let Some(init) = config.cmd_init.as_ref() {
                               Some(dht::RingDescription::new(init.replication_factor,
                                                              init.partitions))
@@ -331,6 +331,15 @@ mod tests {
             }
         }
 
+        fn resp_response(&self, token: Token) -> Option<RespValue> {
+            (0..1000)
+                .filter_map(|_| {
+                    sleep_ms(10);
+                    self.responses.lock().unwrap().remove(&token)
+                })
+                .next()
+        }
+
         fn response(&self, token: Token) -> Option<DottedCausalContainer<Vec<u8>>> {
             (0..1000)
                 .filter_map(|_| {
@@ -525,7 +534,7 @@ mod tests {
                     VersionVector::new());
             db1.response(i).unwrap();
         }
-        sleep_ms(1000);
+        sleep_ms(5);
         for i in 0..TEST_JOIN_SIZE {
             db1.get(i, i.to_string().as_bytes());
             let result1 = db1.response(i);
@@ -535,9 +544,16 @@ mod tests {
         }
 
         // sim unclean shutdown
-        assert!(db1.storage_manager.drop_buffer() > 0);
+        assert_ne!(db1.storage_manager.drop_buffer(), 0);
         drop(db1);
         db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", false);
+
+        {
+            // during recover ASK is expected
+            db1.set(0, b"k", None, VersionVector::new());
+            let response = format!("{:?}", db1.resp_response(0).unwrap());
+            assert!(response.starts_with("Error(\"ASK"), "{} is not an Error(\"ASK", response);
+        }
 
         sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {

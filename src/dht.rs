@@ -31,7 +31,7 @@ pub struct Ring<T: Metadata> {
     replication_factor: usize,
     vnodes: Vec<LinearSet<NodeId>>,
     pending: Vec<LinearSet<NodeId>>,
-    zombie: Vec<LinearSet<NodeId>>,
+    retiring: Vec<LinearSet<NodeId>>,
     nodes: IdHashMap<NodeId, (net::SocketAddr, T)>,
 }
 
@@ -56,7 +56,7 @@ impl<T: Metadata> Ring<T> {
             replication_factor: replication_factor as usize,
             vnodes: vec![[node].iter().cloned().collect(); partitions as usize],
             pending: vec![Default::default(); partitions as usize],
-            zombie: vec![Default::default(); partitions as usize],
+            retiring: vec![Default::default(); partitions as usize],
             nodes: vec![(node, (addr, meta))].into_iter().collect(),
         }
     }
@@ -64,7 +64,7 @@ impl<T: Metadata> Ring<T> {
     fn leave_node(&mut self, node: NodeId) -> Result<(), GenericError> {
         for i in 0..self.vnodes.len() {
             if self.vnodes[i].remove(&node) {
-                assert!(self.zombie[i].insert(node));
+                assert!(self.retiring[i].insert(node));
                 assert!(!self.pending[i].remove(&node));
             } else {
                 assert!(self.pending[i].remove(&node));
@@ -83,7 +83,7 @@ impl<T: Metadata> Ring<T> {
         self.nodes.remove(&node);
         for i in 0..self.vnodes.len() {
             self.vnodes[i].remove(&node);
-            self.zombie[i].remove(&node);
+            self.retiring[i].remove(&node);
             self.pending[i].remove(&node);
         }
         Ok(())
@@ -99,8 +99,8 @@ impl<T: Metadata> Ring<T> {
         Ok(())
     }
 
-    fn stepdown_zombie_node(&mut self, node: NodeId, vn: VNodeId) -> Result<(), GenericError> {
-        if !self.zombie[vn as usize].remove(&node) {
+    fn stepdown_retiring_node(&mut self, node: NodeId, vn: VNodeId) -> Result<(), GenericError> {
+        if !self.retiring[vn as usize].remove(&node) {
             return Err(format!("{} is already in vnodes[{}]", node, vn).into());
         }
         Ok(())
@@ -192,7 +192,7 @@ impl<T: Metadata> Ring<T> {
                 let vn = node_partitions.get_mut(&from).unwrap().pop().unwrap();
                 if !self.vnodes[vn].contains(&to) && self.pending[vn].insert(to) {
                     self.vnodes[vn].remove(&from);
-                    self.zombie[vn].insert(from);
+                    self.retiring[vn].insert(from);
                     node_partitions.get_mut(&to).unwrap().push(vn);
                 } else {
                     with_much.insert(0, from);
@@ -258,8 +258,8 @@ impl<T: Metadata> Ring<T> {
     #[cfg(test)]
     fn finish_rebalance(&mut self) {
         self.is_valid().unwrap();
-        for zombies in &mut self.zombie {
-            zombies.clear();
+        for retiring in &mut self.retiring {
+            retiring.clear();
         }
         for (vn, pendings) in self.pending.iter_mut().enumerate() {
             for pending in pendings.drain() {
@@ -327,7 +327,7 @@ impl<T: Metadata> DHT<T> {
                 vnodes: Default::default(),
                 nodes: Default::default(),
                 pending: Default::default(),
-                zombie: Default::default(),
+                retiring: Default::default(),
             },
             ring_version: 0,
             cluster: cluster.into(),
@@ -480,10 +480,18 @@ impl<T: Metadata> DHT<T> {
         let mut result = Vec::new();
         let inner = self.inner.read().unwrap();
         result.extend(&inner.ring.vnodes[vnode as usize]);
-        result.extend(&inner.ring.zombie[vnode as usize]);
+        result.extend(&inner.ring.retiring[vnode as usize]);
         if include_pending {
             result.extend(&inner.ring.pending[vnode as usize]);
         }
+        result
+    }
+
+    pub fn write_members_for_vnode(&self, vnode: VNodeId) -> Vec<(NodeId, (net::SocketAddr, T))> {
+        // FIXME: this shouldn't alloc
+        let mut result = Vec::new();
+        let inner = self.inner.read().unwrap();
+        result.extend(inner.ring.vnodes[vnode as usize].iter().map(|n| (*n, inner.ring.nodes.get(n).cloned().unwrap())));
         result
     }
 
@@ -533,10 +541,10 @@ impl<T: Metadata> DHT<T> {
         Ok(())
     }
 
-    pub fn stepdown_zombie_node(&self, node: NodeId, vnode: VNodeId) -> Result<(), GenericError> {
+    pub fn stepdown_retiring_node(&self, node: NodeId, vnode: VNodeId) -> Result<(), GenericError> {
         try_cas!(self, {
             let (mut ring, ring_version) = self.ring_clone();
-            try!(ring.stepdown_zombie_node(node, vnode));
+            try!(ring.stepdown_retiring_node(node, vnode));
             (ring_version, ring)
         });
         Ok(())

@@ -174,6 +174,7 @@ impl Storage {
         } else {
             return;
         };
+        debug!("Flushing buffer");
         let txn = self.env.new_transaction().unwrap();
         for s in wlock.values() {
             let mut locked = s.lock().unwrap();
