@@ -15,6 +15,7 @@ const SYNC_INFLIGHT_TIMEOUT_MS: u64 = 2000;
 const SYNC_TIMEOUT_MS: u64 = SYNC_INFLIGHT_TIMEOUT_MS * 51 / 10;
 
 #[derive(Debug)]
+#[must_use]
 pub enum SyncResult {
     // it's done, just remove entry
     Done,
@@ -430,9 +431,16 @@ impl Synchronization {
                     state.save(db, false);
                     state.storage.sync();
                     // now we're ready!
-                    db.dht.promote_pending_node(db.dht.node(), state.num()).unwrap();
-                    // send it back as a form of ack-ack
-                    db.fabric.send_msg(peer, msg).unwrap();
+                    match db.dht.promote_pending_node(db.dht.node(), state.num()) {
+                        Ok(_) => {
+                            // send it back as a form of ack-ack
+                            db.fabric.send_msg(peer, msg).unwrap();
+                        }
+                        Err(e) => {
+                            warn!("Can't retire node {} vnode {}: {}", db.dht.node(), state.num(), e);
+                            return SyncResult::Continue;
+                        }
+                    }
                 } else {
                     return SyncResult::RetryBoostrap;
                 }

@@ -3,7 +3,7 @@ use database::{Token, Database};
 use version_vector::*;
 use std::{str, net};
 use bincode::{serde as bincode_serde, SizeLimit};
-use database::{VNodeId};
+use database::VNodeId;
 
 #[derive(Debug)]
 pub enum CommandError {
@@ -109,11 +109,11 @@ impl Database {
         (&self.response_fn)(token, dcc_to_resp(dcc));
     }
 
-    pub fn respond_move(&self,token: Token, vnode: VNodeId, addr: net::SocketAddr) {
+    pub fn respond_move(&self, token: Token, vnode: VNodeId, addr: net::SocketAddr) {
         (&self.response_fn)(token, RespValue::Error(format!("MOVE {} {}", vnode, addr).into()));
     }
 
-    pub fn respond_ask(&self,token: Token, vnode: VNodeId, addr: net::SocketAddr) {
+    pub fn respond_ask(&self, token: Token, vnode: VNodeId, addr: net::SocketAddr) {
         (&self.response_fn)(token, RespValue::Error(format!("ASK {} {}", vnode, addr).into()));
     }
 }

@@ -12,7 +12,7 @@ use utils::IdHashMap;
 pub use types::*;
 use config::Config;
 
-const MAX_INCOMMING_SYNCS: usize = 1;
+const MAX_INCOMMING_SYNCS: usize = 0;
 const WORKERS: usize = 1;
 // TODO: move to config file
 const WORKER_TIMER_MS: u64 = 2000;
@@ -70,7 +70,8 @@ impl Database {
         meta_storage.set(b"node", node.to_string().as_bytes());
         meta_storage.sync();
 
-        let workers = WorkerManager::new(node, WORKERS, time::Duration::from_millis(WORKER_TIMER_MS));
+        let workers =
+            WorkerManager::new(node, WORKERS, time::Duration::from_millis(WORKER_TIMER_MS));
         let db = Arc::new(Database {
             fabric: Fabric::new(node, config.fabric_addr).unwrap(),
             dht: DHT::new(node,
@@ -170,11 +171,12 @@ impl Database {
         }
 
         for (&i, vn) in self.vnodes.read().unwrap().iter() {
-            let final_status = if self.dht.nodes_for_vnode(i, true).contains(&self.dht.node()) {
-                VNodeStatus::Ready
-            } else {
-                VNodeStatus::Absent
-            };
+            let final_status =
+                if self.dht.nodes_for_vnode(i, true, false).contains(&self.dht.node()) {
+                    VNodeStatus::Ready
+                } else {
+                    VNodeStatus::Absent
+                };
             vn.lock().unwrap().handler_dht_change(self, final_status);
         }
     }
@@ -534,6 +536,7 @@ mod tests {
                     VersionVector::new());
             db1.response(i).unwrap();
         }
+        // wait for all writes to be replicated
         sleep_ms(5);
         for i in 0..TEST_JOIN_SIZE {
             db1.get(i, i.to_string().as_bytes());

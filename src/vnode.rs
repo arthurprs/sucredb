@@ -15,7 +15,7 @@ use utils::{IdHashMap, IdHasherBuilder};
 // FIXME: use a more efficient log data structure
 // 1MB of storage considering key avg length of 32B and 16B overhead
 const PEER_LOG_SIZE: usize = 1024 * 1024 / (32 + 16);
-const ZOMBIE_TIMEOUT_MS: u64 = 5000;
+const RETIRING_TIMEOUT_MS: u64 = 5000;
 const RECOVER_FAST_FORWARD: Version = 100_000;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -24,10 +24,11 @@ pub enum VNodeStatus {
     Ready,
     // had data but wasn't shutdown cleanly, so it has to finish reverse sync to all replicas before coordinating writes
     Recover,
-    // had no data, now it's streamming data from another node
+    // was absent, now it's streamming data from another node
     Bootstrap,
-    // after another node takes over this vnode it stays as zombie until syncs are completed, etc.
-    Zombie,
+    // another will take over this vnode it stays in retiring status
+    // until syncs are completed, etc.
+    Retiring,
     // no actual data is present (metadata is retained though)
     Absent,
 }
@@ -227,6 +228,10 @@ impl VNode {
 
     // DHT Changes
     pub fn handler_dht_change(&mut self, db: &Database, x_status: VNodeStatus) {
+        match x_status {
+            VNodeStatus::Absent | VNodeStatus::Ready => (),
+            status => panic!("Invalid final status {:?}", status),
+        }
         match (self.status(), x_status) {
             (a, b) if a == b => (),
             (VNodeStatus::Ready, VNodeStatus::Absent) |
@@ -256,13 +261,13 @@ impl VNode {
                 if self.status() == VNodeStatus::Recover {
                     self.state.set_status(db, VNodeStatus::Absent);
                 } else {
-                    self.state.set_status(db, VNodeStatus::Zombie);
+                    self.state.set_status(db, VNodeStatus::Retiring);
                 }
             }
-            (VNodeStatus::Zombie, VNodeStatus::Absent) => {
-                // do nothing, zombie will timeout and switch to absent eventually
+            (VNodeStatus::Retiring, VNodeStatus::Absent) => {
+                // do nothing, retiring will timeout and switch to absent eventually
             }
-            (VNodeStatus::Zombie, VNodeStatus::Ready) => {
+            (VNodeStatus::Retiring, VNodeStatus::Ready) => {
                 // fast-recomission!
                 self.state.set_status(db, VNodeStatus::Ready);
             }
@@ -280,7 +285,18 @@ impl VNode {
 
     // TICK
     pub fn handler_tick(&mut self, db: &Database, _time: Instant) {
-        {
+        if self.state.status == VNodeStatus::Retiring && self.syncs.is_empty() &&
+           self.inflight.is_empty() &&
+           self.state.last_status_change.elapsed() > Duration::from_millis(RETIRING_TIMEOUT_MS) {
+            match db.dht.retire_retiring_node(db.dht.node(), self.state.num) {
+                Ok(_) => self.state.set_status(db, VNodeStatus::Absent),
+                Err(e) => {
+                    warn!("Can't retire node {} vnode {}: {}", db.dht.node(), self.state.num, e)
+                }
+            }
+        }
+
+        if self.status() == VNodeStatus::Ready {
             let terminated = {
                 let state = &mut self.state;
                 self.syncs
@@ -310,18 +326,12 @@ impl VNode {
             debug!("Request cookie:{:?} token:{} timed out", cookie, req.token);
             db.respond_error(req.token, CommandError::Timeout);
         }
-
-        if self.state.status == VNodeStatus::Zombie && self.syncs.is_empty() &&
-           self.inflight.is_empty() &&
-           self.state.last_status_change.elapsed() > Duration::from_millis(ZOMBIE_TIMEOUT_MS) {
-            self.state.set_status(db, VNodeStatus::Absent);
-        }
     }
 
     // CLIENT CRUD
     pub fn do_get(&mut self, db: &Database, token: Token, key: &[u8]) {
         // TODO: lots of optimizations to be done here
-        let nodes = db.dht.nodes_for_vnode(self.state.num, false);
+        let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(1000);
         assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len()), expire).is_none());
@@ -355,7 +365,7 @@ impl VNode {
                     VNodeStatus::Bootstrap | VNodeStatus::Recover => {
                         db.respond_ask(token, self.state.num, addr);
                     }
-                    VNodeStatus::Ready | VNodeStatus::Zombie => unreachable!(),
+                    VNodeStatus::Ready | VNodeStatus::Retiring => unreachable!(),
                 }
                 return;
             }
@@ -367,11 +377,11 @@ impl VNode {
     pub fn do_set(&mut self, db: &Database, token: Token, key: &[u8], value_opt: Option<&[u8]>,
                   vv: VersionVector) {
         match self.status() {
-            VNodeStatus::Ready | VNodeStatus::Zombie => (),
+            VNodeStatus::Ready | VNodeStatus::Retiring => (),
             status => return self.respond_cant_coordinate(db, token, status),
         }
 
-        let nodes = db.dht.nodes_for_vnode(self.state.num, true);
+        let nodes = db.dht.nodes_for_vnode(self.state.num, true, true);
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(1000);
         assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len()), expire).is_none());
@@ -450,7 +460,7 @@ impl VNode {
 
     pub fn handler_get_remote(&mut self, db: &Database, from: NodeId, msg: MsgRemoteGet) {
         check_status!(self,
-                      VNodeStatus::Ready | VNodeStatus::Zombie,
+                      VNodeStatus::Ready | VNodeStatus::Retiring,
                       db,
                       from,
                       msg,
@@ -502,8 +512,11 @@ impl VNode {
     // SYNC
     pub fn handler_sync_start(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
         if !(self.state.status == VNodeStatus::Ready ||
-             (self.state.status == VNodeStatus::Zombie &&
-              self.state.last_status_change.elapsed() > Duration::from_millis(ZOMBIE_TIMEOUT_MS))) {
+             (self.state.status == VNodeStatus::Recover &&
+              msg.target.map_or(false, |t| t == from)) ||
+             (self.state.status == VNodeStatus::Retiring &&
+              self.state.last_status_change.elapsed() <
+              Duration::from_millis(RETIRING_TIMEOUT_MS))) {
             fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::BadVNodeStatus);
         } else if !self.syncs.contains_key(&msg.cookie) {
             let cookie = msg.cookie;
@@ -535,7 +548,7 @@ impl VNode {
 
     pub fn handler_sync_ack(&mut self, db: &Database, from: NodeId, msg: MsgSyncAck) {
         forward!(self,
-                 VNodeStatus::Ready | VNodeStatus::Zombie,
+                 VNodeStatus::Ready | VNodeStatus::Retiring,
                  db,
                  from,
                  msg,
@@ -546,7 +559,7 @@ impl VNode {
 
     pub fn handler_sync_fin(&mut self, db: &Database, from: NodeId, msg: MsgSyncFin) {
         check_status!(self,
-                      VNodeStatus::Ready | VNodeStatus::Recover | VNodeStatus::Zombie |
+                      VNodeStatus::Ready | VNodeStatus::Recover | VNodeStatus::Retiring |
                       VNodeStatus::Bootstrap,
                       db,
                       from,
@@ -588,7 +601,7 @@ impl VNode {
                    "status must be Bootstrap before starting bootstrap");
         self.state.storage.clear();
         let cookie = self.gen_cookie();
-        let mut nodes = db.dht.nodes_for_vnode(self.state.num, false);
+        let mut nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
         thread_rng().shuffle(&mut nodes);
         for node in nodes {
             if node == db.dht.node() {
@@ -600,18 +613,19 @@ impl VNode {
             assert!(self.syncs.insert(cookie, bootstrap).is_none());
             return;
         }
+        // nothing to boostrap
         self.state.set_status(db, VNodeStatus::Ready);
     }
 
     pub fn maybe_start_sync(&mut self, db: &Database) -> usize {
         match self.state.status {
-            VNodeStatus::Ready | VNodeStatus::Zombie => self.do_start_sync(db, false),
+            VNodeStatus::Ready | VNodeStatus::Retiring => self.do_start_sync(db, false),
             _ => 0,
         }
     }
 
     pub fn start_sync(&mut self, db: &Database) -> usize {
-        assert_any!(self.state.status, VNodeStatus::Ready | VNodeStatus::Zombie);
+        assert_any!(self.state.status, VNodeStatus::Ready | VNodeStatus::Retiring);
         self.do_start_sync(db, false)
     }
 
@@ -620,13 +634,14 @@ impl VNode {
                    (VNodeStatus::Recover, 0),
                    "Status must be Reverse before starting a reverse sync");
         if self.do_start_sync(db, true) == 0 {
+            // nothing to sync from
             self.state.set_status(db, VNodeStatus::Ready);
         }
     }
 
     fn do_start_sync(&mut self, db: &Database, reverse: bool) -> usize {
         let mut started = 0;
-        let nodes = db.dht.nodes_for_vnode(self.state.num, false);
+        let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
         for node in nodes {
             if node == db.dht.node() || self.state.sync_nodes.contains(&node) {
                 continue;
@@ -668,7 +683,7 @@ impl VNodeState {
     }
 
     pub fn set_status(&mut self, db: &Database, new: VNodeStatus) {
-        debug!("VNode {} status change {:?} -> {:?}", self.num, self.status, new);
+        info!("VNode {} status change {:?} -> {:?}", self.num, self.status, new);
         if new != self.status {
             match new {
                 VNodeStatus::Bootstrap => {
@@ -690,7 +705,7 @@ impl VNodeState {
                     self.peers.clear();
                     self.storage.clear();
                 }
-                VNodeStatus::Zombie => {
+                VNodeStatus::Retiring => {
                     assert_eq!(self.pending_recoveries, 0);
                 }
                 VNodeStatus::Recover => {
@@ -755,7 +770,7 @@ impl VNodeState {
             info!("Unclean shutdown, recovering from the storage");
             status = VNodeStatus::Recover;
             let this_node = db.dht.node();
-            let peer_nodes = db.dht.nodes_for_vnode(num, true);
+            let peer_nodes = db.dht.nodes_for_vnode(num, true, true);
             let mut iter = storage.iterator();
             let mut count = 0;
             for (k, v) in iter.iter() {

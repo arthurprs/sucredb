@@ -91,17 +91,20 @@ impl<T: Metadata> Ring<T> {
 
     fn promote_pending_node(&mut self, node: NodeId, vn: VNodeId) -> Result<(), GenericError> {
         if !self.pending[vn as usize].remove(&node) {
-            return Err(format!("{} is not in pending[{}]", node, vn).into())
+            return Err(format!("{} is not in pending[{}]", node, vn).into());
         }
         if !self.vnodes[vn as usize].insert(node) {
-            return Err(format!("{} is already in vnodes[{}]", node, vn).into())
+            return Err(format!("{} is already in vnodes[{}]", node, vn).into());
         }
         Ok(())
     }
 
-    fn stepdown_retiring_node(&mut self, node: NodeId, vn: VNodeId) -> Result<(), GenericError> {
+    fn retire_retiring_node(&mut self, node: NodeId, vn: VNodeId) -> Result<(), GenericError> {
+        if !self.pending[vn as usize].is_empty() {
+            return Err(format!("pending[{}] is not empty", vn).into());
+        }
         if !self.retiring[vn as usize].remove(&node) {
-            return Err(format!("{} is already in vnodes[{}]", node, vn).into());
+            return Err(format!("{} is not in retiring[{}]", node, vn).into());
         }
         Ok(())
     }
@@ -475,14 +478,17 @@ impl<T: Metadata> DHT<T> {
     }
 
     // TODO: split into read_ and write_
-    pub fn nodes_for_vnode(&self, vnode: VNodeId, include_pending: bool) -> Vec<NodeId> {
+    pub fn nodes_for_vnode(&self, vnode: VNodeId, include_pending: bool, include_retiring: bool)
+                           -> Vec<NodeId> {
         // FIXME: this shouldn't alloc
         let mut result = Vec::new();
         let inner = self.inner.read().unwrap();
         result.extend(&inner.ring.vnodes[vnode as usize]);
-        result.extend(&inner.ring.retiring[vnode as usize]);
         if include_pending {
             result.extend(&inner.ring.pending[vnode as usize]);
+        }
+        if include_retiring {
+            result.extend(&inner.ring.retiring[vnode as usize]);
         }
         result
     }
@@ -491,7 +497,9 @@ impl<T: Metadata> DHT<T> {
         // FIXME: this shouldn't alloc
         let mut result = Vec::new();
         let inner = self.inner.read().unwrap();
-        result.extend(inner.ring.vnodes[vnode as usize].iter().map(|n| (*n, inner.ring.nodes.get(n).cloned().unwrap())));
+        result.extend(inner.ring.vnodes[vnode as usize]
+            .iter()
+            .map(|n| (*n, inner.ring.nodes.get(n).cloned().unwrap())));
         result
     }
 
@@ -541,10 +549,10 @@ impl<T: Metadata> DHT<T> {
         Ok(())
     }
 
-    pub fn stepdown_retiring_node(&self, node: NodeId, vnode: VNodeId) -> Result<(), GenericError> {
+    pub fn retire_retiring_node(&self, node: NodeId, vnode: VNodeId) -> Result<(), GenericError> {
         try_cas!(self, {
             let (mut ring, ring_version) = self.ring_clone();
-            try!(ring.stepdown_retiring_node(node, vnode));
+            try!(ring.retire_retiring_node(node, vnode));
             (ring_version, ring)
         });
         Ok(())
@@ -604,8 +612,10 @@ mod tests {
                                config::DEFAULT_ETCD_ADDR,
                                (),
                                Some(RingDescription::new(rf, 256)));
-            assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
-            assert_eq!(dht.nodes_for_vnode(0, true), &[node]);
+            assert_eq!(dht.nodes_for_vnode(0, true, false), &[node]);
+            assert_eq!(dht.nodes_for_vnode(0, false, false), &[node]);
+            assert_eq!(dht.nodes_for_vnode(0, false, false), &[node]);
+            assert_eq!(dht.nodes_for_vnode(0, true, true), &[node]);
             assert_eq!(dht.members(), [(node, addr)].iter().cloned().collect::<HashMap<_, _>>());
         }
     }
