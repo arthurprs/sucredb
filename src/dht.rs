@@ -1,4 +1,4 @@
-use std::{fmt, thread, net};
+use std::{fmt, thread, net, time};
 use std::time::Duration;
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
@@ -110,19 +110,19 @@ impl<T: Metadata> Ring<T> {
     }
 
     fn rebalance(&mut self) -> Result<(), GenericError> {
-        let simulations = 10;
-        let start = ::std::time::Instant::now();
+        let simulations = 100;
+        let start = time::Instant::now();
         for retry in 0..simulations {
             let mut cloned = self.clone();
             let result = cloned.try_rebalance();
             if result.is_ok() {
-                println!("found a rebalance solution in simulation #{} took: {:?}",
+                debug!("found a rebalance solution in simulation #{} took: {:?}",
                          retry,
-                         ::std::time::Instant::elapsed(&start));
+                         time::Instant::elapsed(&start));
                 *self = cloned;
                 return Ok(());
             } else {
-                println!("{:?}", result);
+                debug!("can't find rebalance solution #{}", retry);
             }
         }
         panic!("Can't find a solution after {} simulations: {:?}", simulations, self);
@@ -162,6 +162,7 @@ impl<T: Metadata> Ring<T> {
 
         // partitions per node
         let ppn = self.vnodes.len() * self.replication_factor / self.nodes.len();
+        let ppn_rest =  self.vnodes.len() * self.replication_factor % self.nodes.len();
         if ppn == 0 {
             panic!("partitions per node is 0!");
         }
@@ -213,9 +214,14 @@ impl<T: Metadata> Ring<T> {
 
         with_much.clear();
         with_much.extend(node_partitions.iter()
-            .filter(|&(_, p)| p.len() <= ppn)
+            .filter(|&(_, p)| p.len() >= ppn)
             .map(|(&n, _)| n));
         rng.shuffle(&mut with_much);
+
+        let mut extra_nodes: Vec<NodeId> = Vec::new();
+        extra_nodes.extend(self.nodes.keys().cloned());
+        rng.shuffle(&mut extra_nodes);
+        extra_nodes.truncate(ppn_rest);
 
         let mut under_replicated: Vec<usize> = self.vnodes
             .iter()
@@ -249,10 +255,19 @@ impl<T: Metadata> Ring<T> {
                     }
                 }
             }
-            return Err(format!("Cant find replica for vnode {:?} under_replicated: {:?}",
-                               vn,
-                               under_replicated.len() + 1)
-                .into());
+            // TODO: at this point it should probably prioritize entries in retiring
+            for _ in 0..extra_nodes.len() {
+                if let Some(taker) = extra_nodes.pop() {
+                    if !self.vnodes[vn].contains(&taker) && self.pending[vn].insert(taker) {
+                        node_partitions.get_mut(&taker).unwrap().push(vn);
+                        continue 'next;
+                    } else {
+                        extra_nodes.insert(0, taker);
+                    }
+                }
+            }
+
+            return Err(format!("Cant find replica for vnode {:?}", vn).into());
         }
 
         Ok(())
@@ -600,6 +615,7 @@ mod tests {
     use std::net;
     use config;
     use rand::{self, Rng, thread_rng};
+    use env_logger;
 
     #[test]
     fn test_new() {
@@ -622,6 +638,7 @@ mod tests {
 
     #[test]
     fn test_rebalance() {
+        let _ = env_logger::init();
         let addr = "0.0.0.0:0".parse().unwrap();
         for i in 0..10_000 {
             let mut ring = Ring::new(0, addr, (), 64, 2 + thread_rng().gen::<u8>() % 3);

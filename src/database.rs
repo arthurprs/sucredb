@@ -12,9 +12,9 @@ use utils::IdHashMap;
 pub use types::*;
 use config::Config;
 
+// TODO: move to config file
 const MAX_INCOMMING_SYNCS: usize = 0;
 const WORKERS: usize = 1;
-// TODO: move to config file
 const WORKER_TIMER_MS: u64 = 2000;
 
 pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;

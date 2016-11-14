@@ -18,10 +18,12 @@
 * [x] generic sync/bootstrap code?
 * [x] when log isn't enough to satisfy sync, iter the database sending necessary dots
 * [x] propagate dht notifications to vnodes and take actions
-* [ ] dead node handling with gossip
+* [ ] dead node handling
 * [ ] pruning nodes from clocks
 * [ ] track keys with causal context
 * [x] cluster name
 * [ ] cluster handling api (join/leave/rebalance)
 * [x] smarter rebalance
+* [ ] cluster tests
 * [ ] configurations everywhere
+* [ ] config file
