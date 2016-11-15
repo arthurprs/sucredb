@@ -115,24 +115,23 @@ impl<T: Metadata> Ring<T> {
         for retry in 0..simulations {
             let mut cloned = self.clone();
             let result = cloned.try_rebalance();
-            if result.is_ok() {
-                debug!("found a rebalance solution in simulation #{} took: {:?}",
-                         retry,
-                         time::Instant::elapsed(&start));
+            if let Ok(cost) = result {
+                debug!("found a rebalance solution in simulation #{} with cost {} took: {:?}",
+                       retry,
+                       cost,
+                       time::Instant::elapsed(&start));
                 *self = cloned;
                 return Ok(());
-            } else {
-                debug!("can't find rebalance solution #{}", retry);
             }
         }
         panic!("Can't find a solution after {} simulations: {:?}", simulations, self);
     }
 
-    fn try_rebalance(&mut self) -> Result<(), GenericError> {
+    fn try_rebalance(&mut self) -> Result<usize, GenericError> {
         // TODO: Vec -> VecDeque to avoid the O(N) insert(0, ..)
         // TODO: return a cost so caller can select the best plan out of N
         let mut rng = thread_rng();
-        // fast path when #nodes <= replication factor
+        // special case when #nodes <= replication factor
         if self.nodes.len() <= self.replication_factor {
             for (vn_num, vn_replicas) in self.vnodes.iter().enumerate() {
                 for node in self.nodes.keys().cloned() {
@@ -141,7 +140,7 @@ impl<T: Metadata> Ring<T> {
                     }
                 }
             }
-            return Ok(());
+            return Ok(0);
         }
 
         // simple 2-steps eager rebalancing
@@ -162,7 +161,7 @@ impl<T: Metadata> Ring<T> {
 
         // partitions per node
         let ppn = self.vnodes.len() * self.replication_factor / self.nodes.len();
-        let ppn_rest =  self.vnodes.len() * self.replication_factor % self.nodes.len();
+        let ppn_rest = self.vnodes.len() * self.replication_factor % self.nodes.len();
         if ppn == 0 {
             panic!("partitions per node is 0!");
         }
@@ -179,7 +178,6 @@ impl<T: Metadata> Ring<T> {
                 }
                 rng.shuffle(&mut with_much);
             }
-
             if with_little.is_empty() {
                 with_little.extend(node_partitions.iter()
                     .filter(|&(_, p)| p.len() < ppn)
@@ -195,8 +193,8 @@ impl<T: Metadata> Ring<T> {
                 let to = with_little.pop().unwrap();
                 let vn = node_partitions.get_mut(&from).unwrap().pop().unwrap();
                 if !self.vnodes[vn].contains(&to) && self.pending[vn].insert(to) {
-                    self.vnodes[vn].remove(&from);
-                    self.retiring[vn].insert(from);
+                    assert!(self.vnodes[vn].remove(&from));
+                    assert!(self.retiring[vn].insert(from));
                     node_partitions.get_mut(&to).unwrap().push(vn);
                 } else {
                     with_much.insert(0, from);
@@ -227,7 +225,7 @@ impl<T: Metadata> Ring<T> {
             .iter()
             .zip(self.pending.iter())
             .enumerate()
-            .filter(|&(_, (v, p))| v.len() + p.len() < self.replication_factor)
+            .filter(|&(_, (v, p))| self.replication_factor > v.len() + p.len())
             .flat_map(|(vn, (v, p))| {
                 (0..self.replication_factor - v.len() - p.len()).map(move |_| vn)
             })
@@ -237,6 +235,7 @@ impl<T: Metadata> Ring<T> {
         'next: while let Some(vn) = under_replicated.pop() {
             for _ in 0..with_little.len() {
                 if let Some(taker) = with_little.pop() {
+                    assert!(!self.retiring[vn].contains(&taker));
                     if !self.vnodes[vn].contains(&taker) && self.pending[vn].insert(taker) {
                         node_partitions.get_mut(&taker).unwrap().push(vn);
                         continue 'next;
@@ -247,7 +246,14 @@ impl<T: Metadata> Ring<T> {
             }
             for _ in 0..with_much.len() {
                 if let Some(taker) = with_much.pop() {
-                    if !self.vnodes[vn].contains(&taker) && self.pending[vn].insert(taker) {
+                    if self.retiring[vn].remove(&taker) {
+                        assert!(!self.pending[vn].contains(&taker));
+                        assert!(self.vnodes[vn].insert(taker));
+                        node_partitions.get_mut(&taker).unwrap().push(vn);
+                        continue 'next;
+                    } else if !self.vnodes[vn].contains(&taker) &&
+                              !self.retiring[vn].contains(&taker) &&
+                              self.pending[vn].insert(taker) {
                         node_partitions.get_mut(&taker).unwrap().push(vn);
                         continue 'next;
                     } else {
@@ -255,10 +261,16 @@ impl<T: Metadata> Ring<T> {
                     }
                 }
             }
-            // TODO: at this point it should probably prioritize entries in retiring
             for _ in 0..extra_nodes.len() {
                 if let Some(taker) = extra_nodes.pop() {
-                    if !self.vnodes[vn].contains(&taker) && self.pending[vn].insert(taker) {
+                    if self.retiring[vn].remove(&taker) {
+                        assert!(!self.pending[vn].contains(&taker));
+                        assert!(self.vnodes[vn].insert(taker));
+                        node_partitions.get_mut(&taker).unwrap().push(vn);
+                        continue 'next;
+                    } else if !self.vnodes[vn].contains(&taker) &&
+                              !self.retiring[vn].contains(&taker) &&
+                              self.pending[vn].insert(taker) {
                         node_partitions.get_mut(&taker).unwrap().push(vn);
                         continue 'next;
                     } else {
@@ -269,8 +281,15 @@ impl<T: Metadata> Ring<T> {
 
             return Err(format!("Cant find replica for vnode {:?}", vn).into());
         }
+        try!(self.is_valid());
 
-        Ok(())
+        let mut cost = 0;
+        cost += node_partitions.values()
+            .map(|p| (ppn as isize - p.len() as isize).abs() as usize)
+            .sum::<usize>();
+        cost += self.pending.iter().map(|p| p.len()).sum::<usize>();
+
+        Ok(cost)
     }
 
     #[cfg(test)]
@@ -640,8 +659,8 @@ mod tests {
     fn test_rebalance() {
         let _ = env_logger::init();
         let addr = "0.0.0.0:0".parse().unwrap();
-        for i in 0..10_000 {
-            let mut ring = Ring::new(0, addr, (), 64, 2 + thread_rng().gen::<u8>() % 3);
+        for i in 0..100_000 {
+            let mut ring = Ring::new(0, addr, (), 64, 1 + thread_rng().gen::<u8>() % 4);
             for i in 0..thread_rng().gen::<u64>() % 64 {
                 ring.join_node(i, addr, ());
             }

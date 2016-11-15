@@ -457,6 +457,8 @@ impl Synchronization {
                                                  ref mut recv_count,
                                                  ref mut last_recv,
                                                  .. } => {
+                // FIXME: these can create a big region of 0s in the start of bitmap
+                //        until the bvv join on Fin
                 state.storage_set_remote(db, &msg.key, msg.container);
 
                 db.fabric

@@ -15,15 +15,14 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     pub fabric_addr: SocketAddr,
     pub etcd_addr: String,
-    pub cmd_init: Option<InitCommand>,
-    // pub worker_timer: u32,
-    // pub workers: u16,
-    // pub max_incomming_syncs: u16,
-    // pub max_outgoing_syncs: u16,
-    // pub fabric_reconnect_interval: u32,
-    // pub fabric_keepalive: u32,
-    // pub fabric_timeout: u32,
-    // pub max_connections: u32,
+    pub cmd_init: Option<InitCommand>, /* pub worker_timer: u32,
+                                        * pub workers: u16,
+                                        * pub max_incomming_syncs: u16,
+                                        * pub max_outgoing_syncs: u16,
+                                        * pub fabric_reconnect_interval: u32,
+                                        * pub fabric_keepalive: u32,
+                                        * pub fabric_timeout: u32,
+                                        * pub max_connections: u32, */
 }
 
 #[derive(Debug, Clone)]
