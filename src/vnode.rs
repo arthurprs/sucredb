@@ -159,9 +159,9 @@ macro_rules! forward {
 }
 
 impl ReqState {
-    fn new(token: Token, nodes: usize) -> Self {
+    fn new(token: Token, nodes: usize, consistency: ConsistencyLevel) -> Self {
         ReqState {
-            required: 1,
+            required: consistency.required(nodes as u8),
             total: nodes as u8,
             replies: 0,
             succesfull: 0,
@@ -329,12 +329,15 @@ impl VNode {
     }
 
     // CLIENT CRUD
-    pub fn do_get(&mut self, db: &Database, token: Token, key: &[u8]) {
+    pub fn do_get(&mut self, db: &Database, token: Token, key: &[u8],
+                  consistency: ConsistencyLevel) {
         // TODO: lots of optimizations to be done here
         let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(1000);
-        assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len()), expire).is_none());
+        assert!(self.inflight
+            .insert(cookie, ReqState::new(token, nodes.len(), consistency), expire)
+            .is_none());
 
         for node in nodes {
             if node == db.dht.node() {
@@ -375,7 +378,7 @@ impl VNode {
     }
 
     pub fn do_set(&mut self, db: &Database, token: Token, key: &[u8], value_opt: Option<&[u8]>,
-                  vv: VersionVector) {
+                  vv: VersionVector, consistency: ConsistencyLevel) {
         match self.status() {
             VNodeStatus::Ready | VNodeStatus::Retiring => (),
             status => return self.respond_cant_coordinate(db, token, status),
@@ -384,7 +387,9 @@ impl VNode {
         let nodes = db.dht.nodes_for_vnode(self.state.num, true, true);
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(1000);
-        assert!(self.inflight.insert(cookie, ReqState::new(token, nodes.len()), expire).is_none());
+        assert!(self.inflight
+            .insert(cookie, ReqState::new(token, nodes.len(), consistency), expire)
+            .is_none());
 
         let dcc = self.state.storage_set_local(db, key, value_opt, &vv);
         debug!("set_local {} {:?}", String::from_utf8_lossy(key), dcc);

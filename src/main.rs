@@ -115,6 +115,7 @@ fn configure() -> config::Config {
                     .unwrap(),
             }
         }),
+        ..Default::default()
     }
 }
 

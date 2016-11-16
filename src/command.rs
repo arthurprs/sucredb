@@ -1,16 +1,32 @@
 use resp::{ByteTendril, RespValue};
-use database::{Token, Database};
+use database::Database;
+use types::*;
 use version_vector::*;
 use std::{str, net};
 use bincode::{serde as bincode_serde, SizeLimit};
-use database::VNodeId;
 
 #[derive(Debug)]
 pub enum CommandError {
     Timeout,
     ProtocolError,
     UnknownCommand,
+    InvalidArgCount,
+    InvalidConsistency,
     Unavailable,
+}
+
+impl From<ConsistencyLevelParseError> for CommandError {
+    fn from(_: ConsistencyLevelParseError) -> Self {
+        CommandError::InvalidConsistency
+    }
+}
+
+fn check_arg_count(count: usize, min: usize, max:usize) -> Result<(), CommandError> {
+    if count < min || count > max {
+        Err(CommandError::InvalidArgCount)
+    } else {
+        Ok(())
+    }
 }
 
 fn quick_int(bytes: &[u8]) -> Result<i64, CommandError> {
@@ -28,7 +44,7 @@ fn quick_int(bytes: &[u8]) -> Result<i64, CommandError> {
 
 impl Database {
     pub fn handler_cmd(&self, token: u64, cmd: RespValue) {
-        let mut arg_: [&[u8]; 32] = [b""; 32];
+        let mut arg_: [&[u8]; 8] = [b""; 8];
         let mut argc = 0;
         match cmd {
             RespValue::Array(ref a) if a.len() > 0 && a.len() <= arg_.len() => {
@@ -53,43 +69,70 @@ impl Database {
         let arg0 = arg_[0];
         let args = &arg_[1..argc];
 
-        match arg0 {
+        let ret = match arg0 {
             b"GET" | b"MGET" => self.cmd_get(token, args),
             b"SET" | b"MSET" => self.cmd_set(token, args),
             b"DEL" | b"MDEL" => self.cmd_del(token, args),
-            b"ECHO" if args.len() > 0 => {
-                (&self.response_fn)(token, RespValue::Data(args[0].into()))
-            }
             b"CLUSTER" => self.cmd_cluster(token, args),
-            _ => self.respond_error(token, CommandError::UnknownCommand),
+            b"ECHO" => {
+                (&self.response_fn)(token, cmd.clone());
+                Ok(())
+            }
+            _ => Err(CommandError::UnknownCommand),
         };
-    }
 
-    fn cmd_get(&self, token: u64, args: &[&[u8]]) {
-        for key in args {
-            self.get(token, key);
+        if let Err(err) = ret {
+            self.respond_error(token, err);
         }
     }
 
-    fn cmd_set(&self, token: u64, args: &[&[u8]]) {
-        for w in args.chunks(3) {
-            self.set(token, w[0], Some(w[1]), VersionVector::new());
-        }
+    fn cmd_get(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
+        try!(check_arg_count(args.len(), 1, 2));
+        let consistency: ConsistencyLevel = if args.len() >= 2 {
+            try!(unsafe { str::from_utf8_unchecked(args[1]) }.parse())
+        } else {
+            self.config.read_consistency
+        };
+        Ok(self.get(token, args[0], consistency))
     }
 
-    fn cmd_del(&self, token: u64, args: &[&[u8]]) {
-        for w in args.chunks(2) {
-            self.set(token, w[0], None, VersionVector::new());
-        }
+    fn cmd_set(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
+        try!(check_arg_count(args.len(), 2, 4));
+        let vv: VersionVector = if args.len() >= 3 && !args[2].is_empty() {
+            bincode_serde::deserialize(args[2]).unwrap()
+        } else {
+            VersionVector::new()
+        };
+        let consistency: ConsistencyLevel = if args.len() >= 4 {
+            try!(unsafe { str::from_utf8_unchecked(args[1]) }.parse())
+        } else {
+            self.config.write_consistency
+        };
+        Ok(self.set(token, args[0], Some(args[1]), vv, consistency))
     }
 
-    fn cmd_cluster(&self, token: u64, args: &[&[u8]]) {
+    fn cmd_del(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
+        try!(check_arg_count(args.len(), 1, 3));
+        let vv: VersionVector = if args.len() >= 2 && !args[1].is_empty() {
+            bincode_serde::deserialize(args[1]).unwrap()
+        } else {
+            VersionVector::new()
+        };
+        let consistency: ConsistencyLevel = if args.len() >= 3 {
+            try!(unsafe { str::from_utf8_unchecked(args[2]) }.parse())
+        } else {
+            self.config.write_consistency
+        };
+        Ok(self.set(token, args[0], None, vv, consistency))
+    }
+
+    fn cmd_cluster(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
         match args {
             &[b"REBALANCE"] => {
                 self.dht.rebalance().unwrap();
-                self.respond_ok(token);
+                Ok(self.respond_ok(token))
             }
-            _ => self.respond_error(token, CommandError::UnknownCommand),
+            _ => Err(CommandError::UnknownCommand),
         }
     }
 
