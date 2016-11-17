@@ -1,6 +1,6 @@
 use std::{fmt, thread, net, time};
 use std::time::Duration;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use linear_map::set::LinearSet;
 use rand::{thread_rng, Rng};
@@ -11,7 +11,7 @@ use database::{NodeId, VNodeId};
 use etcd;
 use utils::{IdHashMap, GenericError};
 
-pub type DHTChangeFn = Box<Fn() + Send + Sync>;
+pub type DHTChangeFn = Box<FnMut() + Send>;
 pub trait Metadata
     : Clone + Serialize + Deserialize + Sync + Send + fmt::Debug + 'static {
 }
@@ -20,10 +20,21 @@ impl<T: Clone + Serialize + Deserialize + Sync + Send + fmt::Debug + 'static> Me
 
 pub struct DHT<T: Metadata> {
     node: NodeId,
-    cluster: String,
     addr: net::SocketAddr,
-    inner: Arc<RwLock<Inner<T>>>,
+    partitions: usize,
+    replication_factor: usize,
+    cluster: String,
+    inner: Arc<Mutex<Inner<T>>>,
+    etcd_client: etcd::Client,
     thread: Option<thread::JoinHandle<()>>,
+}
+
+struct Inner<T: Metadata> {
+    ring: Ring<T>,
+    ring_version: u64,
+    cluster: String,
+    callback: Option<DHTChangeFn>,
+    running: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -324,15 +335,6 @@ impl<T: Metadata> Ring<T> {
     }
 }
 
-struct Inner<T: Metadata> {
-    ring: Ring<T>,
-    ring_version: u64,
-    cluster: String,
-    etcd: etcd::Client,
-    callback: Option<DHTChangeFn>,
-    running: bool,
-}
-
 macro_rules! try_cas {
     ($s: ident, $e: block) => (
         loop {
@@ -356,9 +358,9 @@ impl<T: Metadata> DHT<T> {
     pub fn new(node: NodeId, fabric_addr: net::SocketAddr, cluster: &str, etcd: &str, meta: T,
                initial: Option<RingDescription>)
                -> DHT<T> {
-        let etcd1 = etcd::Client::new(&[etcd]).unwrap();
-        let etcd2 = etcd::Client::new(&[etcd]).unwrap();
-        let inner = Arc::new(RwLock::new(Inner {
+        let etcd_client1 = etcd::Client::new(&[etcd]).unwrap();
+        let etcd_client2 = etcd::Client::new(&[etcd]).unwrap();
+        let inner = Arc::new(Mutex::new(Inner {
             ring: Ring {
                 replication_factor: Default::default(),
                 vnodes: Default::default(),
@@ -368,7 +370,6 @@ impl<T: Metadata> DHT<T> {
             },
             ring_version: 0,
             cluster: cluster.into(),
-            etcd: etcd1,
             callback: None,
             running: true,
         }));
@@ -378,24 +379,29 @@ impl<T: Metadata> DHT<T> {
             cluster: cluster.into(),
             inner: inner.clone(),
             thread: None,
+            partitions: 0,
+            replication_factor: 0,
+            etcd_client: etcd_client1,
         };
         if let Some(description) = initial {
             dht.reset(meta, description.replication_factor, description.partitions);
         } else {
             dht.join(meta);
         }
+        dht.partitions = inner.lock().unwrap().ring.vnodes.len();
+        dht.replication_factor = inner.lock().unwrap().ring.replication_factor;
         dht.thread = Some(thread::Builder::new()
             .name(format!("DHT:{}", node))
-            .spawn(move || Self::run(inner, etcd2))
+            .spawn(move || Self::run(inner, etcd_client2))
             .unwrap());
         dht
     }
 
-    fn run(inner: Arc<RwLock<Inner<T>>>, etcd: etcd::Client) {
-        let cluster_key = format!("/{}/dht", inner.read().unwrap().cluster);
+    fn run(inner: Arc<Mutex<Inner<T>>>, etcd: etcd::Client) {
+        let cluster_key = format!("/{}/dht", inner.lock().unwrap().cluster);
         loop {
             let watch_version = {
-                let inner = inner.read().unwrap();
+                let inner = inner.lock().unwrap();
                 if !inner.running {
                     break;
                 }
@@ -417,7 +423,7 @@ impl<T: Metadata> DHT<T> {
             debug!("Callback with new ring {:?} version {}", ring, ring_version);
             // update state
             {
-                let mut inner = inner.write().unwrap();
+                let mut inner = inner.lock().unwrap();
                 if !inner.running {
                     break;
                 }
@@ -428,19 +434,16 @@ impl<T: Metadata> DHT<T> {
             }
 
             // call callback
-
-            let callback = inner.write().unwrap().callback.take().unwrap();
-            callback();
-            inner.write().unwrap().callback = Some(callback);
+            inner.lock().unwrap().callback.take().unwrap()();
             trace!("dht callback returned");
         }
         debug!("exiting dht thread");
     }
 
     fn join(&self, meta: T) {
-        let cluster_key = format!("/{}/dht", self.inner.read().unwrap().cluster);
+        let cluster_key = format!("/{}/dht", self.cluster);
         loop {
-            let r = self.inner.read().unwrap().etcd.get(&cluster_key, false, false, false).unwrap();
+            let r = self.etcd_client.get(&cluster_key, false, false, false).unwrap();
             let node = r.node.unwrap();
             let ring = Self::deserialize(&node.value.unwrap()).unwrap();
             let ring_version = node.modified_index.unwrap();
@@ -456,20 +459,20 @@ impl<T: Metadata> DHT<T> {
     fn reset(&self, meta: T, replication_factor: u8, partitions: u16) {
         assert!(partitions.is_power_of_two());
         assert!(replication_factor > 0);
-        let mut inner = self.inner.write().unwrap();
-        let cluster_key = format!("/{}/dht", inner.cluster);
+        let cluster_key = format!("/{}/dht", self.cluster);
+        let mut inner = self.inner.lock().unwrap();
         inner.ring = Ring::new(self.node, self.addr, meta, partitions, replication_factor);
         let new = Self::serialize(&inner.ring).unwrap();
-        let r = inner.etcd.set(&cluster_key, &new, None).unwrap();
+        let r = self.etcd_client.set(&cluster_key, &new, None).unwrap();
         inner.ring_version = r.node.unwrap().modified_index.unwrap();
     }
 
     pub fn set_callback(&self, callback: DHTChangeFn) {
-        self.inner.write().unwrap().callback = Some(callback);
+        self.inner.lock().unwrap().callback = Some(callback);
     }
 
     fn wait_new_version(&self, old_version: u64) {
-        while self.inner.read().unwrap().ring_version <= old_version {
+        while self.inner.lock().unwrap().ring_version <= old_version {
             thread::sleep(Duration::from_millis(1));
         }
     }
@@ -483,23 +486,23 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn partitions(&self) -> usize {
-        self.inner.read().unwrap().ring.vnodes.len()
+        self.partitions
     }
 
     pub fn replication_factor(&self) -> usize {
-        self.inner.read().unwrap().ring.replication_factor as usize
+        self.replication_factor
     }
 
     pub fn key_vnode(&self, key: &[u8]) -> VNodeId {
         // FIXME: this should be lock free
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.lock().unwrap();
         (hash(key) % inner.ring.vnodes.len() as u64) as VNodeId
     }
 
     pub fn vnodes_for_node(&self, node: NodeId) -> (Vec<VNodeId>, Vec<VNodeId>) {
         let mut insync = Vec::new();
         let mut pending = Vec::new();
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.lock().unwrap();
         for (i, (v, p)) in inner.ring.vnodes.iter().zip(inner.ring.pending.iter()).enumerate() {
             if v.contains(&node) {
                 insync.push(i as VNodeId);
@@ -516,7 +519,7 @@ impl<T: Metadata> DHT<T> {
                            -> Vec<NodeId> {
         // FIXME: this shouldn't alloc
         let mut result = Vec::new();
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.lock().unwrap();
         result.extend(&inner.ring.vnodes[vnode as usize]);
         if include_pending {
             result.extend(&inner.ring.pending[vnode as usize]);
@@ -530,7 +533,7 @@ impl<T: Metadata> DHT<T> {
     pub fn write_members_for_vnode(&self, vnode: VNodeId) -> Vec<(NodeId, (net::SocketAddr, T))> {
         // FIXME: this shouldn't alloc
         let mut result = Vec::new();
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.lock().unwrap();
         result.extend(inner.ring.vnodes[vnode as usize]
             .iter()
             .map(|n| (*n, inner.ring.nodes.get(n).cloned().unwrap())));
@@ -538,12 +541,12 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn members(&self) -> HashMap<NodeId, net::SocketAddr> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.lock().unwrap();
         inner.ring.nodes.iter().map(|(k, v)| (k.clone(), v.0.clone())).collect()
     }
 
     fn ring_clone(&self) -> (Ring<T>, u64) {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.lock().unwrap();
         (inner.ring.clone(), inner.ring_version)
     }
 
@@ -595,16 +598,13 @@ impl<T: Metadata> DHT<T> {
     fn propose(&self, old_version: u64, new_ring: Ring<T>, update: bool)
                -> Result<(), etcd::Error> {
         debug!("Proposing new ring against version {}", old_version);
-        let cluster_key = format!("/{}/dht", self.inner.read().unwrap().cluster);
+        let cluster_key = format!("/{}/dht", self.cluster);
         let new = Self::serialize(&new_ring).unwrap();
-        let r = try!(self.inner
-            .read()
-            .unwrap()
-            .etcd
+        let r = try!(self.etcd_client
             .compare_and_swap(&cluster_key, &new, None, None, Some(old_version))
             .map_err(|mut e| e.pop().unwrap()));
         if update {
-            let mut inner = self.inner.write().unwrap();
+            let mut inner = self.inner.lock().unwrap();
             inner.ring = new_ring;
             inner.ring_version = r.node.unwrap().modified_index.unwrap();
             debug!("Updated ring to {:?} version {}", inner.ring, inner.ring_version);
@@ -623,7 +623,7 @@ impl<T: Metadata> DHT<T> {
 
 impl<T: Metadata> Drop for DHT<T> {
     fn drop(&mut self) {
-        let _ = self.inner.write().map(|mut inner| inner.running = false);
+        let _ = self.inner.lock().map(|mut inner| inner.running = false);
     }
 }
 

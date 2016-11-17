@@ -12,11 +12,6 @@ use utils::IdHashMap;
 pub use types::*;
 use config::Config;
 
-// TODO: move to config file
-const MAX_INCOMMING_SYNCS: usize = 0;
-const WORKERS: usize = 1;
-const WORKER_TIMER_MS: u64 = 2000;
-
 pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;
 
 pub struct Database {
@@ -71,8 +66,9 @@ impl Database {
         meta_storage.set(b"node", node.to_string().as_bytes());
         meta_storage.sync();
 
-        let workers =
-            WorkerManager::new(node, WORKERS, time::Duration::from_millis(WORKER_TIMER_MS));
+        let workers = WorkerManager::new(node,
+                                         config.workers as usize,
+                                         time::Duration::from_millis(config.worker_timer as u64));
         let db = Arc::new(Database {
             fabric: Fabric::new(node, config.fabric_addr).unwrap(),
             dht: DHT::new(node,
@@ -116,10 +112,9 @@ impl Database {
             })
         });
 
-        // FIXME: DHT callback shouldnt require sync
-        let sender = Mutex::new(db.sender());
+        let mut dht_change_sender = db.sender();
         db.dht.set_callback(Box::new(move || {
-            sender.lock().unwrap().send(WorkerMsg::DHTChange);
+            dht_change_sender.send(WorkerMsg::DHTChange);
         }));
 
         // register nodes into fabric
@@ -184,18 +179,18 @@ impl Database {
     }
 
     fn handler_tick(&self, time: time::Instant) {
-        let mut incomming_syncs = 0;
+        let mut incomming_syncs = 0usize;
         let vnodes = self.vnodes.read().unwrap();
         for vn in vnodes.values() {
             let mut vn = vn.lock().unwrap();
             vn.handler_tick(self, time);
             incomming_syncs += vn.syncs_inflight().0;
         }
-        if incomming_syncs < MAX_INCOMMING_SYNCS {
+        if incomming_syncs < self.config.max_incomming_syncs as usize {
             let mut rng = thread_rng();
             for i in (0..vnodes.len()).map(|_| rng.gen::<u16>() % vnodes.len() as u16) {
                 incomming_syncs += vnodes.get(&i).unwrap().lock().unwrap().maybe_start_sync(self);
-                if incomming_syncs >= MAX_INCOMMING_SYNCS {
+                if incomming_syncs >= self.config.max_incomming_syncs as usize {
                     break;
                 }
             }
@@ -315,6 +310,7 @@ mod tests {
                 data_dir: data_dir.into(),
                 fabric_addr: fabric_addr,
                 cluster_name: "test".into(),
+                max_incomming_syncs: 0,
                 cmd_init: if create {
                     Some(config::InitCommand {
                         replication_factor: 3,
@@ -323,7 +319,7 @@ mod tests {
                 } else {
                     None
                 },
-                .. Default::default()
+                ..Default::default()
             };
             let db = Database::new(&config,
                                    Box::new(move |t, v| {
@@ -400,12 +396,12 @@ mod tests {
     }
 
     #[test]
-    fn test_reload_shutdown() {
+    fn test_reload_clearn_shutdown() {
         test_reload_stub(true);
     }
 
     #[test]
-    fn test_reload_dirty() {
+    fn test_reload_dirty_shutdown() {
         test_reload_stub(false);
     }
 
@@ -481,7 +477,8 @@ mod tests {
             db1.set(i,
                     i.to_string().as_bytes(),
                     Some(i.to_string().as_bytes()),
-                    VersionVector::new(), One);
+                    VersionVector::new(),
+                    One);
             db1.response(i).unwrap();
         }
         for i in 0..TEST_JOIN_SIZE {
@@ -498,12 +495,16 @@ mod tests {
 
         db2.dht.rebalance();
 
-        // warn!("will check data in db2 during balancing");
-        // for i in 0..TEST_JOIN_SIZE {
-        //     db2.get(i, i.to_string().as_bytes());
-        //     let result = db2.response(i);
-        //     assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
-        // }
+        warn!("will check data in both dbs during balancing");
+        for i in 0..TEST_JOIN_SIZE {
+            db2.get(i, i.to_string().as_bytes(), One);
+            let result = db2.response(i);
+            assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
+
+            db1.get(i, i.to_string().as_bytes(), One);
+            let result = db1.response(i);
+            assert!(result.unwrap().values().eq(&[i.to_string().as_bytes()]));
+        }
 
         sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
@@ -536,7 +537,8 @@ mod tests {
             db1.set(i,
                     i.to_string().as_bytes(),
                     Some(i.to_string().as_bytes()),
-                    VersionVector::new(), One);
+                    VersionVector::new(),
+                    One);
             db1.response(i).unwrap();
         }
         // wait for all writes to be replicated
@@ -595,7 +597,8 @@ mod tests {
             db1.set(i,
                     i.to_string().as_bytes(),
                     Some(i.to_string().as_bytes()),
-                    VersionVector::new(), One);
+                    VersionVector::new(),
+                    One);
             db1.response(i).unwrap();
         }
         for i in 0..TEST_JOIN_SIZE {

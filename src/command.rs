@@ -21,7 +21,7 @@ impl From<ConsistencyLevelParseError> for CommandError {
     }
 }
 
-fn check_arg_count(count: usize, min: usize, max:usize) -> Result<(), CommandError> {
+fn check_arg_count(count: usize, min: usize, max: usize) -> Result<(), CommandError> {
     if count < min || count > max {
         Err(CommandError::InvalidArgCount)
     } else {

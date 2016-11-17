@@ -9,7 +9,7 @@
 * [x] convert resp into command to the database
 * [x] send responses to the resp server
 * [ ] proper resp protocol
-* [ ] support specifying R/W/Timeout for the request
+* [x] support specifying ConsistencyLevel on request
 * [x] worker threads
 * [x] handling timeouts for crud
 * [x] generic sync normal/reverse
