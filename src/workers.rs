@@ -52,7 +52,7 @@ impl WorkerManager {
             let worker_fn = worker_fn_gen();
             let (tx, rx) = mpsc::channel();
             self.threads.push(thread::Builder::new()
-                .name(format!("Worker:{}-{}", self.node, i))
+                .name(format!("Worker:{}:{}", self.node, i))
                 .spawn(move || worker_fn(rx))
                 .unwrap());
             self.channels.push(tx);
@@ -63,7 +63,7 @@ impl WorkerManager {
         let ticker_interval = self.ticker_interval;
         let mut sender = self.sender();
         self.ticker_thread = Some(thread::Builder::new()
-            .name(format!("WorkerTicker:{}", -1))
+            .name(format!("WorkerTicker:{}", self.node))
             .spawn(move || {
                 loop {
                     thread::sleep(ticker_interval);
@@ -92,9 +92,9 @@ impl WorkerSender {
         let _ = self.try_send(msg);
     }
     pub fn try_send(&mut self, msg: WorkerMsg) -> Result<(), mpsc::SendError<WorkerMsg>> {
-        let i = self.cursor % self.channels.len();
+        let i = self.cursor;
         self.cursor = self.cursor.wrapping_add(1);
-        self.channels[i].send(msg)
+        self.channels[i % self.channels.len()].send(msg)
     }
 }
 

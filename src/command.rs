@@ -70,12 +70,12 @@ impl Database {
         let args = &arg_[1..argc];
 
         let ret = match arg0 {
-            b"GET" | b"MGET" => self.cmd_get(token, args),
-            b"SET" | b"MSET" => self.cmd_set(token, args),
-            b"DEL" | b"MDEL" => self.cmd_del(token, args),
-            b"CLUSTER" => self.cmd_cluster(token, args),
-            b"ECHO" => {
-                (&self.response_fn)(token, cmd.clone());
+            b"GET" | b"MGET" | b"get" | b"mget" => self.cmd_get(token, args),
+            b"SET" | b"MSET" | b"set" | b"mset" => self.cmd_set(token, args),
+            b"DEL" | b"MDEL" | b"del" | b"mdel" => self.cmd_del(token, args),
+            b"CLUSTER" | b"cluster" => self.cmd_cluster(token, args),
+            b"ECHO" | b"echo" => {
+                self.respond(token, cmd.clone());
                 Ok(())
             }
             _ => Err(CommandError::UnknownCommand),
@@ -128,36 +128,58 @@ impl Database {
 
     fn cmd_cluster(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
         match args {
-            &[b"REBALANCE"] => {
+            &[b"REBALANCE"] | &[b"rebalance"] => {
                 self.dht.rebalance().unwrap();
                 Ok(self.respond_ok(token))
+            }
+            &[b"SLOTS"] | &[b"slots"] => {
+                let mut slots = Vec::new();
+                for (vn, members) in self.dht.slots().iter().enumerate() {
+                    let mut slot = vec![RespValue::Int(vn as i64),
+                                                    RespValue::Int(vn as i64),
+                                                    ];
+                    slot.extend(members.iter()
+                        .map(|&(n, (_, sa))| {
+                            RespValue::Array(vec![
+                                RespValue::Data(sa.ip().to_string().as_bytes().into()),
+                                RespValue::Int(sa.port() as i64),
+                                RespValue::Data(n.to_string().as_bytes().into()),
+                            ])
+                        }));
+                    slots.push(RespValue::Array(slot));
+                }
+                Ok(self.respond(token, RespValue::Array(slots)))
             }
             _ => Err(CommandError::UnknownCommand),
         }
     }
 
+    pub fn respond(&self, token: Token, resp: RespValue) {
+        (&self.response_fn)(token, resp);
+    }
+
     pub fn respond_ok(&self, token: Token) {
-        (&self.response_fn)(token, RespValue::Status("OK".into()));
+        self.respond(token, RespValue::Status("OK".into()));
     }
 
     pub fn respond_error(&self, token: Token, error: CommandError) {
-        (&self.response_fn)(token, RespValue::Error(format!("{:?}", error).into()));
+        self.respond(token, RespValue::Error(format!("{:?}", error).into()));
     }
 
     pub fn respond_get(&self, token: Token, dcc: DottedCausalContainer<Vec<u8>>) {
-        (&self.response_fn)(token, dcc_to_resp(dcc));
+        self.respond(token, dcc_to_resp(dcc));
     }
 
     pub fn respond_set(&self, token: Token, dcc: DottedCausalContainer<Vec<u8>>) {
-        (&self.response_fn)(token, dcc_to_resp(dcc));
+        self.respond(token, dcc_to_resp(dcc));
     }
 
     pub fn respond_move(&self, token: Token, vnode: VNodeId, addr: net::SocketAddr) {
-        (&self.response_fn)(token, RespValue::Error(format!("MOVE {} {}", vnode, addr).into()));
+        self.respond(token, RespValue::Error(format!("MOVE {} {}", vnode, addr).into()));
     }
 
     pub fn respond_ask(&self, token: Token, vnode: VNodeId, addr: net::SocketAddr) {
-        (&self.response_fn)(token, RespValue::Error(format!("ASK {} {}", vnode, addr).into()));
+        self.respond(token, RespValue::Error(format!("ASK {} {}", vnode, addr).into()));
     }
 }
 

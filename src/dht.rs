@@ -13,10 +13,10 @@ use utils::{IdHashMap, GenericError};
 
 pub type DHTChangeFn = Box<FnMut() + Send>;
 pub trait Metadata
-    : Clone + Serialize + Deserialize + Sync + Send + fmt::Debug + 'static {
+    : Clone + Serialize + Deserialize + Send + fmt::Debug + 'static {
 }
 
-impl<T: Clone + Serialize + Deserialize + Sync + Send + fmt::Debug + 'static> Metadata for T {}
+impl<T: Clone + Serialize + Deserialize + Send + fmt::Debug + 'static> Metadata for T {}
 
 pub struct DHT<T: Metadata> {
     node: NodeId,
@@ -434,7 +434,7 @@ impl<T: Metadata> DHT<T> {
             }
 
             // call callback
-            inner.lock().unwrap().callback.take().unwrap()();
+            inner.lock().unwrap().callback.as_mut().unwrap()();
             trace!("dht callback returned");
         }
         debug!("exiting dht thread");
@@ -494,9 +494,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn key_vnode(&self, key: &[u8]) -> VNodeId {
-        // FIXME: this should be lock free
-        let inner = self.inner.lock().unwrap();
-        (hash(key) % inner.ring.vnodes.len() as u64) as VNodeId
+        (hash(key) % self.partitions as u64) as VNodeId
     }
 
     pub fn vnodes_for_node(&self, node: NodeId) -> (Vec<VNodeId>, Vec<VNodeId>) {
@@ -536,6 +534,7 @@ impl<T: Metadata> DHT<T> {
         let inner = self.inner.lock().unwrap();
         result.extend(inner.ring.vnodes[vnode as usize]
             .iter()
+            .chain(inner.ring.retiring[vnode as usize].iter())
             .map(|n| (*n, inner.ring.nodes.get(n).cloned().unwrap())));
         result
     }
@@ -543,6 +542,23 @@ impl<T: Metadata> DHT<T> {
     pub fn members(&self) -> HashMap<NodeId, net::SocketAddr> {
         let inner = self.inner.lock().unwrap();
         inner.ring.nodes.iter().map(|(k, v)| (k.clone(), v.0.clone())).collect()
+    }
+
+    pub fn slots(&self) -> Vec<Vec<(NodeId, (net::SocketAddr, T))>> {
+        let mut result = Vec::new();
+        let inner = self.inner.lock().unwrap();
+        for ((v, p), r) in inner.ring
+            .vnodes
+            .iter()
+            .zip(inner.ring.pending.iter())
+            .zip(inner.ring.retiring.iter()) {
+            result.push(v.iter()
+                .chain(p.iter())
+                .chain(r.iter())
+                .map(|n| (*n, inner.ring.nodes.get(n).cloned().unwrap()))
+                .collect());
+        }
+        result
     }
 
     fn ring_clone(&self) -> (Ring<T>, u64) {

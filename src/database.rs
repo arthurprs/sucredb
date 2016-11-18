@@ -20,9 +20,9 @@ pub struct Database {
     pub meta_storage: Storage,
     pub storage_manager: StorageManager,
     pub response_fn: DatabaseResponseFn,
-    workers: Mutex<WorkerManager>,
-    vnodes: RwLock<IdHashMap<VNodeId, Mutex<VNode>>>,
     pub config: Config,
+    vnodes: RwLock<IdHashMap<VNodeId, Mutex<VNode>>>,
+    workers: Mutex<WorkerManager>,
 }
 
 macro_rules! fabric_send_error{
