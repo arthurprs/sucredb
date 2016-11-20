@@ -31,14 +31,14 @@ macro_rules! fabric_send_error{
             vnode: $msg.vnode,
             cookie: $msg.cookie,
             result: Err($err),
-        }).unwrap();
+        })
     };
     ($db: expr, $to: expr, $vnode: expr, $cookie: expr, $emsg: ident, $err: expr) => {
         $db.fabric.send_msg($to, $emsg {
             vnode: $vnode,
             cookie: $cookie,
             result: Err($err),
-        }).unwrap();
+        })
     };
 }
 
@@ -67,8 +67,8 @@ impl Database {
         meta_storage.sync();
 
         let workers = WorkerManager::new(node,
-                                         config.workers as usize,
-                                         time::Duration::from_millis(config.worker_timer as u64));
+                                         config.workers as _,
+                                         time::Duration::from_millis(config.worker_timer as _));
         let db = Arc::new(Database {
             fabric: Fabric::new(node, config.fabric_addr).unwrap(),
             dht: DHT::new(node,

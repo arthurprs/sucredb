@@ -134,7 +134,7 @@ macro_rules! check_status {
                 let cookie = $msg.cookie;
                 debug!("Incorrect state for {}[{:?}] expected {} was {:?}",
                     stringify!($col), cookie, stringify!($($status)|*), state);
-                fabric_send_error!($db, $from, $msg, $emsg, FabricMsgError::BadVNodeStatus);
+                let _ = fabric_send_error!($db, $from, $msg, $emsg, FabricMsgError::BadVNodeStatus);
                 return;
             },
         }
@@ -148,7 +148,7 @@ macro_rules! forward {
                 o.get_mut().$f($db, &mut $this.state, $msg);
             },
             _ => {
-                fabric_send_error!($db, $from, $msg, $emsg, FabricMsgError::CookieNotFound);
+                let _ = fabric_send_error!($db, $from, $msg, $emsg, FabricMsgError::CookieNotFound);
             }
         }
     };
@@ -296,28 +296,26 @@ impl VNode {
             }
         }
 
-        if self.status() == VNodeStatus::Ready {
-            let terminated = {
-                let state = &mut self.state;
-                self.syncs
-                    .iter_mut()
-                    .filter_map(|(&cookie, s)| {
-                        match s.on_tick(db, state) {
-                            SyncResult::Continue => None,
-                            result => Some((cookie, result)),
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            };
-            for (cookie, result) in terminated {
-                self.syncs.remove(&cookie).unwrap().on_remove(db, &mut self.state);
-                match result {
-                    SyncResult::RetryBoostrap => {
-                        info!("Retrying bootstrap {:?}", cookie);
-                        self.start_bootstrap(db);
+        let terminated = {
+            let state = &mut self.state;
+            self.syncs
+                .iter_mut()
+                .filter_map(|(&cookie, s)| {
+                    match s.on_tick(db, state) {
+                        SyncResult::Continue => None,
+                        result => Some((cookie, result)),
                     }
-                    _ => (),
+                })
+                .collect::<Vec<_>>()
+        };
+        for (cookie, result) in terminated {
+            self.syncs.remove(&cookie).unwrap().on_remove(db, &mut self.state);
+            match result {
+                SyncResult::RetryBoostrap => {
+                    info!("Retrying bootstrap {:?}", cookie);
+                    self.start_bootstrap(db);
                 }
+                _ => (),
             }
         }
 
@@ -344,14 +342,13 @@ impl VNode {
                 let container = self.state.storage_get(key);
                 self.process_get(db, cookie, Some(container));
             } else {
-                db.fabric
+                let _ = db.fabric
                     .send_msg(node,
                               MsgRemoteGet {
                                   cookie: cookie,
                                   vnode: self.state.num,
                                   key: key.into(),
-                              })
-                    .unwrap();
+                              });
             }
         }
     }
@@ -396,15 +393,14 @@ impl VNode {
         self.process_set(db, cookie, true);
         for node in nodes {
             if node != db.dht.node() {
-                db.fabric
+                let _ = db.fabric
                     .send_msg(node,
                               MsgRemoteSet {
                                   cookie: cookie,
                                   vnode: self.state.num,
                                   key: key.into(),
                                   container: dcc.clone(),
-                              })
-                    .unwrap();
+                              });
             }
         }
     }
@@ -472,14 +468,13 @@ impl VNode {
                       MsgRemoteGetAck,
                       inflight_get);
         let dcc = self.state.storage_get(&msg.key);
-        db.fabric
+        let _ = db.fabric
             .send_msg(from,
                       MsgRemoteGetAck {
                           cookie: msg.cookie,
                           vnode: msg.vnode,
                           result: Ok(dcc),
-                      })
-            .unwrap();
+                      });
     }
 
     pub fn handler_set(&mut self, _db: &Database, _from: NodeId, _msg: MsgSet) {
@@ -500,14 +495,13 @@ impl VNode {
                       inflight_set);
         let MsgRemoteSet { key, container, vnode, cookie } = msg;
         let result = self.state.storage_set_remote(db, &key, container);
-        db.fabric
+        let _ = db.fabric
             .send_msg(from,
                       MsgRemoteSetAck {
                           vnode: vnode,
                           cookie: cookie,
                           result: Ok(result),
-                      })
-            .unwrap();
+                      });
     }
 
     pub fn handler_set_remote_ack(&mut self, db: &Database, _from: NodeId, msg: MsgRemoteSetAck) {
@@ -522,7 +516,7 @@ impl VNode {
              (self.state.status == VNodeStatus::Retiring &&
               self.state.last_status_change.elapsed() <
               Duration::from_millis(RETIRING_TIMEOUT_MS))) {
-            fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::BadVNodeStatus);
+            let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::BadVNodeStatus);
         } else if !self.syncs.contains_key(&msg.cookie) {
             let cookie = msg.cookie;
             let sync = match msg.target {
@@ -586,7 +580,8 @@ impl VNode {
         } else {
             // only send error if Ok, otherwise the message will be sent back and forth forever
             if msg.result.is_ok() {
-                fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::CookieNotFound);
+                let _ =
+                    fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::CookieNotFound);
             }
             return;
         };

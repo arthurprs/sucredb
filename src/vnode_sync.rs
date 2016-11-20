@@ -10,10 +10,6 @@ use inflightmap::InFlightMap;
 use bincode::serde as bincode_serde;
 use utils::IdHasherBuilder;
 
-const SYNC_INFLIGHT_MAX: usize = 5;
-const SYNC_INFLIGHT_TIMEOUT_MS: u64 = 2000;
-const SYNC_TIMEOUT_MS: u64 = SYNC_INFLIGHT_TIMEOUT_MS * 51 / 10;
-
 #[derive(Debug)]
 #[must_use]
 pub enum SyncResult {
@@ -55,7 +51,6 @@ pub enum Synchronization {
         target: NodeId,
         // non-exact count of received keys
         recv_count: u64,
-        start_count: u32,
         last_recv: Instant,
     },
     BootstrapSender {
@@ -73,7 +68,6 @@ pub enum Synchronization {
         peer: NodeId,
         // non-exact count of received keys
         recv_count: u64,
-        start_count: u32,
         last_recv: Instant,
     },
 }
@@ -89,7 +83,6 @@ impl Synchronization {
             recv_count: 0,
             target: target,
             last_recv: Instant::now(),
-            start_count: 0,
         };
         sync.send_start(db, state);
         sync
@@ -102,7 +95,6 @@ impl Synchronization {
             peer: peer,
             recv_count: 0,
             last_recv: Instant::now(),
-            start_count: 0,
         };
         sync.send_start(db, state);
         sync
@@ -246,29 +238,29 @@ impl Synchronization {
             }
             _ => unreachable!(),
         };
-        db.fabric
+
+            info!("Sending start for {:?}", cookie);
+        let _ = db.fabric
             .send_msg(peer,
                       MsgSyncStart {
                           cookie: cookie,
                           vnode: state.num(),
                           clocks_in_peer: clocks_in_peer,
                           target: target,
-                      })
-            .unwrap();
+                      });
     }
 
     fn send_success_fin(&mut self, db: &Database, state: &mut VNodeState) {
         match *self {
             Synchronization::SyncSender { peer, cookie, ref clocks_snapshot, .. } |
             Synchronization::BootstrapSender { peer, cookie, ref clocks_snapshot, .. } => {
-                db.fabric
+                let _ = db.fabric
                     .send_msg(peer,
                               MsgSyncFin {
                                   cookie: cookie,
                                   vnode: state.num(),
                                   result: Ok(clocks_snapshot.clone()),
-                              })
-                    .unwrap();
+                              });
             }
             _ => unreachable!(),
         };
@@ -290,10 +282,10 @@ impl Synchronization {
                                                ref mut inflight,
                                                .. } => {
                 let now = Instant::now();
-                let timeout = now + Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS);
+                let timeout = now + Duration::from_millis(db.config.sync_msg_timeout as _);
                 while let Some((seq, &(ref k, ref dcc))) = inflight.touch_expired(now, timeout) {
                     debug!("resending seq {} for sync/bootstrap {:?}", seq, cookie);
-                    db.fabric
+                    let _ = db.fabric
                         .send_msg(peer,
                                   MsgSyncSend {
                                       cookie: cookie,
@@ -301,12 +293,11 @@ impl Synchronization {
                                       seq: seq,
                                       key: k.clone(),
                                       container: dcc.clone(),
-                                  })
-                        .unwrap();
+                                  });
                 }
-                while inflight.len() < SYNC_INFLIGHT_MAX {
+                while inflight.len() < db.config.sync_msg_inflight as usize {
                     if let Some((k, dcc)) = iterator(&state.storage) {
-                        db.fabric
+                        let _ = db.fabric
                             .send_msg(peer,
                                       MsgSyncSend {
                                           cookie: cookie,
@@ -314,8 +305,7 @@ impl Synchronization {
                                           seq: *count,
                                           key: k.clone(),
                                           container: dcc.clone(),
-                                      })
-                            .unwrap();
+                                      });
                         inflight.insert(*count, (k, dcc), timeout);
                         *count += 1;
                     } else {
@@ -337,12 +327,12 @@ impl Synchronization {
         match *self {
             Synchronization::BootstrapReceiver { peer, cookie, .. } |
             Synchronization::SyncReceiver { peer, cookie, .. } => {
-                fabric_send_error!(db,
-                                   peer,
-                                   state.num(),
-                                   cookie,
-                                   MsgSyncFin,
-                                   FabricMsgError::BadVNodeStatus);
+                let _ = fabric_send_error!(db,
+                                           peer,
+                                           state.num(),
+                                           cookie,
+                                           MsgSyncFin,
+                                           FabricMsgError::BadVNodeStatus);
             }
             _ => unreachable!(),
         }
@@ -369,7 +359,7 @@ impl Synchronization {
         match *self {
             Synchronization::SyncSender { last_recv, cookie, .. } |
             Synchronization::BootstrapSender { last_recv, cookie, .. } => {
-                if last_recv.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
+                if last_recv.elapsed() > Duration::from_millis(db.config.sync_timeout as _) {
                     warn!("sync/boostrap sender timed out {:?}", cookie);
                     return SyncResult::Done;
                 }
@@ -377,7 +367,7 @@ impl Synchronization {
             }
             Synchronization::SyncReceiver { last_recv, recv_count, cookie, .. } |
             Synchronization::BootstrapReceiver { last_recv, recv_count, cookie, .. } => {
-                if last_recv.elapsed() > Duration::from_millis(SYNC_TIMEOUT_MS) {
+                if last_recv.elapsed() > Duration::from_millis(db.config.sync_timeout as _) {
                     warn!("sync/boostrap receiver timed out {:?}", cookie);
                     match *self {
                         Synchronization::BootstrapReceiver { .. } => {
@@ -386,7 +376,7 @@ impl Synchronization {
                         _ => return SyncResult::Done,
                     }
                 } else if recv_count == 0 &&
-                          last_recv.elapsed() > Duration::from_millis(SYNC_INFLIGHT_TIMEOUT_MS) {
+                          last_recv.elapsed() > Duration::from_millis(db.config.sync_msg_timeout as _) {
                     self.send_start(db, state);
                 }
             }
@@ -461,14 +451,13 @@ impl Synchronization {
                 //        until the bvv join on Fin
                 state.storage_set_remote(db, &msg.key, msg.container);
 
-                db.fabric
+                let _ = db.fabric
                     .send_msg(peer,
                               MsgSyncAck {
                                   cookie: msg.cookie,
                                   vnode: state.num(),
                                   seq: msg.seq,
-                              })
-                    .unwrap();
+                              });
 
                 *recv_count += 1;
                 *last_recv = Instant::now();

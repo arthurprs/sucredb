@@ -21,6 +21,9 @@ pub struct Config {
     pub workers: u16,
     pub max_incomming_syncs: u16,
     pub max_outgoing_syncs: u16,
+    pub sync_timeout: u32,
+    pub sync_msg_timeout: u32,
+    pub sync_msg_inflight: u32,
     pub fabric_reconnect_interval: u32,
     pub fabric_keepalive: u32,
     pub fabric_timeout: u32,
@@ -42,12 +45,15 @@ impl Default for Config {
             workers: 1,
             max_incomming_syncs: 1,
             max_outgoing_syncs: 1,
+            sync_timeout: 10_000,
+            sync_msg_timeout: 1_000,
+            sync_msg_inflight: 5,
             fabric_reconnect_interval: 1000,
             fabric_keepalive: 1000,
             fabric_timeout: 1000,
             max_connections: 100,
-            read_consistency: ConsistencyLevel::Quorum,
-            write_consistency: ConsistencyLevel::Quorum,
+            read_consistency: ConsistencyLevel::One,
+            write_consistency: ConsistencyLevel::One,
         }
     }
 }

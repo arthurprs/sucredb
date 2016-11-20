@@ -19,8 +19,12 @@ use utils::{GenericError, IdHashMap};
 use database::NodeId;
 
 pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
-pub type FabricResult<T> = Result<T, GenericError>;
 const RECONNECT_INTERVAL_MS: u64 = 1000;
+
+#[derive(Debug)]
+pub enum FabricError {
+    NoChannel,
+}
 
 struct ReaderContext {
     context: Arc<GlobalContext>,
@@ -301,7 +305,7 @@ impl Fabric {
         }
     }
 
-    pub fn new(node: NodeId, addr: SocketAddr) -> FabricResult<Self> {
+    pub fn new(node: NodeId, addr: SocketAddr) -> Result<Self, GenericError> {
         // start event loop thread
         let (init_tx, init_rx) = ::std::sync::mpsc::channel();
         let thread = thread::Builder::new()
@@ -337,11 +341,10 @@ impl Fabric {
         }
         let context_cloned = context.clone();
         context.loop_remote.spawn(move |h| Self::connect(node, addr, context_cloned, h.clone()));
-        ::std::thread::sleep(::std::time::Duration::from_millis(500));
     }
 
     // TODO: take msgs as references and buffer serialized bytes instead
-    pub fn send_msg<T: Into<FabricMsg>>(&self, node: NodeId, msg: T) -> FabricResult<()> {
+    pub fn send_msg<T: Into<FabricMsg>>(&self, node: NodeId, msg: T) -> Result<(), FabricError> {
         if node == self.context.node {
             panic!("Can't send message to self");
         }
@@ -366,25 +369,19 @@ impl Fabric {
         match writers.entry(node) {
             HMEntry::Occupied(o) => {
                 let chans = o.get();
-                match chans.len() {
-                    0 => {
-                        // FIXME: super broken
-                        error!("DROPING MSG - No writers");
-                    }
-                    1 => {
-                        let _ = chans[0].send(msg);
-                    }
-                    _ => {
-                        let _ = thread_rng().choose(&chans).unwrap().send(msg);
-                    }
+                if chans.is_empty(){
+                    warn!("DROPING MSG - No channel available");
+                    Err(FabricError::NoChannel)
+                } else {
+                    let _ = thread_rng().choose(&chans).unwrap().send(msg);
+                    Ok(())
                 }
             }
             HMEntry::Vacant(_v) => {
-                // FIXME: super broken
-                error!("DROPING MSG - No Channels entry");
+                warn!("DROPING MSG - No entry for node");
+                Err(FabricError::NoChannel)
             }
         }
-        Ok(())
     }
 }
 

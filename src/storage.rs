@@ -47,12 +47,12 @@ unsafe impl Sync for StorageIterator {}
 impl StorageManager {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<StorageManager, GenericError> {
         let mut env = try!(lmdb_rs::Environment::new()
-            .map_size(1024 * 1024 * 1024)
+            .map_size(10 * 1024 * 1024 * 1024)
             .flags(lmdb_rs::core::EnvCreateNoTls | lmdb_rs::core::EnvCreateNoMemInit |
                    lmdb_rs::core::EnvCreateWriteMap)
             .autocreate_dir(true)
-            .max_dbs(256)
-            .open(path.as_ref(), 0o777));
+            .max_dbs(1025)
+            .open(path.as_ref(), 0o666));
         try!(env.set_flags(lmdb_rs::core::EnvNoMetaSync | lmdb_rs::core::EnvNoMemInit, true));
         Ok(StorageManager {
             path: path.as_ref().into(),
@@ -203,8 +203,10 @@ impl Storage {
 
 impl Drop for StorageManager {
     fn drop(&mut self) {
-        let c = Arc::strong_count(&self.storages_handle);
-        assert!(c == 1, "{} pending databases", c - 1);
+        let sc = Arc::strong_count(&self.storages_handle);
+        let wc = Arc::weak_count(&self.storages_handle);
+        assert!(wc == 0);
+        assert!(sc == 1, "{} pending databases", sc - 1);
     }
 }
 
@@ -212,8 +214,10 @@ impl Drop for Storage {
     fn drop(&mut self) {
         let mut wlock = self.storages_handle.lock().unwrap();
         wlock.remove(&self.num);
-        let c = Arc::strong_count(&self.iterators_handle);
-        assert!(c == 1, "{} pending iterators", c - 1);
+        let sc = Arc::strong_count(&self.iterators_handle);
+        let wc = Arc::weak_count(&self.iterators_handle);
+        assert!(wc == 0);
+        assert!(sc == 1, "{} pending iterators", wc - 1);
     }
 }
 
