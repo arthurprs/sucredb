@@ -512,10 +512,12 @@ mod tests {
             sleep_ms(1000);
         }
 
-        warn!("will check data in db2 after balancing");
+        warn!("will check after balancing");
         for i in 0..TEST_JOIN_SIZE {
-            db2.get(i, i.to_string().as_bytes(), One);
-            assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+            for &db in &[&db1, &db2] {
+                db.get(i, i.to_string().as_bytes(), One);
+                assert!(db.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+            }
         }
     }
 
@@ -569,10 +571,12 @@ mod tests {
             sleep_ms(1000);
         }
 
-        warn!("will check data in db1 after sync");
+        warn!("will check after balancing");
         for i in 0..TEST_JOIN_SIZE {
-            db1.get(i, i.to_string().as_bytes(), One);
-            assert!(db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+            for &db in &[&db1, &db2] {
+                db.get(i, i.to_string().as_bytes(), One);
+                assert!(db.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+            }
         }
     }
 
@@ -603,11 +607,19 @@ mod tests {
         }
         for i in 0..TEST_JOIN_SIZE {
             db1.get(i, i.to_string().as_bytes(), One);
-            let result1 = db1.response(i);
+            assert!(db1.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
         }
 
         // sim partition heal
         db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+
+        warn!("will check before sync");
+        for i in 0..TEST_JOIN_SIZE {
+            for &db in &[&db1, &db2] {
+                db.get(i, i.to_string().as_bytes(), Quorum);
+                assert!(db.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+            }
+        }
 
         sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
@@ -627,10 +639,12 @@ mod tests {
             sleep_ms(1000);
         }
 
-        warn!("will check data in db2 after sync");
+        warn!("will check after balancing");
         for i in 0..TEST_JOIN_SIZE {
-            db2.get(i, i.to_string().as_bytes(), One);
-            assert!(db2.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+            for &db in &[&db1, &db2] {
+                db.get(i, i.to_string().as_bytes(), One);
+                assert!(db.response(i).unwrap().values().eq(&[i.to_string().as_bytes()]));
+            }
         }
     }
 }

@@ -400,7 +400,7 @@ impl Synchronization {
                     state.save(db, false);
                     state.storage.sync();
                     // send it back as a form of ack-ack
-                    db.fabric.send_msg(peer, msg).unwrap();
+                    let _ = db.fabric.send_msg(peer, msg);
                 }
             }
             Synchronization::SyncSender { /*ref clock_in_peer, peer,*/ .. } => {
@@ -424,7 +424,7 @@ impl Synchronization {
                     match db.dht.promote_pending_node(db.dht.node(), state.num()) {
                         Ok(_) => {
                             // send it back as a form of ack-ack
-                            db.fabric.send_msg(peer, msg).unwrap();
+                            let _ = db.fabric.send_msg(peer, msg);
                         }
                         Err(e) => {
                             warn!("Can't retire node {} vnode {}: {}", db.dht.node(), state.num(), e);

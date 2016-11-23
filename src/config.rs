@@ -46,7 +46,7 @@ impl Default for Config {
             max_incomming_syncs: 1,
             max_outgoing_syncs: 1,
             sync_timeout: 10_000,
-            sync_msg_timeout: 1_000,
+            sync_msg_timeout: 1000,
             sync_msg_inflight: 5,
             fabric_reconnect_interval: 1000,
             fabric_keepalive: 1000,
