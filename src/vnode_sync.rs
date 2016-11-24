@@ -239,7 +239,7 @@ impl Synchronization {
             _ => unreachable!(),
         };
 
-            info!("Sending start for {:?}", cookie);
+        info!("Sending start for {:?}", cookie);
         let _ = db.fabric
             .send_msg(peer,
                       MsgSyncStart {
@@ -376,7 +376,8 @@ impl Synchronization {
                         _ => return SyncResult::Done,
                     }
                 } else if recv_count == 0 &&
-                          last_recv.elapsed() > Duration::from_millis(db.config.sync_msg_timeout as _) {
+                          last_recv.elapsed() >
+                          Duration::from_millis(db.config.sync_msg_timeout as _) {
                     self.send_start(db, state);
                 }
             }

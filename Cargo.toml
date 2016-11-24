@@ -16,11 +16,9 @@ tendril="*"
 byteorder="*"
 nodrop="*"
 ramp="*"
-futures = { git = "https://github.com/alexcrichton/futures-rs" }
+tokio-core = "*"
+futures = "*"
 clap="*"
-
-[dependencies.tokio-core]
-git="https://github.com/tokio-rs/tokio-core.git"
 
 [dependencies.linear-map]
 git = "https://github.com/arthurprs/linear-map.git"
@@ -31,7 +29,7 @@ version = "*"
 features = ["serde"]
 
 [dependencies.etcd]
-path= "../rust-etcd"
+version="*"
 default-features = false
 features = ["nightly"]
 

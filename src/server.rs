@@ -9,6 +9,7 @@ use database::{Database, Token};
 use workers::{WorkerMsg, WorkerSender};
 use futures::{self, Future};
 use futures::stream::{self, Stream};
+use futures::sync::mpsc as fmpsc;
 use extra_futures::read_at;
 use tokio_core as tokio;
 use tokio_core::io::Io;
@@ -31,7 +32,7 @@ struct LocalContext {
 struct GlobalContext {
     database: Arc<Database>,
     db_sender: RefCell<WorkerSender>,
-    token_chans: Arc<Mutex<IdHashMap<Token, tokio::channel::Sender<RespValue>>>>,
+    token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<RespValue>>>>,
 }
 
 pub struct Server {
@@ -69,13 +70,13 @@ impl RespConnection {
         }
     }
 
-    fn run(self, handle: tokio::reactor::Handle, socket: tokio::net::TcpStream,
-           context: Rc<GlobalContext>)
+    fn run(self, socket: tokio::net::TcpStream, context: Rc<GlobalContext>,
+           _handle: tokio::reactor::Handle)
            -> Box<Future<Item = (), Error = ()>> {
         debug!("run token {}", self.token);
         let _ = socket.set_nodelay(true);
         let (sock_rx, sock_tx) = socket.split();
-        let (pipe_tx, pipe_rx) = tokio::channel::channel(&handle).unwrap();
+        let (pipe_tx, pipe_rx) = fmpsc::unbounded();
         context.token_chans.lock().unwrap().insert(self.token, pipe_tx);
         let ctx_rx = Rc::new(RefCell::new(LocalContext {
             token: self.token,
@@ -129,7 +130,8 @@ impl RespConnection {
             })
             .map(|_| ());
 
-        let write_fut = pipe_rx.fold((ctx_tx, sock_tx, Vec::new()), |(ctx, s, mut b), resp| {
+        let write_fut = pipe_rx.map_err(|_| io::ErrorKind::Other.into())
+            .fold((ctx_tx, sock_tx, Vec::new()), |(ctx, s, mut b), resp| {
                 ctx.borrow_mut().dispatch_next();
                 b.clear();
                 resp.serialize_to(&mut b);
@@ -154,11 +156,11 @@ impl Server {
         let listener = tokio::net::TcpListener::bind(&self.config.listen_addr, &core.handle())
             .unwrap();
 
-        let token_chans: Arc<Mutex<IdHashMap<Token, tokio::channel::Sender<RespValue>>>> =
+        let token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<RespValue>>>> =
             Default::default();
         let token_chans_cloned = token_chans.clone();
         let response_fn = Box::new(move |token, resp| {
-            if let Some(chan) = token_chans_cloned.lock().unwrap().get(&token) {
+            if let Some(chan) = token_chans_cloned.lock().unwrap().get_mut(&token) {
                 let _ = chan.send(resp);
             } else {
                 debug!("Can't find response channel for token {:?}", token);
@@ -180,7 +182,7 @@ impl Server {
                 let conn = RespConnection::new(addr, next_token);
                 let conn_handle = handle.clone();
                 let conn_context = context.clone();
-                handle.spawn_fn(move || conn.run(conn_handle, socket, conn_context));
+                handle.spawn_fn(move || conn.run(socket, conn_context, conn_handle));
                 next_token = next_token.wrapping_add(1);
                 Ok(())
             })

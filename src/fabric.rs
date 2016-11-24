@@ -10,6 +10,7 @@ use bincode::{self, serde as bincode_serde};
 
 use futures::{self, Future, IntoFuture};
 use futures::stream::{self, Stream};
+use futures::sync::mpsc as fmpsc;
 use extra_futures::{read_at, SignaledChan, ShortCircuit};
 use tokio_core as tokio;
 use tokio_core::io::Io;
@@ -36,7 +37,7 @@ struct WriterContext {
     context: Arc<GlobalContext>,
     peer: NodeId,
     peer_addr: SocketAddr,
-    sender: tokio::channel::Sender<FabricMsg>,
+    sender: fmpsc::UnboundedSender<FabricMsg>,
 }
 
 struct GlobalContext {
@@ -46,7 +47,7 @@ struct GlobalContext {
     msg_handlers: Mutex<IdHashMap<u8, FabricHandlerFn>>,
     nodes_addr: Mutex<IdHashMap<NodeId, SocketAddr>>,
     // FIXME: remove mutex or at least change to RwLock
-    writer_chans: Arc<Mutex<IdHashMap<NodeId, Vec<tokio::channel::Sender<FabricMsg>>>>>,
+    writer_chans: Arc<Mutex<IdHashMap<NodeId, Vec<fmpsc::UnboundedSender<FabricMsg>>>>>,
 }
 
 pub struct Fabric {
@@ -72,18 +73,18 @@ impl ReaderContext {
 }
 
 impl WriterContext {
-    fn add_writer_chan(&self, sender: tokio::channel::Sender<FabricMsg>) {
+    fn add_writer_chan(&self, sender: fmpsc::UnboundedSender<FabricMsg>) {
         let mut locked = self.context.writer_chans.lock().unwrap();
         locked.entry(self.peer).or_insert(Default::default()).push(sender);
     }
 
-    fn remove_writer_chan(&self, sender: &tokio::channel::Sender<FabricMsg>) {
+    fn remove_writer_chan(&self, sender: &fmpsc::UnboundedSender<FabricMsg>) {
         let mut locked = self.context.writer_chans.lock().unwrap();
         if let HMEntry::Occupied(mut o) = locked.entry(self.peer) {
             o.get_mut().retain(|i| unsafe {
                 use ::std::mem::transmute_copy;
-                transmute_copy::<tokio::channel::Sender<_>, usize>(i) !=
-                transmute_copy::<tokio::channel::Sender<_>, usize>(sender)
+                transmute_copy::<fmpsc::UnboundedSender<_>, usize>(i) !=
+                transmute_copy::<fmpsc::UnboundedSender<_>, usize>(sender)
             });
             if o.get().is_empty() {
                 o.remove();
@@ -180,10 +181,10 @@ impl Fabric {
     }
 
     fn steady_connection(socket: tokio::net::TcpStream, peer: NodeId, peer_addr: SocketAddr,
-                         context: Arc<GlobalContext>, handle: tokio::reactor::Handle)
+                         context: Arc<GlobalContext>, _handle: tokio::reactor::Handle)
                          -> Box<Future<Item = (), Error = io::Error>> {
         let (sock_rx, sock_tx) = socket.split();
-        let (chan_tx, chan_rx) = tokio::channel::channel::<FabricMsg>(&handle).unwrap();
+        let (chan_tx, chan_rx) = fmpsc::unbounded();
         let ctx_rx = ReaderContext {
             context: context.clone(),
             peer: peer,
@@ -249,6 +250,7 @@ impl Fabric {
             .map(|_| ());
 
         let tx_fut = SignaledChan::new(chan_rx)
+            .map_err(|_| io::ErrorKind::Other.into())
             .fold((ctx_tx, sock_tx, Vec::new()), move |(ctx, s, mut b), msg_opt| {
                 let flush = if let Some(msg) = msg_opt {
                     debug!("Sending to node {} msg {:?}", ctx.peer, msg);
@@ -367,13 +369,14 @@ impl Fabric {
         }
         let mut writers = self.context.writer_chans.lock().unwrap();
         match writers.entry(node) {
-            HMEntry::Occupied(o) => {
-                let chans = o.get();
-                if chans.is_empty(){
+            HMEntry::Occupied(mut o) => {
+                let chans = o.get_mut();
+                if chans.is_empty() {
                     warn!("DROPING MSG - No channel available");
                     Err(FabricError::NoChannel)
                 } else {
-                    let _ = thread_rng().choose(&chans).unwrap().send(msg);
+                    let rnd_idx = thread_rng().gen::<usize>() % chans.len();
+                    let _ = chans.get_mut(rnd_idx).unwrap().send(msg);
                     Ok(())
                 }
             }
