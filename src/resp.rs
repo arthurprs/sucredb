@@ -1,4 +1,4 @@
-use std::{mem, str, fmt};
+use std::{str, fmt};
 use std::io::Write;
 use std::error::Error;
 use tendril;
@@ -234,8 +234,8 @@ impl Parser {
 
     fn read_string_line(&mut self) -> RespResult<StrTendril> {
         let line = try!(self.read_line());
-        match str::from_utf8(line.as_ref()) {
-            Ok(_) => Ok(unsafe { mem::transmute(line) }),
+        match line.try_reinterpret() {
+            Ok(str_line) => Ok(str_line),
             Err(_) => Err("Expected valid string, got garbage".into()),
         }
     }

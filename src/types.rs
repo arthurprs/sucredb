@@ -26,6 +26,13 @@ pub enum ConsistencyLevel {
 #[derive(Copy, Clone, Debug)]
 pub struct ConsistencyLevelParseError;
 
+impl<'a> ::std::convert::TryFrom<&'a [u8]> for ConsistencyLevel {
+    type Err = ConsistencyLevelParseError;
+    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Err> {
+        unsafe { ::std::str::from_utf8_unchecked(bytes) }.parse()
+    }
+}
+
 impl ::std::str::FromStr for ConsistencyLevel {
     type Err = ConsistencyLevelParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {

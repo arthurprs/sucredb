@@ -3,6 +3,7 @@ use database::Database;
 use types::*;
 use version_vector::*;
 use std::{str, net};
+use std::convert::TryInto;
 use bincode::{serde as bincode_serde, SizeLimit};
 
 #[derive(Debug)]
@@ -89,7 +90,7 @@ impl Database {
     fn cmd_get(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
         try!(check_arg_count(args.len(), 1, 2));
         let consistency: ConsistencyLevel = if args.len() >= 2 {
-            try!(unsafe { str::from_utf8_unchecked(args[1]) }.parse())
+            try!(args[1].try_into())
         } else {
             self.config.read_consistency
         };
@@ -104,7 +105,7 @@ impl Database {
             VersionVector::new()
         };
         let consistency: ConsistencyLevel = if args.len() >= 4 {
-            try!(unsafe { str::from_utf8_unchecked(args[1]) }.parse())
+            try!(args[1].try_into())
         } else {
             self.config.write_consistency
         };
@@ -119,7 +120,7 @@ impl Database {
             VersionVector::new()
         };
         let consistency: ConsistencyLevel = if args.len() >= 3 {
-            try!(unsafe { str::from_utf8_unchecked(args[2]) }.parse())
+            try!(args[2].try_into())
         } else {
             self.config.write_consistency
         };
@@ -135,16 +136,15 @@ impl Database {
             &[b"SLOTS"] | &[b"slots"] => {
                 let mut slots = Vec::new();
                 for (vn, members) in self.dht.slots().iter().enumerate() {
-                    let mut slot = vec![RespValue::Int(vn as i64),
-                                                    RespValue::Int(vn as i64),
-                                                    ];
+                    let mut slot = vec![RespValue::Int(vn as i64), RespValue::Int(vn as i64)];
                     slot.extend(members.iter()
                         .map(|&(n, (_, sa))| {
-                            RespValue::Array(vec![
-                                RespValue::Data(sa.ip().to_string().as_bytes().into()),
-                                RespValue::Int(sa.port() as i64),
-                                RespValue::Data(n.to_string().as_bytes().into()),
-                            ])
+                            RespValue::Array(vec![RespValue::Data(sa.ip()
+                                                      .to_string()
+                                                      .as_bytes()
+                                                      .into()),
+                                                  RespValue::Int(sa.port() as i64),
+                                                  RespValue::Data(n.to_string().as_bytes().into())])
                         }));
                     slots.push(RespValue::Array(slot));
                 }

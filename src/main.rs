@@ -3,7 +3,8 @@
     proc_macro,
     slice_patterns,
     fnbox,
-    conservative_impl_trait)]
+    conservative_impl_trait,
+    try_from)]
 #![allow(dead_code)]
 #[macro_use]
 extern crate log;
