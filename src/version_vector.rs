@@ -1,5 +1,6 @@
 use std::{str, cmp};
 use linear_map::{self, LinearMap, Entry};
+use utils::assume_str;
 use ramp;
 use byteorder::{WriteBytesExt, ReadBytesExt, LittleEndian};
 use serde;
@@ -157,7 +158,7 @@ pub fn deserialize_ramp<D>(deserializer: &mut D) -> Result<ramp::Int, D::Error>
             let mut b = &b[..];
             let trailing_zeros = try!(b.read_u32::<LittleEndian>()
                 .map_err(|e| Error::custom(e.to_string())));
-            let value = try!(ramp::Int::from_str_radix(unsafe { str::from_utf8_unchecked(b) }, 32)
+            let value = try!(ramp::Int::from_str_radix(assume_str(b), 32)
                 .map_err(|e| Error::custom(e.to_string())));
             Ok(value << trailing_zeros as usize)
         })

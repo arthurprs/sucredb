@@ -41,6 +41,10 @@ impl Hasher for IdHasher {
     }
 }
 
+pub fn assume_str(bytes: &[u8]) -> &str {
+    unsafe { ::std::str::from_utf8_unchecked(bytes) }
+}
+
 pub fn write_yaml_to_file<T: serde::Serialize, P: AsRef<path::Path>>
     (data: &T, path: P)
      -> Result<(), GenericError> {

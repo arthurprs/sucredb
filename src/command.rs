@@ -1,6 +1,7 @@
 use resp::{ByteTendril, RespValue};
 use database::Database;
 use types::*;
+use utils::assume_str;
 use version_vector::*;
 use std::{str, net};
 use std::convert::TryInto;
@@ -37,7 +38,7 @@ fn quick_int(bytes: &[u8]) -> Result<i64, CommandError> {
             _ => Err(CommandError::ProtocolError),
         }
     } else {
-        unsafe { str::from_utf8_unchecked(bytes) }
+        assume_str(bytes)
             .parse::<i64>()
             .map_err(|_| CommandError::ProtocolError)
     }

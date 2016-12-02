@@ -1,3 +1,6 @@
+use std::convert::TryFrom;
+use std::str::FromStr;
+
 pub type NodeId = u64;
 pub type Token = u64;
 pub type VNodeId = u16;
@@ -26,17 +29,9 @@ pub enum ConsistencyLevel {
 #[derive(Copy, Clone, Debug)]
 pub struct ConsistencyLevelParseError;
 
-impl<'a> ::std::convert::TryFrom<&'a [u8]> for ConsistencyLevel {
+impl<'a> TryFrom<&'a [u8]> for ConsistencyLevel {
     type Err = ConsistencyLevelParseError;
     fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Err> {
-        unsafe { ::std::str::from_utf8_unchecked(bytes) }.parse()
-    }
-}
-
-impl ::std::str::FromStr for ConsistencyLevel {
-    type Err = ConsistencyLevelParseError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bytes = s.as_bytes();
         if bytes.len() > 0 {
             match bytes[0] {
                 b'1' | b'o' | b'O' => return Ok(ConsistencyLevel::One),
@@ -46,6 +41,13 @@ impl ::std::str::FromStr for ConsistencyLevel {
             }
         }
         Err(ConsistencyLevelParseError)
+    }
+}
+
+impl FromStr for ConsistencyLevel {
+    type Err = ConsistencyLevelParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::try_from(s.as_bytes())
     }
 }
 

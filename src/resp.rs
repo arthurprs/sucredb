@@ -2,6 +2,7 @@ use std::{str, fmt};
 use std::io::Write;
 use std::error::Error;
 use tendril;
+use utils::assume_str;
 
 pub type ByteTendril = tendril::Tendril<tendril::fmt::Bytes, tendril::Atomic>;
 pub type StrTendril = tendril::Tendril<tendril::fmt::UTF8, tendril::Atomic>;
@@ -242,7 +243,7 @@ impl Parser {
 
     fn read_int_line(&mut self) -> RespResult<i64> {
         let line = try!(self.read_line());
-        let line_str = unsafe { str::from_utf8_unchecked(line.as_ref()) };
+        let line_str = assume_str(line.as_ref());
         match line_str.parse::<i64>() {
             Err(_) => Err("Expected integer, got garbage".into()),
             Ok(value) => Ok(value),
