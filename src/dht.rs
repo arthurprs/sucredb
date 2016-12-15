@@ -6,7 +6,7 @@ use linear_map::set::LinearSet;
 use rand::{thread_rng, Rng};
 use serde::{Serialize, Deserialize};
 use serde_yaml;
-use hash::hash;
+use hash::{hash_slot, HASH_SLOTS};
 use database::{NodeId, VNodeId};
 use etcd;
 use utils::{IdHashMap, GenericError};
@@ -21,6 +21,7 @@ impl<T: Clone + Serialize + Deserialize + Send + fmt::Debug + 'static> Metadata 
 pub struct DHT<T: Metadata> {
     node: NodeId,
     addr: net::SocketAddr,
+    slots_per_partition: u16,
     partitions: usize,
     replication_factor: usize,
     cluster: String,
@@ -379,6 +380,7 @@ impl<T: Metadata> DHT<T> {
             cluster: cluster.into(),
             inner: inner.clone(),
             thread: None,
+            slots_per_partition: 0,
             partitions: 0,
             replication_factor: 0,
             etcd_client: etcd_client1,
@@ -389,6 +391,7 @@ impl<T: Metadata> DHT<T> {
             dht.join(meta);
         }
         dht.partitions = inner.lock().unwrap().ring.vnodes.len();
+        dht.slots_per_partition = HASH_SLOTS / dht.partitions as u16;
         dht.replication_factor = inner.lock().unwrap().ring.replication_factor;
         dht.thread = Some(thread::Builder::new()
             .name(format!("DHT:{}", node))
@@ -494,7 +497,9 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn key_vnode(&self, key: &[u8]) -> VNodeId {
-        (hash(key) % self.partitions as u64) as VNodeId
+        // use / instead of % to get continuous hash slots
+        // for each vnode
+        (hash_slot(key) / self.slots_per_partition) as VNodeId
     }
 
     pub fn vnodes_for_node(&self, node: NodeId) -> (Vec<VNodeId>, Vec<VNodeId>) {
@@ -544,19 +549,24 @@ impl<T: Metadata> DHT<T> {
         inner.ring.nodes.iter().map(|(k, v)| (k.clone(), v.0.clone())).collect()
     }
 
-    pub fn slots(&self) -> Vec<Vec<(NodeId, (net::SocketAddr, T))>> {
-        let mut result = Vec::new();
+    pub fn slots(&self) -> HashMap<(u16, u16), Vec<(NodeId, (net::SocketAddr, T))>> {
+        let slots_per_partition = HASH_SLOTS / self.partitions() as u16;
+        let mut result = HashMap::new();
         let inner = self.inner.lock().unwrap();
-        for ((v, p), r) in inner.ring
-            .vnodes
-            .iter()
-            .zip(inner.ring.pending.iter())
-            .zip(inner.ring.retiring.iter()) {
-            result.push(v.iter()
+        for (hi, ((v, p), r)) in
+            inner.ring
+                .vnodes
+                .iter()
+                .zip(inner.ring.pending.iter())
+                .zip(inner.ring.retiring.iter())
+                .enumerate() {
+            let members: Vec<_> = v.iter()
                 .chain(p.iter())
                 .chain(r.iter())
                 .map(|n| (*n, inner.ring.nodes.get(n).cloned().unwrap()))
-                .collect());
+                .collect();
+            let hi = hi as u16;
+            result.insert((hi * slots_per_partition, (hi + 1) * slots_per_partition - 1), members);
         }
         result
     }

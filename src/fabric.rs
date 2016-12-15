@@ -375,8 +375,7 @@ impl Fabric {
                     warn!("DROPING MSG - No channel available");
                     Err(FabricError::NoChannel)
                 } else {
-                    let rnd_idx = thread_rng().gen::<usize>() % chans.len();
-                    let _ = chans.get_mut(rnd_idx).unwrap().send(msg);
+                    let _ = thread_rng().choose_mut(chans).unwrap().send(msg);
                     Ok(())
                 }
             }

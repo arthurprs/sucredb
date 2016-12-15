@@ -9,6 +9,7 @@ use bincode::{self, serde as bincode_serde};
 use inflightmap::InFlightMap;
 use fabric::*;
 use vnode_sync::*;
+use hash::hash_slot;
 use rand::{Rng, thread_rng};
 use utils::{IdHashMap, IdHasherBuilder};
 
@@ -329,6 +330,7 @@ impl VNode {
     // CLIENT CRUD
     pub fn do_get(&mut self, db: &Database, token: Token, key: &[u8],
                   consistency: ConsistencyLevel) {
+        debug!("vnode:{:?} do_get ({:?}) {:?}", self.state.num(), token, consistency);
         // TODO: lots of optimizations to be done here
         let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
         let cookie = self.gen_cookie();
@@ -353,17 +355,18 @@ impl VNode {
         }
     }
 
-    fn respond_cant_coordinate(&mut self, db: &Database, token: Token, status: VNodeStatus) {
+    fn respond_cant_coordinate(&mut self, db: &Database, token: Token, status: VNodeStatus, key: &[u8]) {
         let mut nodes = db.dht.write_members_for_vnode(self.state.num());
         thread_rng().shuffle(&mut nodes);
         for (node, (_, addr)) in nodes {
             if node != db.dht.node() {
+                let hash_slot = hash_slot(key);
                 match status {
                     VNodeStatus::Absent => {
-                        db.respond_move(token, self.state.num, addr);
+                        db.respond_moved(token, hash_slot, addr);
                     }
                     VNodeStatus::Bootstrap | VNodeStatus::Recover => {
-                        db.respond_ask(token, self.state.num, addr);
+                        db.respond_ask(token, hash_slot, addr);
                     }
                     VNodeStatus::Ready | VNodeStatus::Retiring => unreachable!(),
                 }
@@ -378,7 +381,7 @@ impl VNode {
                   vv: VersionVector, consistency: ConsistencyLevel) {
         match self.status() {
             VNodeStatus::Ready | VNodeStatus::Retiring => (),
-            status => return self.respond_cant_coordinate(db, token, status),
+            status => return self.respond_cant_coordinate(db, token, status, key),
         }
 
         let nodes = db.dht.nodes_for_vnode(self.state.num, true, true);
@@ -776,7 +779,7 @@ impl VNodeState {
             for (k, v) in iter.iter() {
                 let dcc: DottedCausalContainer<Vec<u8>> = bincode_serde::deserialize(v).unwrap();
                 dcc.add_to_bvv(&mut clocks);
-                for &(node, version) in dcc.versions() {
+                for (&(node, version), _) in dcc.values() {
                     if node == this_node {
                         log.log(version, k.into());
                     } else if peer_nodes.contains(&node) {
@@ -882,7 +885,7 @@ impl VNodeState {
             self.storage.set(key, &bytes);
         }
 
-        for &(node, version) in new_dcc.versions() {
+        for (&(node, version), _) in new_dcc.values() {
             if node == db.dht.node() {
                 self.log.log(version, key.into());
             } else {

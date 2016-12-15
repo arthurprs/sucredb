@@ -19,6 +19,7 @@ ramp="*"
 tokio-core = "*"
 futures = "*"
 clap="*"
+crc16="*"
 
 [dependencies.linear-map]
 git = "https://github.com/arthurprs/linear-map.git"

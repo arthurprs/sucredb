@@ -23,6 +23,7 @@ extern crate byteorder;
 extern crate etcd;
 extern crate nodrop;
 extern crate clap;
+extern crate crc16;
 
 extern crate futures;
 #[macro_use]

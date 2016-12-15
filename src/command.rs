@@ -1,4 +1,4 @@
-use resp::{ByteTendril, RespValue};
+use resp::RespValue;
 use database::Database;
 use types::*;
 use utils::assume_str;
@@ -46,6 +46,8 @@ fn quick_int(bytes: &[u8]) -> Result<i64, CommandError> {
 
 impl Database {
     pub fn handler_cmd(&self, token: u64, cmd: RespValue) {
+        debug!("Processing ({:?}) {:?}", token, cmd);
+
         let mut arg_: [&[u8]; 8] = [b""; 8];
         let mut argc = 0;
         match cmd {
@@ -72,13 +74,22 @@ impl Database {
         let args = &arg_[1..argc];
 
         let ret = match arg0 {
-            b"GET" | b"MGET" | b"get" | b"mget" => self.cmd_get(token, args),
-            b"SET" | b"MSET" | b"set" | b"mset" => self.cmd_set(token, args),
-            b"DEL" | b"MDEL" | b"del" | b"mdel" => self.cmd_del(token, args),
+            b"GET" | b"MGET" | b"GETSET" | b"get" | b"mget" | b"getset" => self.cmd_get(token, args),
+            b"SET" | b"MSET" | b"HSET" | b"set" | b"mset" | b"hset" => self.cmd_set(token, args),
+            b"DEL" | b"MDEL" | b"HDEL" | b"del" | b"mdel" | b"hdel" => self.cmd_del(token, args),
             b"CLUSTER" | b"cluster" => self.cmd_cluster(token, args),
             b"ECHO" | b"echo" => {
                 self.respond(token, cmd.clone());
                 Ok(())
+            }
+            _ if args.len() > 0 => {
+                let arg1 = args[0];
+                let args = &args[1..];
+                match (arg0, arg1) {
+                    (b"CONFIG", b"GET") |
+                    (b"config", b"get") => self.cmd_config_get(token, args),
+                    _ => Err(CommandError::UnknownCommand),
+                }
             }
             _ => Err(CommandError::UnknownCommand),
         };
@@ -86,6 +97,10 @@ impl Database {
         if let Err(err) = ret {
             self.respond_error(token, err);
         }
+    }
+
+    fn cmd_config_get(&self, token: u64, _args: &[&[u8]]) -> Result<(), CommandError> {
+        Ok(self.respond(token, RespValue::Array(Default::default())))
     }
 
     fn cmd_get(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
@@ -136,16 +151,18 @@ impl Database {
             }
             &[b"SLOTS"] | &[b"slots"] => {
                 let mut slots = Vec::new();
-                for (vn, members) in self.dht.slots().iter().enumerate() {
-                    let mut slot = vec![RespValue::Int(vn as i64), RespValue::Int(vn as i64)];
+                for (&(start, end), members) in self.dht.slots().iter() {
+                    let mut slot = vec![RespValue::Int(start as _), RespValue::Int(end as _)];
                     slot.extend(members.iter()
-                        .map(|&(n, (_, sa))| {
-                            RespValue::Array(vec![RespValue::Data(sa.ip()
+                        .map(|&(node, (_, ext_addr))| {
+                            RespValue::Array(vec![RespValue::Data(ext_addr.ip()
                                                       .to_string()
                                                       .as_bytes()
                                                       .into()),
-                                                  RespValue::Int(sa.port() as i64),
-                                                  RespValue::Data(n.to_string().as_bytes().into())])
+                                                  RespValue::Int(ext_addr.port() as _),
+                                                  RespValue::Data(node.to_string()
+                                                      .as_bytes()
+                                                      .into())])
                         }));
                     slots.push(RespValue::Array(slot));
                 }
@@ -156,6 +173,7 @@ impl Database {
     }
 
     pub fn respond(&self, token: Token, resp: RespValue) {
+        debug!("Respond request ({}) {:?}", token, resp);
         (&self.response_fn)(token, resp);
     }
 
@@ -172,11 +190,12 @@ impl Database {
     }
 
     pub fn respond_set(&self, token: Token, dcc: DottedCausalContainer<Vec<u8>>) {
-        self.respond(token, dcc_to_resp(dcc));
+        // self.respond(token, dcc_to_resp(dcc));
+        self.respond_ok(token);
     }
 
-    pub fn respond_move(&self, token: Token, vnode: VNodeId, addr: net::SocketAddr) {
-        self.respond(token, RespValue::Error(format!("MOVE {} {}", vnode, addr).into()));
+    pub fn respond_moved(&self, token: Token, vnode: VNodeId, addr: net::SocketAddr) {
+        self.respond(token, RespValue::Error(format!("MOVED {} {}", vnode, addr).into()));
     }
 
     pub fn respond_ask(&self, token: Token, vnode: VNodeId, addr: net::SocketAddr) {
@@ -185,8 +204,8 @@ impl Database {
 }
 
 fn dcc_to_resp(dcc: DottedCausalContainer<Vec<u8>>) -> RespValue {
-    let mut buffer =
-        ByteTendril::with_capacity(1024 + dcc.values().map(|v| v.len()).sum::<usize>() as u32);
-    bincode_serde::serialize_into(&mut buffer, &dcc, SizeLimit::Infinite).unwrap();
-    RespValue::Data(buffer)
+    let mut values: Vec<_> = dcc.values().map(|(_, v)| RespValue::Data(v.as_slice().into())).collect();
+    let buffer = bincode_serde::serialize(dcc.version_vector(), SizeLimit::Infinite).unwrap();
+    values.push(RespValue::Data(buffer.as_slice().into()));
+    RespValue::Array(values)
 }
