@@ -539,7 +539,7 @@ impl VNode {
 
     pub fn handler_sync_send(&mut self, db: &Database, from: NodeId, msg: MsgSyncSend) {
         forward!(self,
-                 VNodeStatus::Ready | VNodeStatus::Recover | VNodeStatus::Bootstrap,
+                 VNodeStatus::Ready | VNodeStatus::Retiring | VNodeStatus::Recover | VNodeStatus::Bootstrap,
                  db,
                  from,
                  msg,

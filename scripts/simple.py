@@ -38,8 +38,6 @@ def loop(rc, reset_last_key=None):
         except Exception as e:
             print("error2 {0}".format(repr(e)))
 
-        time.sleep(0.05)
-
 
 def timeit(rc, itterations=50000):
     """
@@ -97,12 +95,12 @@ Options:
     if not args["--nocluster"]:
         from rediscluster import StrictRedisCluster
         rc = StrictRedisCluster(startup_nodes=startup_nodes,
-            max_connections=32, socket_timeout=0.1,
+            max_connections=32, socket_timeout=0.5,
             decode_responses=False, skip_full_coverage_check=True)
     else:
         from redis import StrictRedis
         rc = StrictRedis(host=args["--host"], port=args["--port"],
-            socket_timeout=0.1, decode_responses=False)
+            socket_timeout=0.5, decode_responses=False)
 
     if args["--timeit"]:
         test_itterstions = [

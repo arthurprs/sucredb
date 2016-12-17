@@ -42,7 +42,7 @@ impl Default for Config {
             etcd_addr: DEFAULT_ETCD_ADDR.into(),
             cmd_init: None,
             worker_timer: 2000,
-            workers: 1,
+            workers: 2,
             max_incomming_syncs: 1,
             max_outgoing_syncs: 1,
             sync_timeout: 10_000,
