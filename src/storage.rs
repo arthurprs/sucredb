@@ -176,6 +176,8 @@ impl Storage {
         };
         debug!("Flushing buffer");
         let txn = self.env.new_transaction().unwrap();
+        // hold the buffer locks until they're commited to disk
+        let mut locks = Vec::with_capacity(wlock.len());
         for s in wlock.values() {
             let mut locked = s.lock().unwrap();
             let db = txn.bind(&locked.db_h);
@@ -190,8 +192,10 @@ impl Storage {
                     }
                 }
             }
+            locks.push(locked);
         }
         txn.commit().unwrap();
+        drop(locks);
     }
 
     pub fn sync(&self) {

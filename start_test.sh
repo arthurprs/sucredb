@@ -2,7 +2,7 @@
 
 trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
 export RUST_BACKTRACE=1
-export RUST_LOG=sucredb=debug
+export RUST_LOG=sucredb=info
 SLEEP=2
 cargo build
 ./target/debug/sucredb -d n1 -l 127.0.0.1:6379 -f 127.0.0.1:16379 init -r 1 > log1.txt 2>&1  &
