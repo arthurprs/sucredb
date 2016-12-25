@@ -16,7 +16,7 @@ use utils::{IdHashMap, IdHasherBuilder};
 // FIXME: use a more efficient log data structure
 // 1MB of storage considering key avg length of 32B and 16B overhead
 const PEER_LOG_SIZE: usize = 1024 * 1024 / (32 + 16);
-const RETIRING_TIMEOUT_MS: u64 = 5000;
+const RETIRING_TIMEOUT_MS: u64 = 30_000;
 const RECOVER_FAST_FORWARD: Version = 100_000;
 
 #[derive(Debug, PartialEq, Copy, Clone)]

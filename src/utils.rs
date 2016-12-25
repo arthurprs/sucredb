@@ -21,11 +21,12 @@ impl Default for IdHasher {
 impl Hasher for IdHasher {
     #[inline]
     fn finish(&self) -> u64 {
-        let mut hash = self.0;
-        hash ^= hash >> 33;
-        hash = hash.wrapping_mul(0xc4ceb9fe1a85ec53);
-        hash ^= hash >> 33;
-        hash
+        // Seahash diffuse method
+        let mut x = self.0.wrapping_mul(0x6eed0e9da4d94a4f);
+        let a = x >> 32;
+        let b = x >> 60;
+        x ^= a >> b;
+        x.wrapping_mul(0x6eed0e9da4d94a4f)
     }
 
     #[inline]
