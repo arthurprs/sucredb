@@ -622,7 +622,7 @@ impl VNode {
 
     pub fn maybe_start_sync(&mut self, db: &Database) -> usize {
         match self.state.status {
-            VNodeStatus::Ready | VNodeStatus::Retiring => self.do_start_sync(db, false),
+            VNodeStatus::Ready => self.do_start_sync(db, false),
             _ => 0,
         }
     }
