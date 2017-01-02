@@ -1,7 +1,7 @@
 use std::{fmt, thread, net, time};
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use linear_map::set::LinearSet;
 use rand::{thread_rng, Rng};
 use serde::{Serialize, Deserialize};
@@ -549,9 +549,9 @@ impl<T: Metadata> DHT<T> {
         inner.ring.nodes.iter().map(|(k, v)| (k.clone(), v.0.clone())).collect()
     }
 
-    pub fn slots(&self) -> HashMap<(u16, u16), Vec<(NodeId, (net::SocketAddr, T))>> {
+    pub fn slots(&self) -> BTreeMap<(u16, u16), Vec<(NodeId, (net::SocketAddr, T))>> {
         let slots_per_partition = HASH_SLOTS / self.partitions() as u16;
-        let mut result = HashMap::new();
+        let mut result = BTreeMap::new();
         let inner = self.inner.lock().unwrap();
         for (hi, ((v, p), r)) in
             inner.ring

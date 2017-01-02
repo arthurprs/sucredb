@@ -1,5 +1,4 @@
 #![feature(
-    arc_counts,
     proc_macro,
     slice_patterns,
     fnbox,

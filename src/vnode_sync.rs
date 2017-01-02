@@ -39,7 +39,7 @@ pub enum Synchronization {
         cookie: Cookie,
         peer: NodeId,
         target: NodeId,
-        // exact count of sent keys (includes inflight)
+        // count of sent keys (includes inflight)
         count: u64,
         last_recv: Instant,
     },
@@ -49,7 +49,7 @@ pub enum Synchronization {
         cookie: Cookie,
         peer: NodeId,
         target: NodeId,
-        // non-exact count of received keys
+        // aprox count of received keys (includes dups)
         recv_count: u64,
         last_recv: Instant,
     },
@@ -59,14 +59,14 @@ pub enum Synchronization {
         inflight: InFlightSyncMsgMap,
         cookie: Cookie,
         peer: NodeId,
-        // exact count of sent keys (includes inflight)
+        // count of sent keys (includes inflight)
         count: u64,
         last_recv: Instant,
     },
     BootstrapReceiver {
         cookie: Cookie,
         peer: NodeId,
-        // non-exact count of received keys
+        // aprox count of received keys (includes dups)
         recv_count: u64,
         last_recv: Instant,
     },

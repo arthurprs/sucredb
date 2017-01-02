@@ -74,7 +74,9 @@ impl Database {
         let args = &arg_[1..argc];
 
         let ret = match arg0 {
-            b"GET" | b"MGET" | b"GETSET" | b"get" | b"mget" | b"getset" => self.cmd_get(token, args),
+            b"GET" | b"MGET" | b"GETSET" | b"get" | b"mget" | b"getset" => {
+                self.cmd_get(token, args)
+            }
             b"SET" | b"MSET" | b"HSET" | b"set" | b"mset" | b"hset" => self.cmd_set(token, args),
             b"DEL" | b"MDEL" | b"HDEL" | b"del" | b"mdel" | b"hdel" => self.cmd_del(token, args),
             b"CLUSTER" | b"cluster" => self.cmd_cluster(token, args),
@@ -204,7 +206,8 @@ impl Database {
 }
 
 fn dcc_to_resp(dcc: DottedCausalContainer<Vec<u8>>) -> RespValue {
-    let mut values: Vec<_> = dcc.values().map(|(_, v)| RespValue::Data(v.as_slice().into())).collect();
+    let mut values: Vec<_> =
+        dcc.values().map(|(_, v)| RespValue::Data(v.as_slice().into())).collect();
     let buffer = bincode_serde::serialize(dcc.version_vector(), SizeLimit::Infinite).unwrap();
     values.push(RespValue::Data(buffer.as_slice().into()));
     RespValue::Array(values)

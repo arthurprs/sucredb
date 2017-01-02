@@ -230,7 +230,7 @@ impl Database {
                 vnode!(self, m.vnode, |mut vn| vn.handler_sync_fin(self, from, m));
             }
             msg @ _ => unreachable!("Can't handle {:?}", msg),
-        };
+        }
     }
 
     fn syncs_inflight(&self) -> usize {

@@ -355,7 +355,8 @@ impl VNode {
         }
     }
 
-    fn respond_cant_coordinate(&mut self, db: &Database, token: Token, status: VNodeStatus, key: &[u8]) {
+    fn respond_cant_coordinate(&mut self, db: &Database, token: Token, status: VNodeStatus,
+                               key: &[u8]) {
         let mut nodes = db.dht.write_members_for_vnode(self.state.num());
         thread_rng().shuffle(&mut nodes);
         for (node, (_, addr)) in nodes {
@@ -539,7 +540,8 @@ impl VNode {
 
     pub fn handler_sync_send(&mut self, db: &Database, from: NodeId, msg: MsgSyncSend) {
         forward!(self,
-                 VNodeStatus::Ready | VNodeStatus::Retiring | VNodeStatus::Recover | VNodeStatus::Bootstrap,
+                 VNodeStatus::Ready | VNodeStatus::Retiring | VNodeStatus::Recover |
+                 VNodeStatus::Bootstrap,
                  db,
                  from,
                  msg,

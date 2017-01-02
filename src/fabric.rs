@@ -89,6 +89,8 @@ impl WriterContext {
             if o.get().is_empty() {
                 o.remove();
             }
+        } else {
+            panic!("peer not found in writer_chans");
         }
     }
 }
