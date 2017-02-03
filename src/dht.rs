@@ -121,6 +121,26 @@ impl<T: Metadata> Ring<T> {
         Ok(())
     }
 
+    fn replace(&mut self, old: NodeId, node: NodeId, addr: net::SocketAddr, meta: T)
+                    -> Result<(), GenericError> {
+        if self.nodes.insert(node, (addr, meta)).is_none() {
+            return Err(format!("{} is already in the cluster", node).into());
+        }
+        if self.nodes.remove(&old).is_some() {
+            let iter = self.vnodes
+                .iter_mut()
+                .chain(self.pending.iter_mut().chain(self.retiring.iter_mut()));
+            for v in iter {
+                if v.remove(&old) {
+                    assert!(v.insert(node));
+                }
+            }
+        } else {
+            return Err(format!("{} is not in the cluster", node).into());
+        }
+        Ok(())
+    }
+
     fn rebalance(&mut self) -> Result<(), GenericError> {
         let simulations = 100;
         let start = time::Instant::now();
@@ -336,6 +356,7 @@ impl<T: Metadata> Ring<T> {
     }
 }
 
+// TODO: move to a member fn on DHT
 macro_rules! try_cas {
     ($s: ident, $e: block) => (
         loop {
@@ -357,7 +378,7 @@ macro_rules! try_cas {
 
 impl<T: Metadata> DHT<T> {
     pub fn new(node: NodeId, fabric_addr: net::SocketAddr, cluster: &str, etcd: &str, meta: T,
-               initial: Option<RingDescription>)
+               initial: Option<RingDescription>, old_node: Option<NodeId>)
                -> DHT<T> {
         let etcd_client1 = etcd::Client::new(&[etcd]).unwrap();
         let etcd_client2 = etcd::Client::new(&[etcd]).unwrap();
@@ -387,6 +408,8 @@ impl<T: Metadata> DHT<T> {
         };
         if let Some(description) = initial {
             dht.reset(meta, description.replication_factor, description.partitions);
+        } else if let Some(old) = old_node {
+            dht.replace(old, meta);
         } else {
             dht.join(meta);
         }
@@ -443,20 +466,39 @@ impl<T: Metadata> DHT<T> {
         debug!("exiting dht thread");
     }
 
-    fn join(&self, meta: T) {
+    fn refresh_ring(&self) {
         let cluster_key = format!("/{}/dht", self.cluster);
-        loop {
-            let r = self.etcd_client.get(&cluster_key, false, false, false).unwrap();
-            let node = r.node.unwrap();
-            let ring = Self::deserialize(&node.value.unwrap()).unwrap();
-            let ring_version = node.modified_index.unwrap();
-            assert!(ring.vnodes.len().is_power_of_two());
-            let mut new_ring = ring.clone();
-            new_ring.nodes.insert(self.node, (self.addr, meta.clone()));
-            if self.propose(ring_version, new_ring, true).is_ok() {
-                break;
-            }
-        }
+        let r = self.etcd_client.get(&cluster_key, false, false, false).unwrap();
+        let node = r.node.unwrap();
+        let mut inner = self.inner.lock().unwrap();
+        inner.ring = Self::deserialize(&node.value.unwrap()).unwrap();
+        inner.ring_version = node.modified_index.unwrap();
+    }
+
+    fn join(&self, meta: T) {
+        self.refresh_ring();
+        let f = move || -> Result<(), GenericError> {
+            try_cas!(self, {
+                let (mut ring, ring_version) = self.ring_clone();
+                try!(ring.join_node(self.node, self.addr, meta.clone()));
+                (ring_version, ring)
+            });
+            Ok(())
+        };
+        f().unwrap();
+    }
+
+    pub fn replace(&self, old: NodeId, meta: T) {
+        self.refresh_ring();
+        let f = move || -> Result<(), GenericError> {
+            try_cas!(self, {
+                let (mut ring, ring_version) = self.ring_clone();
+                try!(ring.replace(old, self.node, self.addr, meta.clone()));
+                (ring_version, ring)
+            });
+            Ok(())
+        };
+        f().unwrap();
     }
 
     fn reset(&self, meta: T, replication_factor: u8, partitions: u16) {

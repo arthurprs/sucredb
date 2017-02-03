@@ -191,7 +191,7 @@ impl Database {
         self.respond(token, dcc_to_resp(dcc));
     }
 
-    pub fn respond_set(&self, token: Token, dcc: DottedCausalContainer<Vec<u8>>) {
+    pub fn respond_set(&self, token: Token, _dcc: DottedCausalContainer<Vec<u8>>) {
         // self.respond(token, dcc_to_resp(dcc));
         self.respond_ok(token);
     }

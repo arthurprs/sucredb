@@ -1,7 +1,6 @@
-use std::iter;
 use std::time::{Instant, Duration};
 use std::collections::HashSet;
-use vnode::{VNodeState, VNodeStatus};
+use vnode::VNodeState;
 use fabric::*;
 use version_vector::*;
 use database::*;
@@ -38,7 +37,6 @@ pub enum Synchronization {
         inflight: InFlightSyncMsgMap,
         cookie: Cookie,
         peer: NodeId,
-        target: NodeId,
         // count of sent keys (includes inflight)
         count: u64,
         last_recv: Instant,
@@ -48,7 +46,6 @@ pub enum Synchronization {
         clocks_in_peer: BitmappedVersionVector,
         cookie: Cookie,
         peer: NodeId,
-        target: NodeId,
         // aprox count of received keys (includes dups)
         recv_count: u64,
         last_recv: Instant,
@@ -73,15 +70,13 @@ pub enum Synchronization {
 }
 
 impl Synchronization {
-    pub fn new_sync_receiver(db: &Database, state: &mut VNodeState, peer: NodeId, target: NodeId,
-                             cookie: Cookie)
+    pub fn new_sync_receiver(db: &Database, state: &mut VNodeState, peer: NodeId, cookie: Cookie)
                              -> Self {
         let mut sync = Synchronization::SyncReceiver {
             clocks_in_peer: state.clocks.clone(),
             peer: peer,
             cookie: cookie,
             recv_count: 0,
-            target: target,
             last_recv: Instant::now(),
         };
         sync.send_start(db, state);
@@ -130,30 +125,26 @@ impl Synchronization {
         let iterator: IteratorFn;
         let mut clocks_snapshot: BitmappedVersionVector;
 
-        let clocks = state.clocks.clone();
-        let target = msg.target.unwrap();
-        let clocks_in_peer = msg.clocks_in_peer.clone();
-        let clock_in_peer = clocks_in_peer.get(target).cloned().unwrap_or_default();
+        assert_eq!(msg.target, Some(db.dht.node()));
 
-        debug!("Creating SyncSender {:?} for target {:?} from {:?} to {:?}",
+        let clocks = state.clocks.clone();
+        let clocks_in_peer = msg.clocks_in_peer.clone();
+
+        debug!("Creating SyncSender {:?} from {:?} to {:?}",
                msg.cookie,
-               target,
                clocks_in_peer,
                state.clocks);
 
-        let target_log_base = if target == db.dht.node() {
-            state.log.clone().min_version()
-        } else {
-            state.peers.get(&target).cloned().unwrap_or_default().min_version()
-        };
-        if target_log_base.is_some() && target_log_base.unwrap() <= clock_in_peer.base() {
+        let node_log_uptodate =
+            state.logs.get(&db.dht.node()).and_then(|log| log.min_version()).unwrap_or(0) <=
+            clocks_in_peer.get(db.dht.node()).map_or(0, |peer_bv| peer_bv.base());
+
+        if node_log_uptodate {
             clocks_snapshot = BitmappedVersionVector::new();
             let mut keys: HashSet<Vec<u8>> = HashSet::new();
             let empty_bv = BitmappedVersion::new(0, 0);
 
-            for (&node, log) in state.peers
-                .iter()
-                .chain(iter::once((&db.dht.node(), &state.log))) {
+            for (&node, log) in &state.logs {
                 let n_bv = clocks.get(node).unwrap_or(&empty_bv);
                 let p_bv = clocks_in_peer.get(node).unwrap_or(&empty_bv);
                 clocks_snapshot.add_bv(node, n_bv);
@@ -212,7 +203,6 @@ impl Synchronization {
             iterator: iterator,
             inflight: InFlightMap::new(),
             cookie: msg.cookie,
-            target: target,
             peer: peer,
             count: 0,
             last_recv: Instant::now(),
@@ -223,13 +213,12 @@ impl Synchronization {
         let (peer, cookie, target, clocks_in_peer) = match *self {
             Synchronization::SyncReceiver { cookie,
                                             peer,
-                                            target,
                                             ref mut last_recv,
                                             ref clocks_in_peer,
                                             .. } => {
                 // reset last receives
                 *last_recv = Instant::now();
-                (peer, cookie, Some(target), clocks_in_peer.clone())
+                (peer, cookie, Some(peer), clocks_in_peer.clone())
             }
             Synchronization::BootstrapReceiver { peer, cookie, ref mut last_recv, .. } => {
                 // reset last receives
@@ -338,18 +327,10 @@ impl Synchronization {
         }
     }
 
-    pub fn on_remove(self, db: &Database, state: &mut VNodeState) {
+    pub fn on_remove(self, _db: &Database, state: &mut VNodeState) {
         match self {
-            Synchronization::SyncReceiver { peer, target, .. } => {
-                if target == peer {
-                    state.sync_nodes.remove(&peer);
-                } else {
-                    assert_eq!(state.status(), VNodeStatus::Recover);
-                    state.pending_recoveries -= 1;
-                    if state.pending_recoveries == 0 {
-                        state.set_status(db, VNodeStatus::Ready);
-                    }
-                }
+            Synchronization::SyncReceiver { peer, .. } => {
+                state.sync_nodes.remove(&peer);
             }
             _ => (),
         }

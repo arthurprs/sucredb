@@ -71,6 +71,15 @@ impl BitmappedVersion {
         }
     }
 
+    pub fn fill_holes(&mut self) {
+        if self.bitmap == 0 {
+            return;
+        }
+        let high_bitmap_dot = self.bitmap.bit_length();
+        self.base += high_bitmap_dot as Version;
+        self.bitmap = 0.into();
+    }
+
     pub fn base(&self) -> Version {
         self.base
     }
@@ -235,21 +244,25 @@ impl BitmappedVersionVector {
         self.0.get(&id).map_or(false, |bv| bv.contains(v))
     }
 
-    pub fn fast_foward(&mut self, id: Id, n: Version) {
-        match self.0.entry(id) {
-            Entry::Vacant(vac) => {
-                vac.insert(BitmappedVersion::new(n, 0));
-            }
-            Entry::Occupied(mut ocu) => {
-                let bv = ocu.get_mut();
-                debug_assert!(n > bv.bitmap.bit_length() as Version,
-                              "{} > {}",
-                              n,
-                              bv.bitmap.bit_length());
-                bv.bitmap = ramp::Int::zero();
-                bv.base += n;
-            }
-        }
+    // pub fn fast_foward(&mut self, id: Id, n: Version) {
+    //     match self.0.entry(id) {
+    //         Entry::Vacant(vac) => {
+    //             vac.insert(BitmappedVersion::new(n, 0));
+    //         }
+    //         Entry::Occupied(mut ocu) => {
+    //             let bv = ocu.get_mut();
+    //             debug_assert!(n > bv.bitmap.bit_length() as Version,
+    //                           "{} > {}",
+    //                           n,
+    //                           bv.bitmap.bit_length());
+    //             bv.bitmap = ramp::Int::zero();
+    //             bv.base += n;
+    //         }
+    //     }
+    // }
+
+    pub fn iter_mut(&mut self) -> linear_map::IterMut<Id, BitmappedVersion> {
+        self.0.iter_mut()
     }
 
     pub fn iter(&self) -> linear_map::Iter<Id, BitmappedVersion> {

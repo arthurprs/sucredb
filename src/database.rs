@@ -54,16 +54,23 @@ impl Database {
         let storage_manager = StorageManager::new(&config.data_dir).unwrap();
         let meta_storage = storage_manager.open(-1, true).unwrap();
 
-        let node = if let Some(s_node) = meta_storage.get_vec(b"node") {
-            String::from_utf8(s_node).unwrap().parse::<NodeId>().unwrap()
+        let (old_node, node) = if let Some(s_node) = meta_storage.get_vec(b"node") {
+            let prev_node = String::from_utf8(s_node).unwrap().parse::<NodeId>().unwrap();
+            if meta_storage.get_vec(b"clean_shutdown").is_some() {
+                (None, prev_node)
+            } else {
+                let node = join_u64(split_u64(prev_node).0, thread_rng().gen());
+                (Some(prev_node), node)
+            }
         } else {
-            thread_rng().gen::<i64>().abs() as NodeId
+            (None, thread_rng().gen::<i64>().abs() as NodeId)
         };
         if let Some(s_cluster) = meta_storage.get_vec(b"cluster") {
             assert_eq!(s_cluster, config.cluster_name.as_bytes(), "Stored cluster name differs!");
         }
         meta_storage.set(b"cluster", config.cluster_name.as_bytes());
         meta_storage.set(b"node", node.to_string().as_bytes());
+        meta_storage.del(b"clean_shutdown");
         meta_storage.sync();
 
         let workers = WorkerManager::new(node,
@@ -81,7 +88,8 @@ impl Database {
                                                              init.partitions))
                           } else {
                               None
-                          }),
+                          },
+                          old_node),
             storage_manager: storage_manager,
             meta_storage: meta_storage,
             response_fn: response_fn,
@@ -155,6 +163,7 @@ impl Database {
         for vn in self.vnodes.read().unwrap().values() {
             vn.lock().unwrap().save(self, shutdown);
         }
+        self.meta_storage.set(b"clean_shutdown", b"1");
     }
 
     // FIXME: leaky abstraction
@@ -245,14 +254,10 @@ impl Database {
             .sum()
     }
 
-    fn start_sync(&self, vnode: VNodeId, reverse: bool) {
+    fn start_sync(&self, vnode: VNodeId) {
         let vnodes = self.vnodes.read().unwrap();
         let mut vnode = vnodes.get(&vnode).unwrap().lock().unwrap();
-        if reverse {
-            vnode.start_rev_sync(self);
-        } else {
-            vnode.start_sync(self);
-        }
+        vnode.start_sync(self);
     }
 
     // CLIENT CRUD

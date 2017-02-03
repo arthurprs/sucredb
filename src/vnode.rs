@@ -4,6 +4,7 @@ use std::collections::hash_map::Entry as HMEntry;
 use version_vector::*;
 use storage::*;
 use database::*;
+use types::split_u64;
 use command::CommandError;
 use bincode::{self, serde as bincode_serde};
 use inflightmap::InFlightMap;
@@ -17,17 +18,14 @@ use utils::{IdHashMap, IdHasherBuilder};
 // 1MB of storage considering key avg length of 32B and 16B overhead
 const PEER_LOG_SIZE: usize = 1024 * 1024 / (32 + 16);
 const RETIRING_TIMEOUT_MS: u64 = 30_000;
-const RECOVER_FAST_FORWARD: Version = 100_000;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum VNodeStatus {
     // steady state
     Ready,
-    // had data but wasn't shutdown cleanly, so it has to finish reverse sync to all replicas before coordinating writes
-    Recover,
-    // was absent, now it's streamming data from another node
+    // streaming data from another node, can only accept replicated writes in this state
     Bootstrap,
-    // another will take over this vnode it stays in retiring status
+    // another node took over this vnode it stays in retiring status
     // until syncs are completed, etc.
     Retiring,
     // no actual data is present (metadata is retained though)
@@ -46,20 +44,16 @@ pub struct VNodeState {
     last_status_change: Instant,
     unflushed_coord_writes: usize,
     pub clocks: BitmappedVersionVector,
-    pub log: VNodePeer,
-    pub peers: IdHashMap<NodeId, VNodePeer>,
+    pub logs: IdHashMap<NodeId, VNodePeer>,
     pub storage: Storage,
     // state for sync
     pub sync_nodes: HashSet<NodeId, IdHasherBuilder>,
-    // state for rev syncs
-    pub pending_recoveries: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SavedVNodeState {
-    peers: IdHashMap<NodeId, VNodePeer>,
+    logs: IdHashMap<NodeId, VNodePeer>,
     clocks: BitmappedVersionVector,
-    log: VNodePeer,
     clean_shutdown: bool,
 }
 
@@ -97,7 +91,7 @@ impl VNodePeer {
         let min = self.min_version().unwrap_or(0);
         if version > min {
             if let Some(removed) = self.log.insert(version, key.clone()) {
-                debug_assert!(removed == key);
+                debug_assert_eq!(removed, key);
             }
             if self.log.len() > PEER_LOG_SIZE {
                 self.log.remove(&min).unwrap();
@@ -189,9 +183,6 @@ impl VNode {
             VNodeStatus::Bootstrap => {
                 vnode.start_bootstrap(db);
             }
-            VNodeStatus::Recover => {
-                vnode.start_rev_sync(db);
-            }
             status => panic!("{:?} isn't a valid state after load", status),
         }
 
@@ -234,10 +225,8 @@ impl VNode {
             status => panic!("Invalid final status {:?}", status),
         }
         match (self.status(), x_status) {
-            (a, b) if a == b => (),
             (VNodeStatus::Ready, VNodeStatus::Absent) |
-            (VNodeStatus::Bootstrap, VNodeStatus::Absent) |
-            (VNodeStatus::Recover, VNodeStatus::Absent) => {
+            (VNodeStatus::Bootstrap, VNodeStatus::Absent) => {
                 {
                     // cancel incomming syncs
                     let state = &mut self.state;
@@ -259,11 +248,7 @@ impl VNode {
                     }
                 }
 
-                if self.status() == VNodeStatus::Recover {
-                    self.state.set_status(db, VNodeStatus::Absent);
-                } else {
-                    self.state.set_status(db, VNodeStatus::Retiring);
-                }
+                self.state.set_status(db, VNodeStatus::Retiring);
             }
             (VNodeStatus::Retiring, VNodeStatus::Absent) => {
                 // do nothing, retiring will timeout and switch to absent eventually
@@ -280,6 +265,7 @@ impl VNode {
             (VNodeStatus::Bootstrap, VNodeStatus::Ready) => {
                 self.state.set_status(db, VNodeStatus::Ready);
             }
+            (a, b) if a == b => (), // nothing to do
             (a, b) => panic!("Invalid status change from dht {:?} -> {:?}", a, b),
         }
     }
@@ -366,7 +352,7 @@ impl VNode {
                     VNodeStatus::Absent => {
                         db.respond_moved(token, hash_slot, addr);
                     }
-                    VNodeStatus::Bootstrap | VNodeStatus::Recover => {
+                    VNodeStatus::Bootstrap => {
                         db.respond_ask(token, hash_slot, addr);
                     }
                     VNodeStatus::Ready | VNodeStatus::Retiring => unreachable!(),
@@ -515,8 +501,6 @@ impl VNode {
     // SYNC
     pub fn handler_sync_start(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
         if !(self.state.status == VNodeStatus::Ready ||
-             (self.state.status == VNodeStatus::Recover &&
-              msg.target.map_or(false, |t| t == from)) ||
              (self.state.status == VNodeStatus::Retiring &&
               self.state.last_status_change.elapsed() <
               Duration::from_millis(RETIRING_TIMEOUT_MS))) {
@@ -529,7 +513,8 @@ impl VNode {
                     Synchronization::new_bootstrap_sender(db, &mut self.state, from, msg)
                 }
                 Some(target) => {
-                    info!("starting sync sender {:?} target:{:?} peer:{}", cookie, target, from);
+                    assert_eq!(target, db.dht.node());
+                    info!("starting sync sender {:?} peer:{}", cookie, from);
                     Synchronization::new_sync_sender(db, &mut self.state, from, msg)
                 }
             };
@@ -540,8 +525,7 @@ impl VNode {
 
     pub fn handler_sync_send(&mut self, db: &Database, from: NodeId, msg: MsgSyncSend) {
         forward!(self,
-                 VNodeStatus::Ready | VNodeStatus::Retiring | VNodeStatus::Recover |
-                 VNodeStatus::Bootstrap,
+                 VNodeStatus::Ready | VNodeStatus::Retiring | VNodeStatus::Bootstrap,
                  db,
                  from,
                  msg,
@@ -563,8 +547,7 @@ impl VNode {
 
     pub fn handler_sync_fin(&mut self, db: &Database, from: NodeId, msg: MsgSyncFin) {
         check_status!(self,
-                      VNodeStatus::Ready | VNodeStatus::Recover | VNodeStatus::Retiring |
-                      VNodeStatus::Bootstrap,
+                      VNodeStatus::Ready | VNodeStatus::Retiring | VNodeStatus::Bootstrap,
                       db,
                       from,
                       msg,
@@ -624,27 +607,17 @@ impl VNode {
 
     pub fn maybe_start_sync(&mut self, db: &Database) -> usize {
         match self.state.status {
-            VNodeStatus::Ready => self.do_start_sync(db, false),
+            VNodeStatus::Ready => self.do_start_sync(db),
             _ => 0,
         }
     }
 
     pub fn start_sync(&mut self, db: &Database) -> usize {
         assert_any!(self.state.status, VNodeStatus::Ready | VNodeStatus::Retiring);
-        self.do_start_sync(db, false)
+        self.do_start_sync(db)
     }
 
-    pub fn start_rev_sync(&mut self, db: &Database) {
-        assert_eq!((self.state.status, self.state.pending_recoveries),
-                   (VNodeStatus::Recover, 0),
-                   "Status must be Reverse before starting a reverse sync");
-        if self.do_start_sync(db, true) == 0 {
-            // nothing to sync from
-            self.state.set_status(db, VNodeStatus::Ready);
-        }
-    }
-
-    fn do_start_sync(&mut self, db: &Database, reverse: bool) -> usize {
+    fn do_start_sync(&mut self, db: &Database) -> usize {
         let mut started = 0;
         let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
         for node in nodes {
@@ -653,16 +626,9 @@ impl VNode {
             }
 
             let cookie = self.gen_cookie();
-            let target = if reverse {
-                self.state.pending_recoveries += 1;
-                db.dht.node()
-            } else {
-                self.state.sync_nodes.insert(node);
-                node
-            };
-            info!("starting sync receiver {:?} target:{:?} peer:{}", cookie, target, node);
-            let sync =
-                Synchronization::new_sync_receiver(db, &mut self.state, node, target, cookie);
+            self.state.sync_nodes.insert(node);
+            info!("starting sync receiver {:?} peer:{}", cookie, node);
+            let sync = Synchronization::new_sync_receiver(db, &mut self.state, node, cookie);
             assert!(self.syncs.insert(cookie, sync).is_none());
             started += 1;
         }
@@ -692,29 +658,24 @@ impl VNodeState {
         if new != self.status {
             match new {
                 VNodeStatus::Bootstrap => {
-                    assert_eq!(self.pending_recoveries, 0);
                     assert_eq!(self.sync_nodes.len(), 0);
                     self.storage.clear();
                 }
                 VNodeStatus::Ready => {
-                    assert_eq!(self.pending_recoveries, 0);
-                    if self.status == VNodeStatus::Recover {
-                        assert_eq!(self.sync_nodes.len(), 0);
-                        self.clocks.fast_foward(db.dht.node(), RECOVER_FAST_FORWARD);
-                    }
+                    // assert_eq!(self.pending_recoveries, 0);
+                    // if self.status == VNodeStatus::Recover {
+                    //     assert_eq!(self.sync_nodes.len(), 0);
+                    //     self.clocks.fast_foward(db.dht.node(), RECOVER_FAST_FORWARD);
+                    // }
                 }
                 VNodeStatus::Absent => {
-                    assert_eq!(self.pending_recoveries, 0);
+                    // assert_eq!(self.pending_recoveries, 0);
                     assert_eq!(self.sync_nodes.len(), 0);
-                    self.log.clear();
-                    self.peers.clear();
+                    self.logs.clear();
                     self.storage.clear();
                 }
                 VNodeStatus::Retiring => {
-                    assert_eq!(self.pending_recoveries, 0);
-                }
-                VNodeStatus::Recover => {
-                    panic!("Can only set status to Recover on load");
+                    // assert_eq!(self.pending_recoveries, 0);
                 }
             }
 
@@ -735,31 +696,22 @@ impl VNodeState {
             status: status,
             last_status_change: Instant::now(),
             clocks: BitmappedVersionVector::new(),
-            peers: Default::default(),
-            log: Default::default(),
+            logs: Default::default(),
             storage: storage,
             unflushed_coord_writes: 0,
             sync_nodes: Default::default(),
-            pending_recoveries: 0,
         }
     }
 
-    fn load(num: u16, db: &Database, mut status: VNodeStatus) -> Self {
+    fn load(num: u16, db: &Database, status: VNodeStatus) -> Self {
         info!("Loading vnode {} state", num);
         let saved_state_opt = db.meta_storage
             .get(num.to_string().as_bytes(), |bytes| bincode_serde::deserialize(bytes).unwrap());
         if saved_state_opt.is_none() {
             info!("No saved state");
-            return Self::new_empty(num,
-                                   db,
-                                   if status == VNodeStatus::Ready {
-                                       VNodeStatus::Recover
-                                   } else {
-                                       status
-                                   });
+            return Self::new_empty(num, db, status);
         };
-        let SavedVNodeState { mut clocks, mut log, mut peers, clean_shutdown } =
-            saved_state_opt.unwrap();
+        let SavedVNodeState { mut clocks, mut logs, clean_shutdown } = saved_state_opt.unwrap();
 
         let storage = match status {
             VNodeStatus::Ready => db.storage_manager.open(num as i32, true).unwrap(),
@@ -773,22 +725,15 @@ impl VNodeState {
 
         if status == VNodeStatus::Ready && !clean_shutdown {
             info!("Unclean shutdown, recovering from the storage");
-            status = VNodeStatus::Recover;
-            let this_node = db.dht.node();
-            let peer_nodes = db.dht.nodes_for_vnode(num, true, true);
             let mut iter = storage.iterator();
             let mut count = 0;
             for (k, v) in iter.iter() {
                 let dcc: DottedCausalContainer<Vec<u8>> = bincode_serde::deserialize(v).unwrap();
                 dcc.add_to_bvv(&mut clocks);
                 for (&(node, version), _) in dcc.values() {
-                    if node == this_node {
-                        log.log(version, k.into());
-                    } else if peer_nodes.contains(&node) {
-                        peers.entry(node)
-                            .or_insert_with(Default::default)
-                            .log(version, k.into());
-                    }
+                    logs.entry(node)
+                        .or_insert_with(Default::default)
+                        .log(version, k.into());
                 }
                 count += 1;
                 if count % 1000 == 0 {
@@ -796,6 +741,13 @@ impl VNodeState {
                 }
             }
             debug!("Recovered {} keys in total", count);
+
+            let logical_n = split_u64(db.dht.node()).0;
+            for (&node, bvv) in clocks.iter_mut() {
+                if logical_n == split_u64(node).0 {
+                    bvv.fill_holes();
+                }
+            }
         }
 
         VNodeState {
@@ -804,25 +756,22 @@ impl VNodeState {
             last_status_change: Instant::now(),
             clocks: clocks,
             storage: storage,
-            log: log,
-            peers: peers,
+            logs: logs,
             unflushed_coord_writes: 0,
             sync_nodes: Default::default(),
-            pending_recoveries: 0,
         }
     }
 
     pub fn save(&self, db: &Database, shutdown: bool) {
-        let (peers, log) = if shutdown {
-            (self.peers.clone(), self.log.clone())
+        let logs = if shutdown {
+            self.logs.clone()
         } else {
-            (Default::default(), Default::default())
+            Default::default()
         };
 
         let saved_state = SavedVNodeState {
-            peers: peers,
+            logs: logs,
             clocks: self.clocks.clone(),
-            log: log,
             clean_shutdown: shutdown,
         };
         debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
@@ -860,7 +809,7 @@ impl VNodeState {
             self.storage.set(key, &bytes);
         }
 
-        self.log.log(dot, key.into());
+        self.logs.entry(db.dht.node()).or_insert_with(Default::default).log(dot, key.into());
 
         self.unflushed_coord_writes += 1;
         if self.unflushed_coord_writes >= PEER_LOG_SIZE / 2 {
@@ -888,14 +837,10 @@ impl VNodeState {
         }
 
         for (&(node, version), _) in new_dcc.values() {
-            if node == db.dht.node() {
-                self.log.log(version, key.into());
-            } else {
-                self.peers
-                    .entry(node)
-                    .or_insert_with(Default::default)
-                    .log(version, key.into());
-            }
+            self.logs
+                .entry(node)
+                .or_insert_with(Default::default)
+                .log(version, key.into());
         }
     }
 }
