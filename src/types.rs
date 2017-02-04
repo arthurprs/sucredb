@@ -5,14 +5,6 @@ pub type NodeId = u64;
 pub type Token = u64;
 pub type VNodeId = u16;
 
-pub fn split_u64(uint: u64) -> (u32, u32) {
-    ((uint >> 32) as u32, uint as u32)
-}
-
-pub fn join_u64(hi: u32, lo: u32) -> u64 {
-    ((hi as u64) << 32) | (lo as u64)
-}
-
 #[derive(PartialEq, Eq, Hash, Serialize, Deserialize, Default, Copy, Clone)]
 pub struct Cookie(u64, u64);
 

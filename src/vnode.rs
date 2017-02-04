@@ -1,10 +1,10 @@
 use std::time::{Instant, Duration};
 use std::collections::{BTreeMap, HashSet};
 use std::collections::hash_map::Entry as HMEntry;
+use std::borrow::Cow;
 use version_vector::*;
 use storage::*;
 use database::*;
-use types::split_u64;
 use command::CommandError;
 use bincode::{self, serde as bincode_serde};
 use inflightmap::InFlightMap;
@@ -12,12 +12,12 @@ use fabric::*;
 use vnode_sync::*;
 use hash::hash_slot;
 use rand::{Rng, thread_rng};
-use utils::{IdHashMap, IdHasherBuilder};
+use utils::{IdHashMap, IdHasherBuilder, split_u64};
 
 // FIXME: use a more efficient log data structure
 // 1MB of storage considering key avg length of 32B and 16B overhead
 const PEER_LOG_SIZE: usize = 1024 * 1024 / (32 + 16);
-const RETIRING_TIMEOUT_MS: u64 = 30_000;
+const ZOMBIE_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum VNodeStatus {
@@ -25,11 +25,13 @@ pub enum VNodeStatus {
     Ready,
     // streaming data from another node, can only accept replicated writes in this state
     Bootstrap,
-    // another node took over this vnode it stays in retiring status
-    // until syncs are completed, etc.
-    Retiring,
+    // another node took over this vnode, this will stay in zombie until it times out
+    // and syncs are completed, etc.
+    Zombie,
     // no actual data is present (metadata is retained though)
     Absent,
+    // TODO: consider adding an status for a node that just came back up and is still part of the cluster
+    //       so it potentially has highly stale data
 }
 
 pub struct VNode {
@@ -87,12 +89,11 @@ impl VNodePeer {
     //     self.knowledge = until;
     // }
 
-    pub fn log(&mut self, version: Version, key: Vec<u8>) {
+    pub fn log(&mut self, version: Version, key: Cow<[u8]>) {
         let min = self.min_version().unwrap_or(0);
         if version > min {
-            if let Some(removed) = self.log.insert(version, key.clone()) {
-                debug_assert_eq!(removed, key);
-            }
+            //debug_assert!(Some(&key) != self.log.get(&version));
+            self.log.insert(version, key.into());
             if self.log.len() > PEER_LOG_SIZE {
                 self.log.remove(&min).unwrap();
             }
@@ -224,7 +225,8 @@ impl VNode {
             VNodeStatus::Absent | VNodeStatus::Ready => (),
             status => panic!("Invalid final status {:?}", status),
         }
-        match (self.status(), x_status) {
+        let status = self.status();
+        match (status, x_status) {
             (VNodeStatus::Ready, VNodeStatus::Absent) |
             (VNodeStatus::Bootstrap, VNodeStatus::Absent) => {
                 {
@@ -239,6 +241,8 @@ impl VNode {
                                     m.on_cancel(db, state);
                                     Some(cookie)
                                 }
+                                _ if status == VNodeStatus::Bootstrap =>
+                                    panic!("Invalid Sync for Bootstrap mode"),
                                 _ => None,
                             }
                         })
@@ -248,12 +252,18 @@ impl VNode {
                     }
                 }
 
-                self.state.set_status(db, VNodeStatus::Retiring);
+                let new_status = if status == VNodeStatus::Bootstrap {
+                    VNodeStatus::Absent
+                } else {
+                    VNodeStatus::Ready
+                };
+
+                self.state.set_status(db, new_status);
             }
-            (VNodeStatus::Retiring, VNodeStatus::Absent) => {
-                // do nothing, retiring will timeout and switch to absent eventually
+            (VNodeStatus::Zombie, VNodeStatus::Absent) => {
+                // do nothing, zombie will timeout and switch to absent eventually
             }
-            (VNodeStatus::Retiring, VNodeStatus::Ready) => {
+            (VNodeStatus::Zombie, VNodeStatus::Ready) => {
                 // fast-recomission!
                 self.state.set_status(db, VNodeStatus::Ready);
             }
@@ -272,17 +282,6 @@ impl VNode {
 
     // TICK
     pub fn handler_tick(&mut self, db: &Database, _time: Instant) {
-        if self.state.status == VNodeStatus::Retiring && self.syncs.is_empty() &&
-           self.inflight.is_empty() &&
-           self.state.last_status_change.elapsed() > Duration::from_millis(RETIRING_TIMEOUT_MS) {
-            match db.dht.retire_retiring_node(db.dht.node(), self.state.num) {
-                Ok(_) => self.state.set_status(db, VNodeStatus::Absent),
-                Err(e) => {
-                    warn!("Can't retire node {} vnode {}: {}", db.dht.node(), self.state.num, e)
-                }
-            }
-        }
-
         let terminated = {
             let state = &mut self.state;
             self.syncs
@@ -349,13 +348,13 @@ impl VNode {
             if node != db.dht.node() {
                 let hash_slot = hash_slot(key);
                 match status {
-                    VNodeStatus::Absent => {
+                    VNodeStatus::Absent | VNodeStatus::Zombie => {
                         db.respond_moved(token, hash_slot, addr);
                     }
                     VNodeStatus::Bootstrap => {
                         db.respond_ask(token, hash_slot, addr);
                     }
-                    VNodeStatus::Ready | VNodeStatus::Retiring => unreachable!(),
+                    VNodeStatus::Ready => unreachable!(),
                 }
                 return;
             }
@@ -367,7 +366,7 @@ impl VNode {
     pub fn do_set(&mut self, db: &Database, token: Token, key: &[u8], value_opt: Option<&[u8]>,
                   vv: VersionVector, consistency: ConsistencyLevel) {
         match self.status() {
-            VNodeStatus::Ready | VNodeStatus::Retiring => (),
+            VNodeStatus::Ready => (),
             status => return self.respond_cant_coordinate(db, token, status, key),
         }
 
@@ -451,7 +450,7 @@ impl VNode {
 
     pub fn handler_get_remote(&mut self, db: &Database, from: NodeId, msg: MsgRemoteGet) {
         check_status!(self,
-                      VNodeStatus::Ready | VNodeStatus::Retiring,
+                      VNodeStatus::Ready,
                       db,
                       from,
                       msg,
@@ -501,9 +500,9 @@ impl VNode {
     // SYNC
     pub fn handler_sync_start(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
         if !(self.state.status == VNodeStatus::Ready ||
-             (self.state.status == VNodeStatus::Retiring &&
+             (self.state.status == VNodeStatus::Zombie &&
               self.state.last_status_change.elapsed() <
-              Duration::from_millis(RETIRING_TIMEOUT_MS))) {
+              Duration::from_millis(ZOMBIE_TIMEOUT_MS))) {
             let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::BadVNodeStatus);
         } else if !self.syncs.contains_key(&msg.cookie) {
             let cookie = msg.cookie;
@@ -525,7 +524,7 @@ impl VNode {
 
     pub fn handler_sync_send(&mut self, db: &Database, from: NodeId, msg: MsgSyncSend) {
         forward!(self,
-                 VNodeStatus::Ready | VNodeStatus::Retiring | VNodeStatus::Bootstrap,
+                 VNodeStatus::Ready | VNodeStatus::Bootstrap,
                  db,
                  from,
                  msg,
@@ -536,7 +535,7 @@ impl VNode {
 
     pub fn handler_sync_ack(&mut self, db: &Database, from: NodeId, msg: MsgSyncAck) {
         forward!(self,
-                 VNodeStatus::Ready | VNodeStatus::Retiring,
+                 VNodeStatus::Ready | VNodeStatus::Zombie,
                  db,
                  from,
                  msg,
@@ -547,7 +546,7 @@ impl VNode {
 
     pub fn handler_sync_fin(&mut self, db: &Database, from: NodeId, msg: MsgSyncFin) {
         check_status!(self,
-                      VNodeStatus::Ready | VNodeStatus::Retiring | VNodeStatus::Bootstrap,
+                      VNodeStatus::Ready | VNodeStatus::Zombie | VNodeStatus::Bootstrap,
                       db,
                       from,
                       msg,
@@ -613,7 +612,7 @@ impl VNode {
     }
 
     pub fn start_sync(&mut self, db: &Database) -> usize {
-        assert_any!(self.state.status, VNodeStatus::Ready | VNodeStatus::Retiring);
+        assert_any!(self.state.status, VNodeStatus::Ready);
         self.do_start_sync(db)
     }
 
@@ -662,11 +661,7 @@ impl VNodeState {
                     self.storage.clear();
                 }
                 VNodeStatus::Ready => {
-                    // assert_eq!(self.pending_recoveries, 0);
-                    // if self.status == VNodeStatus::Recover {
-                    //     assert_eq!(self.sync_nodes.len(), 0);
-                    //     self.clocks.fast_foward(db.dht.node(), RECOVER_FAST_FORWARD);
-                    // }
+
                 }
                 VNodeStatus::Absent => {
                     // assert_eq!(self.pending_recoveries, 0);
@@ -674,8 +669,7 @@ impl VNodeState {
                     self.logs.clear();
                     self.storage.clear();
                 }
-                VNodeStatus::Retiring => {
-                    // assert_eq!(self.pending_recoveries, 0);
+                VNodeStatus::Zombie => {
                 }
             }
 
@@ -822,7 +816,7 @@ impl VNodeState {
         dcc
     }
 
-    pub fn storage_set_remote(&mut self, db: &Database, key: &[u8],
+    pub fn storage_set_remote(&mut self, _db: &Database, key: &[u8],
                               mut new_dcc: DottedCausalContainer<Vec<u8>>) {
         let old_dcc = self.storage_get(key);
         new_dcc.add_to_bvv(&mut self.clocks);

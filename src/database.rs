@@ -8,7 +8,7 @@ use workers::*;
 use resp::RespValue;
 use storage::{StorageManager, Storage};
 use rand::{thread_rng, Rng};
-use utils::IdHashMap;
+use utils::{IdHashMap, split_u64, join_u64};
 pub use types::*;
 use config::Config;
 
@@ -178,7 +178,7 @@ impl Database {
 
         for (&i, vn) in self.vnodes.read().unwrap().iter() {
             let final_status =
-                if self.dht.nodes_for_vnode(i, true, false).contains(&self.dht.node()) {
+                if self.dht.nodes_for_vnode(i, true, true).contains(&self.dht.node()) {
                     VNodeStatus::Ready
                 } else {
                     VNodeStatus::Absent

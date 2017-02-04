@@ -108,15 +108,8 @@ impl<T: Metadata> Ring<T> {
         if !self.vnodes[vn as usize].insert(node) {
             return Err(format!("{} is already in vnodes[{}]", node, vn).into());
         }
-        Ok(())
-    }
-
-    fn retire_retiring_node(&mut self, node: NodeId, vn: VNodeId) -> Result<(), GenericError> {
-        if !self.pending[vn as usize].is_empty() {
-            return Err(format!("pending[{}] is not empty", vn).into());
-        }
-        if !self.retiring[vn as usize].remove(&node) {
-            return Err(format!("{} is not in retiring[{}]", node, vn).into());
+        if self.pending[vn as usize].is_empty() {
+            self.retiring[vn as usize].clear();
         }
         Ok(())
     }
@@ -649,15 +642,6 @@ impl<T: Metadata> DHT<T> {
         try_cas!(self, {
             let (mut ring, ring_version) = self.ring_clone();
             try!(ring.promote_pending_node(node, vnode));
-            (ring_version, ring)
-        });
-        Ok(())
-    }
-
-    pub fn retire_retiring_node(&self, node: NodeId, vnode: VNodeId) -> Result<(), GenericError> {
-        try_cas!(self, {
-            let (mut ring, ring_version) = self.ring_clone();
-            try!(ring.retire_retiring_node(node, vnode));
             (ring_version, ring)
         });
         Ok(())

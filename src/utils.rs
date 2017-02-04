@@ -21,25 +21,39 @@ impl Default for IdHasher {
 impl Hasher for IdHasher {
     #[inline]
     fn finish(&self) -> u64 {
-        // Seahash diffuse method
-        let mut x = self.0.wrapping_mul(0x6eed0e9da4d94a4f);
-        let a = x >> 32;
-        let b = x >> 60;
-        x ^= a >> b;
-        x.wrapping_mul(0x6eed0e9da4d94a4f)
+        self.0
     }
 
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
+
+        #[inline]
+        fn mix(mut x: u64) -> u64 {
+            // Seahash diffuse method
+            x = x.wrapping_mul(0x6eed0e9da4d94a4f);
+            let a = x >> 32;
+            let b = x >> 60;
+            x ^= a >> b;
+            x.wrapping_mul(0x6eed0e9da4d94a4f)
+        }
+
         debug_assert!(bytes.len() <= 8);
         unsafe {
             let mut temp = 0u64;
             ::std::ptr::copy_nonoverlapping(bytes.as_ptr(),
                                             &mut temp as *mut _ as *mut u8,
                                             bytes.len());
-            self.0 = self.0.rotate_left(32) ^ temp;
+            self.0 ^= mix(temp);
         }
     }
+}
+
+pub fn split_u64(uint: u64) -> (u32, u32) {
+    ((uint >> 32) as u32, uint as u32)
+}
+
+pub fn join_u64(hi: u32, lo: u32) -> u64 {
+    ((hi as u64) << 32) | (lo as u64)
 }
 
 pub fn assume_str(bytes: &[u8]) -> &str {
