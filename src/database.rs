@@ -214,12 +214,6 @@ impl Database {
             FabricMsg::RemoteGetAck(m) => {
                 vnode!(self, m.vnode, |mut vn| vn.handler_get_remote_ack(self, from, m));
             }
-            FabricMsg::Set(m) => {
-                vnode!(self, m.vnode, |mut vn| vn.handler_set(self, from, m));
-            }
-            FabricMsg::SetAck(m) => {
-                vnode!(self, m.vnode, |mut vn| vn.handler_set_ack(self, from, m));
-            }
             FabricMsg::RemoteSet(m) => {
                 vnode!(self, m.vnode, |mut vn| vn.handler_set_remote(self, from, m));
             }

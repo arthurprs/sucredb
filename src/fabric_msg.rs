@@ -18,8 +18,6 @@ pub enum FabricMsgError {
 pub enum FabricMsg {
     RemoteGet(MsgRemoteGet),
     RemoteGetAck(MsgRemoteGetAck),
-    Set(MsgSet),
-    SetAck(MsgSetAck),
     RemoteSet(MsgRemoteSet),
     RemoteSetAck(MsgRemoteSetAck),
     SyncStart(MsgSyncStart),
@@ -43,8 +41,6 @@ impl FabricMsg {
         match *self {
             FabricMsg::RemoteGet(..) => FabricMsgType::Crud,
             FabricMsg::RemoteGetAck(..) => FabricMsgType::Crud,
-            FabricMsg::Set(..) => FabricMsgType::Crud,
-            FabricMsg::SetAck(..) => FabricMsgType::Crud,
             FabricMsg::RemoteSet(..) => FabricMsgType::Crud,
             FabricMsg::RemoteSetAck(..) => FabricMsgType::Crud,
             FabricMsg::SyncStart(..) => FabricMsgType::Synch,
@@ -144,8 +140,6 @@ macro_rules! impl_into {
 
 impl_into!(RemoteGet, MsgRemoteGet);
 impl_into!(RemoteGetAck, MsgRemoteGetAck);
-impl_into!(Set, MsgSet);
-impl_into!(SetAck, MsgSetAck);
 impl_into!(RemoteSet, MsgRemoteSet);
 impl_into!(RemoteSetAck, MsgRemoteSetAck);
 impl_into!(SyncAck, MsgSyncAck);

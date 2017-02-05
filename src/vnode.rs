@@ -466,14 +466,6 @@ impl VNode {
                       });
     }
 
-    pub fn handler_set(&mut self, _db: &Database, _from: NodeId, _msg: MsgSet) {
-        unimplemented!()
-    }
-
-    pub fn handler_set_ack(&mut self, _db: &Database, _from: NodeId, _msg: MsgSetAck) {
-        unimplemented!()
-    }
-
     pub fn handler_set_remote(&mut self, db: &Database, from: NodeId, msg: MsgRemoteSet) {
         check_status!(self,
                       VNodeStatus::Ready | VNodeStatus::Bootstrap,
