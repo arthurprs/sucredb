@@ -698,7 +698,8 @@ mod tests {
                                "test",
                                config::DEFAULT_ETCD_ADDR,
                                (),
-                               Some(RingDescription::new(rf, 256)));
+                               Some(RingDescription::new(rf, 256)),
+                               None);
             assert_eq!(dht.nodes_for_vnode(0, true, false), &[node]);
             assert_eq!(dht.nodes_for_vnode(0, false, false), &[node]);
             assert_eq!(dht.nodes_for_vnode(0, false, false), &[node]);

@@ -198,8 +198,8 @@ impl VNode {
     }
 
     #[cfg(test)]
-    pub fn _log_len(&self) -> usize {
-        self.state.log.log.len()
+    pub fn _log_len(&self, node: NodeId) -> usize {
+        self.state.logs.get(&node).map_or(0, |log| log.log.len())
     }
 
     pub fn syncs_inflight(&self) -> (usize, usize) {

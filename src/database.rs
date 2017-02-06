@@ -278,7 +278,7 @@ impl Drop for Database {
     }
 }
 
-#[cfg(test)]
+#[cfg(test___)]
 mod tests {
     use std::{thread, net, fs, ops};
     use std::sync::{Mutex, Arc};

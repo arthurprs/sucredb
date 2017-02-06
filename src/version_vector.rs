@@ -494,6 +494,34 @@ mod test_bv {
             }
         }
     }
+
+    #[test]
+    fn delta() {
+        let a = BitmappedVersion::new(5, 3);
+        let b = BitmappedVersion::new(2, 4);
+        assert_eq!(vec![3, 4, 6, 7], a.delta(&b).collect::<Vec<Version>>());
+        let a = BitmappedVersion::new(7, 0);
+        let b = BitmappedVersion::new(2, 4);
+        assert_eq!(vec![3, 4, 6, 7], a.delta(&b).collect::<Vec<Version>>());
+        let a = BitmappedVersion::new(7, 0);
+        let b = BitmappedVersion::new(7, 0);
+        assert!(a.delta(&b).collect::<Vec<Version>>().is_empty());
+    }
+
+    #[test]
+    fn norm() {
+        let mut a = BitmappedVersion {
+            base: 1,
+            bitmap: 0b10.into(), // second bit set
+        };
+        a.norm();
+        assert_eq!(a.base, 1);
+        assert_eq!(a.bitmap, 0b10);
+        a.add(2);
+        a.norm();
+        assert_eq!(a.base, 3);
+        assert_eq!(a.bitmap, 0);
+    }
 }
 
 #[cfg(test)]
@@ -544,15 +572,20 @@ mod test_bvv {
 
     #[test]
     fn delta() {
-        let a = BitmappedVersion::new(5, 3);
-        let b = BitmappedVersion::new(2, 4);
-        assert_eq!(vec![3, 4, 6, 7], a.delta(&b).collect::<Vec<Version>>());
-        let a = BitmappedVersion::new(7, 0);
-        let b = BitmappedVersion::new(2, 4);
-        assert_eq!(vec![3, 4, 6, 7], a.delta(&b).collect::<Vec<Version>>());
-        let a = BitmappedVersion::new(7, 0);
-        let b = BitmappedVersion::new(7, 0);
-        assert!(a.delta(&b).collect::<Vec<Version>>().is_empty());
+        let mut bvv1 = BitmappedVersionVector::new();
+        let mut bvv2 = BitmappedVersionVector::new();
+        bvv1.0.insert(1, BitmappedVersion::new(5, 3));
+        bvv2.0.insert(1, BitmappedVersion::new(2, 4));
+        bvv1.0.insert(2, BitmappedVersion::new(7, 0));
+        bvv2.0.insert(2, BitmappedVersion::new(2, 4));
+        bvv1.0.insert(3, BitmappedVersion::new(7, 0));
+        bvv2.0.insert(3,  BitmappedVersion::new(7, 0));
+        bvv1.0.insert(4, BitmappedVersion::new(7, 0));
+        bvv2.0.insert(4,  BitmappedVersion::new(6, 1));
+        let delta_dots: Vec<_> = bvv1.delta(&bvv2).collect();
+        assert_eq!(vec![(1, 3), (1, 4), (1, 6), (1, 7), (2, 3), (2, 4), (2, 6), (2, 7)], delta_dots);
+        let min_versions: Vec<_> = bvv1.delta(&bvv2).min_versions().to_owned();
+        assert_eq!(vec![(1, 3), (2, 3)], min_versions);
     }
 
     #[test]
@@ -590,20 +623,6 @@ mod test_bvv {
         assert_eq!(a.get(1).unwrap(), &BitmappedVersion::new(2, 0));
     }
 
-    #[test]
-    fn norm() {
-        let mut a = BitmappedVersion {
-            base: 1,
-            bitmap: 0b10.into(), // second bit set
-        };
-        a.norm();
-        assert_eq!(a.base, 1);
-        assert_eq!(a.bitmap, 0b10);
-        a.add(2);
-        a.norm();
-        assert_eq!(a.base, 3);
-        assert_eq!(a.bitmap, 0);
-    }
 }
 
 #[cfg(test)]
@@ -758,11 +777,13 @@ mod test_dcc {
     }
 
     #[test]
+    #[ignore]
     fn fill() {
         unimplemented!()
     }
 
     #[test]
+    #[ignore]
     fn strip() {
         unimplemented!()
     }
