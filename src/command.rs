@@ -207,7 +207,7 @@ impl Database {
 
 fn dcc_to_resp(dcc: DottedCausalContainer<Vec<u8>>) -> RespValue {
     let mut values: Vec<_> =
-        dcc.values().map(|(_, v)| RespValue::Data(v.as_slice().into())).collect();
+        dcc.values().map(|v| RespValue::Data(v.as_slice().into())).collect();
     let buffer = bincode_serde::serialize(dcc.version_vector(), SizeLimit::Infinite).unwrap();
     values.push(RespValue::Data(buffer.as_slice().into()));
     RespValue::Array(values)

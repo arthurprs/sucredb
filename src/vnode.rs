@@ -706,7 +706,7 @@ impl VNodeState {
             for (k, v) in iter.iter() {
                 let dcc: DottedCausalContainer<Vec<u8>> = bincode_serde::deserialize(v).unwrap();
                 dcc.add_to_bvv(&mut clocks);
-                for (&(node, version), _) in dcc.values() {
+                for (&(node, version), _) in dcc.iter() {
                     logs.entry(node)
                         .or_insert_with(Default::default)
                         .log(version, k.into());
@@ -812,7 +812,7 @@ impl VNodeState {
             self.storage.set(key, &bytes);
         }
 
-        for (&(node, version), _) in new_dcc.values() {
+        for (&(node, version), _) in new_dcc.iter() {
             self.logs
                 .entry(node)
                 .or_insert_with(Default::default)

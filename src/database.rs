@@ -278,7 +278,7 @@ impl Drop for Database {
     }
 }
 
-#[cfg(test___)]
+#[cfg(test)]
 mod tests {
     use std::{thread, net, fs, ops};
     use std::sync::{Mutex, Arc};
@@ -390,7 +390,7 @@ mod tests {
                        .read()
                        .unwrap()
                        .values()
-                       .map(|vn| vn.lock().unwrap()._log_len())
+                       .map(|vn| vn.lock().unwrap()._log_len(db.dht.node()))
                        .sum::<usize>());
     }
 
@@ -629,7 +629,7 @@ mod tests {
         // force some syncs
         warn!("starting syncs");
         for i in 0..64u16 {
-            db2.start_sync(i, false);
+            db2.start_sync(i);
         }
 
         sleep_ms(1000);

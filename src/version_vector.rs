@@ -464,12 +464,12 @@ impl<T> DottedCausalContainer<T> {
         }
     }
 
-    pub fn drain_values(&mut self) -> linear_map::Drain<(Id, Version), T> {
-        self.dots.0.drain()
+    pub fn iter(&self) -> linear_map::Iter<(Id, Version), T> {
+        self.dots.0.iter()
     }
 
-    pub fn values(&self) -> linear_map::Iter<(Id, Version), T> {
-        self.dots.0.iter()
+    pub fn values(&self) -> linear_map::Values<(Id, Version), T> {
+        self.dots.0.values()
     }
 
     pub fn version_vector(&self) -> &VersionVector {
