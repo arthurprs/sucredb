@@ -122,43 +122,34 @@ impl Synchronization {
 
     pub fn new_sync_sender(db: &Database, state: &mut VNodeState, peer: NodeId, msg: MsgSyncStart)
                            -> Self {
-        let iterator: IteratorFn;
-        let mut clocks_snapshot: BitmappedVersionVector;
-
-        assert_eq!(msg.target, Some(db.dht.node()));
-
-        let clocks = state.clocks.clone();
-        let clocks_in_peer = msg.clocks_in_peer.clone();
+        let MsgSyncStart { target, cookie, clocks_in_peer, .. } = msg;
+        assert_eq!(target, Some(db.dht.node()));
 
         debug!("Creating SyncSender {:?} from {:?} to {:?}",
-               msg.cookie,
-               clocks_in_peer,
-               state.clocks);
+               cookie,
+               state.clocks,
+               clocks_in_peer);
 
-        let node_log_uptodate =
-            state.logs.get(&db.dht.node()).and_then(|log| log.min_version()).unwrap_or(0) <=
-            clocks_in_peer.get(db.dht.node()).map_or(0, |peer_bv| peer_bv.base());
+        let clocks_snapshot = state.clocks.clone();
+        let clocks_snapshot2 = state.clocks.clone();
+        let clocks_in_peer2 = clocks_in_peer.clone();
 
-        if node_log_uptodate {
-            clocks_snapshot = BitmappedVersionVector::new();
-            let mut keys: HashSet<Vec<u8>> = HashSet::new();
-            let empty_bv = BitmappedVersion::new(0, 0);
+        let dots_delta = state.clocks.delta(&clocks_in_peer);
+        let log_uptodate = dots_delta.min_versions()
+            .iter()
+            .all(|&(n, v)| state.logs.get(&n).and_then(|log| log.min_version()).unwrap_or(0) <= v);
 
-            for (&node, log) in &state.logs {
-                let n_bv = clocks.get(node).unwrap_or(&empty_bv);
-                let p_bv = clocks_in_peer.get(node).unwrap_or(&empty_bv);
-                clocks_snapshot.add_bv(node, n_bv);
-                let dots_delta = n_bv.delta(p_bv);
-                keys.reserve(dots_delta.size_hint().0);
-                for dot in dots_delta {
-                    if let Some(k) = log.get(dot) {
-                        keys.insert(k.to_vec());
-                    }
-                }
+        let iterator: IteratorFn = if log_uptodate {
+            // FIXME: this is really bad but it works
+            // otherwise be might risk the log to overflow and dots to go missing
+            let mut keys = HashSet::new();
+            for (n, v) in dots_delta {
+                let key = state.logs.get(&n).and_then(|log| log.get(v)).cloned().unwrap();
+                keys.insert(key);
             }
-
             let mut keys = keys.into_iter();
-            iterator = Box::new(move |storage| {
+
+            Box::new(move |storage| {
                 keys.by_ref()
                     .filter_map(|k| {
                         storage.get_vec(&k)
@@ -166,15 +157,14 @@ impl Synchronization {
                                 let mut dcc: DottedCausalContainer<_> =
                                     bincode_serde::deserialize(&v).unwrap();
                                 // TODO: fill should be done in the remote?
-                                dcc.fill(&clocks);
+                                dcc.fill(&clocks_snapshot);
                                 (k, dcc)
                             })
                     })
                     .next()
-            });
+            })
         } else {
             debug!("SyncSender {:?} using a scan", msg.cookie);
-            clocks_snapshot = clocks.clone();
             let mut storage_iterator = state.storage.iterator();
             let mut iter = (0..)
                 .map(move |_| {
@@ -188,21 +178,21 @@ impl Synchronization {
                 .filter_map(move |(k, mut dcc)| {
                     if !dcc.contained(&clocks_in_peer) {
                         // TODO: fill should be done in the remote?
-                        dcc.fill(&clocks);
+                        dcc.fill(&clocks_snapshot);
                         Some((k, dcc))
                     } else {
                         None
                     }
                 });
-            iterator = Box::new(move |_| iter.next());
-        }
+            Box::new(move |_| iter.next())
+        };
 
         Synchronization::SyncSender {
-            clocks_in_peer: msg.clocks_in_peer,
-            clocks_snapshot: clocks_snapshot,
+            clocks_in_peer: clocks_in_peer2,
+            clocks_snapshot: clocks_snapshot2,
             iterator: iterator,
             inflight: InFlightMap::new(),
-            cookie: msg.cookie,
+            cookie: cookie,
             peer: peer,
             count: 0,
             last_recv: Instant::now(),

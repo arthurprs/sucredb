@@ -115,7 +115,7 @@ impl<T: Metadata> Ring<T> {
     }
 
     fn replace(&mut self, old: NodeId, node: NodeId, addr: net::SocketAddr, meta: T)
-                    -> Result<(), GenericError> {
+               -> Result<(), GenericError> {
         if self.nodes.insert(node, (addr, meta)).is_none() {
             return Err(format!("{} is already in the cluster", node).into());
         }

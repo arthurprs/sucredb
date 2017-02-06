@@ -29,9 +29,8 @@ pub enum VNodeStatus {
     // and syncs are completed, etc.
     Zombie,
     // no actual data is present (metadata is retained though)
-    Absent,
-    // TODO: consider adding an status for a node that just came back up and is still part of the cluster
-    //       so it potentially has highly stale data
+    Absent, /* TODO: consider adding an status for a node that just came back up and is still part of the cluster
+             *       so it potentially has highly stale data */
 }
 
 pub struct VNode {
@@ -92,7 +91,7 @@ impl VNodePeer {
     pub fn log(&mut self, version: Version, key: Cow<[u8]>) {
         let min = self.min_version().unwrap_or(0);
         if version > min {
-            //debug_assert!(Some(&key) != self.log.get(&version));
+            // debug_assert!(Some(&key) != self.log.get(&version));
             self.log.insert(version, key.into());
             if self.log.len() > PEER_LOG_SIZE {
                 self.log.remove(&min).unwrap();
@@ -241,8 +240,9 @@ impl VNode {
                                     m.on_cancel(db, state);
                                     Some(cookie)
                                 }
-                                _ if status == VNodeStatus::Bootstrap =>
-                                    panic!("Invalid Sync for Bootstrap mode"),
+                                _ if status == VNodeStatus::Bootstrap => {
+                                    panic!("Invalid Sync for Bootstrap mode")
+                                }
                                 _ => None,
                             }
                         })
@@ -449,13 +449,7 @@ impl VNode {
     }
 
     pub fn handler_get_remote(&mut self, db: &Database, from: NodeId, msg: MsgRemoteGet) {
-        check_status!(self,
-                      VNodeStatus::Ready,
-                      db,
-                      from,
-                      msg,
-                      MsgRemoteGetAck,
-                      inflight_get);
+        check_status!(self, VNodeStatus::Ready, db, from, msg, MsgRemoteGetAck, inflight_get);
         let dcc = self.state.storage_get(&msg.key);
         let _ = db.fabric
             .send_msg(from,
@@ -493,8 +487,7 @@ impl VNode {
     pub fn handler_sync_start(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
         if !(self.state.status == VNodeStatus::Ready ||
              (self.state.status == VNodeStatus::Zombie &&
-              self.state.last_status_change.elapsed() <
-              Duration::from_millis(ZOMBIE_TIMEOUT_MS))) {
+              self.state.last_status_change.elapsed() < Duration::from_millis(ZOMBIE_TIMEOUT_MS))) {
             let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::BadVNodeStatus);
         } else if !self.syncs.contains_key(&msg.cookie) {
             let cookie = msg.cookie;
@@ -652,17 +645,14 @@ impl VNodeState {
                     assert_eq!(self.sync_nodes.len(), 0);
                     self.storage.clear();
                 }
-                VNodeStatus::Ready => {
-
-                }
+                VNodeStatus::Ready => {}
                 VNodeStatus::Absent => {
                     // assert_eq!(self.pending_recoveries, 0);
                     assert_eq!(self.sync_nodes.len(), 0);
                     self.logs.clear();
                     self.storage.clear();
                 }
-                VNodeStatus::Zombie => {
-                }
+                VNodeStatus::Zombie => {}
             }
 
             self.last_status_change = Instant::now();

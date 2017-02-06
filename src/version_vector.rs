@@ -101,7 +101,11 @@ impl BitmappedVersion {
             };
         }
         let ones = (self.base - other.base) as usize;
-        let len = ones + self.bitmap.bit_length() as usize;
+        let len = if self.bitmap == 0 {
+            ones
+        } else {
+            ones + self.bitmap.bit_length() as usize
+        };
         BitmappedVersionDelta {
             base: other.base,
             ones: ones,
@@ -141,6 +145,29 @@ impl Iterator for BitmappedVersionDelta {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.len - self.pos, Some(self.len - self.pos))
+    }
+}
+
+pub struct BitmappedVersionVectorDelta {
+    iter: Box<Iterator<Item = (Id, Version)>>,
+    min_versions: Vec<(Id, Version)>,
+}
+
+impl Iterator for BitmappedVersionVectorDelta {
+    type Item = (Id, Version);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+impl BitmappedVersionVectorDelta {
+    pub fn min_versions(&self) -> &[(Id, Version)] {
+        &self.min_versions
     }
 }
 
@@ -267,6 +294,25 @@ impl BitmappedVersionVector {
 
     pub fn iter(&self) -> linear_map::Iter<Id, BitmappedVersion> {
         self.0.iter()
+    }
+
+    pub fn delta(&self, other: &Self) -> BitmappedVersionVectorDelta {
+        let min_versions: Vec<_> = self.0
+            .iter()
+            .filter_map(|(&id, bv)| {
+                other.get(id).and_then(|other_bv| bv.delta(other_bv).map(move |v| (id, v)).next())
+            })
+            .collect();
+        let empty_bv = BitmappedVersion::new(0, 0);
+        let other = other.clone();
+        let iter = self.0.clone().into_iter().flat_map(move |(id, bv)| {
+            let other_bv = other.get(id).unwrap_or(&empty_bv);
+            bv.delta(other_bv).map(move |v| (id, v))
+        });
+        BitmappedVersionVectorDelta {
+            iter: Box::new(iter),
+            min_versions: min_versions,
+        }
     }
 
     // pub fn reset(&mut self) {
