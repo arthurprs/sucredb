@@ -579,11 +579,12 @@ mod test_bvv {
         bvv1.0.insert(2, BitmappedVersion::new(7, 0));
         bvv2.0.insert(2, BitmappedVersion::new(2, 4));
         bvv1.0.insert(3, BitmappedVersion::new(7, 0));
-        bvv2.0.insert(3,  BitmappedVersion::new(7, 0));
+        bvv2.0.insert(3, BitmappedVersion::new(7, 0));
         bvv1.0.insert(4, BitmappedVersion::new(7, 0));
-        bvv2.0.insert(4,  BitmappedVersion::new(6, 1));
+        bvv2.0.insert(4, BitmappedVersion::new(6, 1));
         let delta_dots: Vec<_> = bvv1.delta(&bvv2).collect();
-        assert_eq!(vec![(1, 3), (1, 4), (1, 6), (1, 7), (2, 3), (2, 4), (2, 6), (2, 7)], delta_dots);
+        assert_eq!(vec![(1, 3), (1, 4), (1, 6), (1, 7), (2, 3), (2, 4), (2, 6), (2, 7)],
+                   delta_dots);
         let min_versions: Vec<_> = bvv1.delta(&bvv2).min_versions().to_owned();
         assert_eq!(vec![(1, 3), (2, 3)], min_versions);
     }

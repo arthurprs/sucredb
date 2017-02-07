@@ -47,7 +47,7 @@ unsafe impl Sync for StorageIterator {}
 impl StorageManager {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<StorageManager, GenericError> {
         let mut env = try!(lmdb_rs::Environment::new()
-            .map_size(10 * 1024 * 1024 * 1024)
+            .map_size(10 * 1024 * 1024)
             .flags(lmdb_rs::core::EnvCreateNoTls | lmdb_rs::core::EnvCreateNoMemInit |
                    lmdb_rs::core::EnvCreateWriteMap)
             .autocreate_dir(true)

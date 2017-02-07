@@ -69,6 +69,7 @@ struct ReqState {
     succesfull: u8,
     required: u8,
     total: u8,
+    reply_result: bool,
     // only used for get
     container: DottedCausalContainer<Vec<u8>>,
     token: Token,
@@ -154,12 +155,13 @@ macro_rules! forward {
 }
 
 impl ReqState {
-    fn new(token: Token, nodes: usize, consistency: ConsistencyLevel) -> Self {
+    fn new(token: Token, nodes: usize, consistency: ConsistencyLevel, reply_result: bool) -> Self {
         ReqState {
             required: consistency.required(nodes as u8),
             total: nodes as u8,
             replies: 0,
             succesfull: 0,
+            reply_result: reply_result,
             container: DottedCausalContainer::new(),
             token: token,
         }
@@ -320,9 +322,8 @@ impl VNode {
         let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(1000);
-        assert!(self.inflight
-            .insert(cookie, ReqState::new(token, nodes.len(), consistency), expire)
-            .is_none());
+        let req = ReqState::new(token, nodes.len(), consistency, true);
+        assert!(self.inflight.insert(cookie, req, expire).is_none());
 
         for node in nodes {
             if node == db.dht.node() {
@@ -364,7 +365,7 @@ impl VNode {
     }
 
     pub fn do_set(&mut self, db: &Database, token: Token, key: &[u8], value_opt: Option<&[u8]>,
-                  vv: VersionVector, consistency: ConsistencyLevel) {
+                  vv: VersionVector, consistency: ConsistencyLevel, reply_result: bool) {
         match self.status() {
             VNodeStatus::Ready => (),
             status => return self.respond_cant_coordinate(db, token, status, key),
@@ -373,9 +374,8 @@ impl VNode {
         let nodes = db.dht.nodes_for_vnode(self.state.num, true, true);
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(1000);
-        assert!(self.inflight
-            .insert(cookie, ReqState::new(token, nodes.len(), consistency), expire)
-            .is_none());
+        let req = ReqState::new(token, nodes.len(), consistency, reply_result);
+        assert!(self.inflight.insert(cookie, req, expire).is_none());
 
         let dcc = self.state.storage_set_local(db, key, value_opt, &vv);
         debug!("set_local {} {:?}", String::from_utf8_lossy(key), dcc);
@@ -398,7 +398,7 @@ impl VNode {
     fn process_get(&mut self, db: &Database, cookie: Cookie,
                    container_opt: Option<DottedCausalContainer<Vec<u8>>>) {
         if let HMEntry::Occupied(mut o) = self.inflight.entry(cookie) {
-            if {
+            let done = {
                 let state = o.get_mut();
                 state.replies += 1;
                 if let Some(container) = container_opt {
@@ -411,9 +411,10 @@ impl VNode {
                 } else {
                     false
                 }
-            } {
+            };
+            if done {
                 let state = o.remove();
-                db.respond_get(state.token, state.container);
+                db.respond_dcc(state.token, state.container);
             }
         } else {
             debug!("process_get cookie not found {:?}", cookie);
@@ -422,21 +423,22 @@ impl VNode {
 
     fn process_set(&mut self, db: &Database, cookie: Cookie, succesfull: bool) {
         if let HMEntry::Occupied(mut o) = self.inflight.entry(cookie) {
-            if {
+            let (done, reply_result) = {
                 let state = o.get_mut();
                 state.replies += 1;
                 if succesfull {
                     state.succesfull += 1;
                 }
-                if state.succesfull == state.required || state.replies == state.total {
-                    // return to client & remove state
-                    true
-                } else {
-                    false
-                }
-            } {
+                let done = state.succesfull == state.required || state.replies == state.total;
+                (done, state.reply_result)
+            };
+            if done {
                 let state = o.remove();
-                db.respond_set(state.token, state.container);
+                if reply_result {
+                    db.respond_dcc(state.token, state.container);
+                } else {
+                    db.respond_ok(state.token);
+                }
             }
         } else {
             debug!("process_set cookie not found {:?}", cookie);

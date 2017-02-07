@@ -74,10 +74,11 @@ impl Database {
         let args = &arg_[1..argc];
 
         let ret = match arg0 {
-            b"GET" | b"MGET" | b"GETSET" | b"get" | b"mget" | b"getset" => {
-                self.cmd_get(token, args)
+            b"GET" | b"MGET" | b"get" | b"mget" => self.cmd_get(token, args),
+            b"SET" | b"MSET" | b"HSET" | b"set" | b"mset" | b"hset" => {
+                self.cmd_set(token, args, false)
             }
-            b"SET" | b"MSET" | b"HSET" | b"set" | b"mset" | b"hset" => self.cmd_set(token, args),
+            b"GETSET" | b"getset" => self.cmd_set(token, args, true),
             b"DEL" | b"MDEL" | b"HDEL" | b"del" | b"mdel" | b"hdel" => self.cmd_del(token, args),
             b"CLUSTER" | b"cluster" => self.cmd_cluster(token, args),
             b"ECHO" | b"echo" => {
@@ -115,7 +116,7 @@ impl Database {
         Ok(self.get(token, args[0], consistency))
     }
 
-    fn cmd_set(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
+    fn cmd_set(&self, token: u64, args: &[&[u8]], reply_result: bool) -> Result<(), CommandError> {
         try!(check_arg_count(args.len(), 2, 4));
         let vv: VersionVector = if args.len() >= 3 && !args[2].is_empty() {
             bincode_serde::deserialize(args[2]).unwrap()
@@ -123,11 +124,11 @@ impl Database {
             VersionVector::new()
         };
         let consistency: ConsistencyLevel = if args.len() >= 4 {
-            try!(args[1].try_into())
+            try!(args[3].try_into())
         } else {
             self.config.write_consistency
         };
-        Ok(self.set(token, args[0], Some(args[1]), vv, consistency))
+        Ok(self.set(token, args[0], Some(args[1]), vv, consistency, reply_result))
     }
 
     fn cmd_del(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
@@ -142,7 +143,7 @@ impl Database {
         } else {
             self.config.write_consistency
         };
-        Ok(self.set(token, args[0], None, vv, consistency))
+        Ok(self.set(token, args[0], None, vv, consistency, false))
     }
 
     fn cmd_cluster(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
@@ -187,13 +188,8 @@ impl Database {
         self.respond(token, RespValue::Error(format!("{:?}", error).into()));
     }
 
-    pub fn respond_get(&self, token: Token, dcc: DottedCausalContainer<Vec<u8>>) {
+    pub fn respond_dcc(&self, token: Token, dcc: DottedCausalContainer<Vec<u8>>) {
         self.respond(token, dcc_to_resp(dcc));
-    }
-
-    pub fn respond_set(&self, token: Token, _dcc: DottedCausalContainer<Vec<u8>>) {
-        // self.respond(token, dcc_to_resp(dcc));
-        self.respond_ok(token);
     }
 
     pub fn respond_moved(&self, token: Token, vnode: VNodeId, addr: net::SocketAddr) {
@@ -206,8 +202,7 @@ impl Database {
 }
 
 fn dcc_to_resp(dcc: DottedCausalContainer<Vec<u8>>) -> RespValue {
-    let mut values: Vec<_> =
-        dcc.values().map(|v| RespValue::Data(v.as_slice().into())).collect();
+    let mut values: Vec<_> = dcc.values().map(|v| RespValue::Data(v.as_slice().into())).collect();
     let buffer = bincode_serde::serialize(dcc.version_vector(), SizeLimit::Infinite).unwrap();
     values.push(RespValue::Data(buffer.as_slice().into()));
     RespValue::Array(values)
