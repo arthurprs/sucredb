@@ -341,7 +341,7 @@ mod tests {
                 .next()
         }
 
-        fn response(&self, token: Token) -> Vec<Vec<u8>> {
+        fn values_response(&self, token: Token) -> Vec<Vec<u8>> {
             (0..1000)
                 .filter_map(|_| {
                     sleep_ms(10);
@@ -380,20 +380,20 @@ mod tests {
         let mut db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
 
         db.get(1, b"test", One);
-        assert!(db.response(1).len() == 0);
+        assert!(db.values_response(1).len() == 0);
 
         db.set(1, b"test", Some(b"value1"), VersionVector::new(), One, true);
-        assert!(db.response(1).len() == 0);
+        assert!(db.values_response(1).len() == 0);
 
         db.get(1, b"test", One);
-        assert!(db.response(1).eq(&[b"value1"]));
+        assert!(db.values_response(1).eq(&[b"value1"]));
 
         db.save(shutdown);
         drop(db);
         db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", false);
 
         db.get(1, b"test", One);
-        assert!(db.response(1).eq(&[b"value1"]));
+        assert!(db.values_response(1).eq(&[b"value1"]));
 
         assert_eq!(1,
                    db.vnodes
@@ -420,33 +420,33 @@ mod tests {
         let _ = env_logger::init();
         let db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
         db.get(1, b"test", One);
-        assert!(db.response(1).len() == 0);
+        assert!(db.values_response(1).len() == 0);
 
         db.set(1, b"test", Some(b"value1"), VersionVector::new(), One, true);
-        assert!(db.response(1).len() == 0);
+        assert!(db.values_response(1).len() == 0);
 
         db.get(1, b"test", One);
-        assert!(db.response(1).eq(&[b"value1"]));
+        assert!(db.values_response(1).eq(&[b"value1"]));
 
         db.set(1, b"test", Some(b"value2"), VersionVector::new(), One, true);
-        assert!(db.response(1).len() == 0);
+        assert!(db.values_response(1).len() == 0);
 
         db.get(1, b"test", One);
-        let state = db.response(1);
+        let state = db.values_response(1);
         assert!(state.eq(&[b"value1", b"value2"]));
 
         // db.set(1, b"test", Some(b"value12"), state.version_vector().clone(), One, true);
-        // assert!(db.response(1).len() == 0);
+        // assert!(db.values_response(1).len() == 0);
 
         db.get(1, b"test", One);
-        let state = db.response(1);
+        let state = db.values_response(1);
         assert!(state.eq(&[b"value12"]));
 
         // db.set(1, b"test", None, state.version_vector().clone(), One, true);
-        // assert!(db.response(1).len() == 0);
+        // assert!(db.values_response(1).len() == 0);
 
         db.get(1, b"test", One);
-        assert!(db.response(1).len() == 0);
+        assert!(db.values_response(1).len() == 0);
     }
 
     #[test]
@@ -464,14 +464,14 @@ mod tests {
         }
 
         db1.get(1, b"test", One);
-        assert!(db1.response(1).len() == 0);
+        assert!(db1.values_response(1).len() == 0);
 
         db1.set(1, b"test", Some(b"value1"), VersionVector::new(), One, true);
-        assert!(db1.response(1).len() == 0);
+        assert!(db1.values_response(1).len() == 0);
 
         for &db in &[&db1, &db2] {
             db.get(1, b"test", One);
-            assert!(db.response(1).eq(&[b"value1"]));
+            assert!(db.values_response(1).eq(&[b"value1"]));
         }
     }
 
@@ -489,18 +489,18 @@ mod tests {
                     VersionVector::new(),
                     One,
                     true);
-            db1.response(i);
+            db1.values_response(i);
         }
         for i in 0..TEST_JOIN_SIZE {
             db1.get(i, i.to_string().as_bytes(), One);
-            assert!(db1.response(i).eq(&[i.to_string().as_bytes()]));
+            assert!(db1.values_response(i).eq(&[i.to_string().as_bytes()]));
         }
 
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         warn!("will check data in db2 before balancing");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes(), One);
-            assert!(db2.response(i).eq(&[i.to_string().as_bytes()]));
+            assert!(db2.values_response(i).eq(&[i.to_string().as_bytes()]));
         }
 
         db2.dht.rebalance();
@@ -508,11 +508,11 @@ mod tests {
         warn!("will check data in both dbs during balancing");
         for i in 0..TEST_JOIN_SIZE {
             db2.get(i, i.to_string().as_bytes(), One);
-            let result = db2.response(i);
+            let result = db2.values_response(i);
             assert!(result.eq(&[i.to_string().as_bytes()]));
 
             db1.get(i, i.to_string().as_bytes(), One);
-            let result = db1.response(i);
+            let result = db1.values_response(i);
             assert!(result.eq(&[i.to_string().as_bytes()]));
         }
 
@@ -526,7 +526,7 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.response(i).eq(&[i.to_string().as_bytes()]));
+                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
             }
         }
     }
@@ -552,15 +552,15 @@ mod tests {
                     VersionVector::new(),
                     One,
                     true);
-            db1.response(i);
+            db1.values_response(i);
         }
         // wait for all writes to be replicated
         sleep_ms(5);
         for i in 0..TEST_JOIN_SIZE {
             db1.get(i, i.to_string().as_bytes(), One);
-            let result1 = db1.response(i);
+            let result1 = db1.values_response(i);
             db2.get(i, i.to_string().as_bytes(), One);
-            let result2 = db2.response(i);
+            let result2 = db2.values_response(i);
             assert_eq!(result1, result2);
         }
 
@@ -586,7 +586,7 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.response(i).eq(&[i.to_string().as_bytes()]));
+                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
             }
         }
     }
@@ -615,11 +615,11 @@ mod tests {
                     VersionVector::new(),
                     One,
                     true);
-            db1.response(i);
+            db1.values_response(i);
         }
         for i in 0..TEST_JOIN_SIZE {
             db1.get(i, i.to_string().as_bytes(), One);
-            assert_eq!(db1.response(i), vec![i.to_string().as_bytes()]);
+            assert_eq!(db1.values_response(i), vec![i.to_string().as_bytes()]);
         }
 
         // sim partition heal
@@ -629,7 +629,7 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), Quorum);
-                assert!(db.response(i).eq(&[i.to_string().as_bytes()]));
+                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
             }
         }
 
@@ -655,7 +655,7 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.response(i).eq(&[i.to_string().as_bytes()]));
+                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
             }
         }
     }
