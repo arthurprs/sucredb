@@ -73,23 +73,27 @@ impl Database {
         meta_storage.del(b"clean_shutdown");
         meta_storage.sync();
 
+        info!("old_node:{:?} node:{:?}", old_node, node);
+
+        let fabric = Fabric::new(node, config.fabric_addr).unwrap();
+        let dht = DHT::new(node,
+                           config.fabric_addr,
+                           &config.cluster_name,
+                           &config.etcd_addr,
+                           config.listen_addr,
+                           if let Some(init) = config.cmd_init.as_ref() {
+                               Some(dht::RingDescription::new(init.replication_factor,
+                                                              init.partitions))
+                           } else {
+                               None
+                           },
+                           old_node);
         let workers = WorkerManager::new(node,
                                          config.workers as _,
                                          time::Duration::from_millis(config.worker_timer as _));
         let db = Arc::new(Database {
-            fabric: Fabric::new(node, config.fabric_addr).unwrap(),
-            dht: DHT::new(node,
-                          config.fabric_addr,
-                          &config.cluster_name,
-                          &config.etcd_addr,
-                          config.listen_addr,
-                          if let Some(init) = config.cmd_init.as_ref() {
-                              Some(dht::RingDescription::new(init.replication_factor,
-                                                             init.partitions))
-                          } else {
-                              None
-                          },
-                          old_node),
+            fabric: fabric,
+            dht: dht,
             storage_manager: storage_manager,
             meta_storage: meta_storage,
             response_fn: response_fn,
@@ -347,7 +351,8 @@ mod tests {
                     sleep_ms(10);
                     self.responses.lock().unwrap().remove(&token).map(|v| resp_to_values(v))
                 })
-                .next().unwrap()
+                .next()
+                .unwrap()
         }
     }
 
@@ -606,6 +611,7 @@ mod tests {
         }
 
         // sim partition
+        warn!("droping db2");
         drop(db2);
 
         for i in 0..TEST_JOIN_SIZE {
@@ -623,6 +629,7 @@ mod tests {
         }
 
         // sim partition heal
+        warn!("bringing back db2");
         db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
 
         warn!("will check before sync");
@@ -631,12 +638,6 @@ mod tests {
                 db.get(i, i.to_string().as_bytes(), Quorum);
                 assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
             }
-        }
-
-        sleep_ms(1000);
-        while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
-            warn!("waiting for rev syncs to finish");
-            sleep_ms(1000);
         }
 
         // force some syncs

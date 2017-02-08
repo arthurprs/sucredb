@@ -352,9 +352,12 @@ impl<T: Metadata> Ring<T> {
 // TODO: move to a member fn on DHT
 macro_rules! try_cas {
     ($s: ident, $e: block) => (
+        try_cas!($s, $e, false)
+    );
+    ($s: ident, $e: block, $b: expr) => (
         loop {
             let (ring_version, new_ring) = $e;
-            match $s.propose(ring_version, new_ring, false) {
+            match $s.propose(ring_version, new_ring, $b) {
                 Ok(()) => break,
                 Err(etcd::Error::Api(ref e)) if e.error_code == 101 => {
                     warn!("Proposing new ring conflicted at version {}", ring_version);
@@ -475,20 +478,20 @@ impl<T: Metadata> DHT<T> {
                 let (mut ring, ring_version) = self.ring_clone();
                 try!(ring.join_node(self.node, self.addr, meta.clone()));
                 (ring_version, ring)
-            });
+            }, true);
             Ok(())
         };
         f().unwrap();
     }
 
-    pub fn replace(&self, old: NodeId, meta: T) {
+    fn replace(&self, old: NodeId, meta: T) {
         self.refresh_ring();
         let f = move || -> Result<(), GenericError> {
             try_cas!(self, {
                 let (mut ring, ring_version) = self.ring_clone();
                 try!(ring.replace(old, self.node, self.addr, meta.clone()));
                 (ring_version, ring)
-            });
+            }, true);
             Ok(())
         };
         f().unwrap();
