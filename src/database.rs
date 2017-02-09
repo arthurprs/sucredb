@@ -434,20 +434,20 @@ mod tests {
         assert!(db.values_response(1).len() == 0);
 
         db.set(1, b"test", Some(b"value1"), VersionVector::new(), One, true);
-        assert!(db.values_response(1).len() == 0);
+        assert!(db.values_response(1).len() == 1);
 
         db.get(1, b"test", One);
         assert!(db.values_response(1).eq(&[b"value1"]));
 
         db.set(1, b"test", Some(b"value2"), VersionVector::new(), One, true);
-        assert!(db.values_response(1).len() == 0);
+        assert!(db.values_response(1).len() == 2);
 
         db.get(1, b"test", One);
         let (vv, values) = db.response(1);
         assert!(values.eq(&[b"value1", b"value2"]));
 
         db.set(1, b"test", Some(b"value12"), vv, One, true);
-        assert!(db.values_response(1).len() == 0);
+        assert!(db.values_response(1).len() == 1);
 
         db.get(1, b"test", One);
         let (vv, values) = db.response(1);
@@ -478,7 +478,7 @@ mod tests {
         assert!(db1.values_response(1).len() == 0);
 
         db1.set(1, b"test", Some(b"value1"), VersionVector::new(), One, true);
-        assert!(db1.values_response(1).len() == 0);
+        assert!(db1.values_response(1).len() == 1);
 
         for &db in &[&db1, &db2] {
             db.get(1, b"test", One);

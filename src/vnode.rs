@@ -374,11 +374,12 @@ impl VNode {
         let nodes = db.dht.nodes_for_vnode(self.state.num, true, true);
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(1000);
-        let req = ReqState::new(token, nodes.len(), consistency, reply_result);
+
+        let mut req = ReqState::new(token, nodes.len(), consistency, reply_result);
+        let dcc = self.state.storage_set_local(db, key, value_opt, &vv);
+        req.container = dcc.clone();
         assert!(self.inflight.insert(cookie, req, expire).is_none());
 
-        let dcc = self.state.storage_set_local(db, key, value_opt, &vv);
-        debug!("set_local {} {:?}", String::from_utf8_lossy(key), dcc);
         self.process_set(db, cookie, true);
         for node in nodes {
             if node != db.dht.node() {
