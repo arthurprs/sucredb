@@ -336,24 +336,24 @@ mod tests {
             }
         }
 
-        fn resp_response(&self, token: Token) -> Option<RespValue> {
+        fn resp_response(&self, token: Token) -> RespValue {
             (0..1000)
                 .filter_map(|_| {
                     sleep_ms(10);
                     self.responses.lock().unwrap().remove(&token)
                 })
                 .next()
+                .unwrap()
+        }
+
+        fn response(&self, token: Token) -> (VersionVector, Vec<Vec<u8>>) {
+            decode_response(self.resp_response(token))
         }
 
         fn values_response(&self, token: Token) -> Vec<Vec<u8>> {
-            (0..1000)
-                .filter_map(|_| {
-                    sleep_ms(10);
-                    self.responses.lock().unwrap().remove(&token).map(|v| resp_to_values(v))
-                })
-                .next()
-                .unwrap()
+            self.response(token).1
         }
+
     }
 
     impl ops::Deref for TestDatabase {
@@ -363,9 +363,9 @@ mod tests {
         }
     }
 
-    fn resp_to_values(value: RespValue) -> Vec<Vec<u8>> {
+    fn decode_response(value: RespValue) -> (VersionVector, Vec<Vec<u8>>) {
         if let RespValue::Array(ref arr) = value {
-            return arr[0..arr.len() - 1]
+            let values: Vec<_> =  arr[0..arr.len() - 1]
                 .iter()
                 .map(|d| {
                     if let RespValue::Data(ref d) = *d {
@@ -375,6 +375,12 @@ mod tests {
                     }
                 })
                 .collect();
+            let vv = if let RespValue::Data(ref d) = arr[arr.len() -1] {
+                bincode_serde::deserialize(&d[..]).unwrap()
+            } else {
+                panic!();
+            };
+            return (vv, values);
         }
         panic!("Invalid bincode data")
     }
@@ -437,18 +443,18 @@ mod tests {
         assert!(db.values_response(1).len() == 0);
 
         db.get(1, b"test", One);
-        let state = db.values_response(1);
-        assert!(state.eq(&[b"value1", b"value2"]));
+        let (vv, values) = db.response(1);
+        assert!(values.eq(&[b"value1", b"value2"]));
 
-        // db.set(1, b"test", Some(b"value12"), state.version_vector().clone(), One, true);
-        // assert!(db.values_response(1).len() == 0);
+        db.set(1, b"test", Some(b"value12"), vv, One, true);
+        assert!(db.values_response(1).len() == 0);
 
         db.get(1, b"test", One);
-        let state = db.values_response(1);
-        assert!(state.eq(&[b"value12"]));
+        let (vv, values) = db.response(1);
+        assert!(values.eq(&[b"value12"]));
 
-        // db.set(1, b"test", None, state.version_vector().clone(), One, true);
-        // assert!(db.values_response(1).len() == 0);
+        db.set(1, b"test", None, vv, One, true);
+        assert!(db.values_response(1).len() == 0);
 
         db.get(1, b"test", One);
         assert!(db.values_response(1).len() == 0);
@@ -496,29 +502,24 @@ mod tests {
                     true);
             db1.values_response(i);
         }
-        for i in 0..TEST_JOIN_SIZE {
-            db1.get(i, i.to_string().as_bytes(), One);
-            assert!(db1.values_response(i).eq(&[i.to_string().as_bytes()]));
-        }
 
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         warn!("will check data in db2 before balancing");
         for i in 0..TEST_JOIN_SIZE {
-            db2.get(i, i.to_string().as_bytes(), One);
-            assert!(db2.values_response(i).eq(&[i.to_string().as_bytes()]));
+            for &db in &[&db1, &db2] {
+                db.get(i, i.to_string().as_bytes(), One);
+                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
+            }
         }
 
         db2.dht.rebalance();
 
         warn!("will check data in both dbs during balancing");
         for i in 0..TEST_JOIN_SIZE {
-            db2.get(i, i.to_string().as_bytes(), One);
-            let result = db2.values_response(i);
-            assert!(result.eq(&[i.to_string().as_bytes()]));
-
-            db1.get(i, i.to_string().as_bytes(), One);
-            let result = db1.values_response(i);
-            assert!(result.eq(&[i.to_string().as_bytes()]));
+            for &db in &[&db1, &db2] {
+                db.get(i, i.to_string().as_bytes(), One);
+                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
+            }
         }
 
         sleep_ms(1000);
@@ -537,6 +538,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_join_sync_reverse() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
