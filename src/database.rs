@@ -73,7 +73,7 @@ impl Database {
         meta_storage.del(b"clean_shutdown");
         meta_storage.sync();
 
-        info!("old_node:{:?} node:{:?}", old_node, node);
+        info!("Metadata loaded! node:{:?} old_node:{:?}", node, old_node);
 
         let fabric = Fabric::new(node, config.fabric_addr).unwrap();
         let dht = DHT::new(node,
@@ -167,7 +167,9 @@ impl Database {
         for vn in self.vnodes.read().unwrap().values() {
             vn.lock().unwrap().save(self, shutdown);
         }
-        self.meta_storage.set(b"clean_shutdown", b"1");
+        if shutdown {
+            self.meta_storage.set(b"clean_shutdown", b"1");
+        }
     }
 
     // FIXME: leaky abstraction
@@ -389,12 +391,12 @@ mod tests {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
         let mut db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
-
+        let prev_node = db.dht.node();
         db.get(1, b"test", One);
         assert!(db.values_response(1).len() == 0);
 
         db.set(1, b"test", Some(b"value1"), VersionVector::new(), One, true);
-        assert!(db.values_response(1).len() == 0);
+        assert!(db.values_response(1).len() == 1);
 
         db.get(1, b"test", One);
         assert!(db.values_response(1).eq(&[b"value1"]));
@@ -406,17 +408,23 @@ mod tests {
         db.get(1, b"test", One);
         assert!(db.values_response(1).eq(&[b"value1"]));
 
+        if shutdown {
+            assert_eq!(db.dht.node(), prev_node);
+        } else {
+            assert_ne!(db.dht.node(), prev_node);
+        }
+
         assert_eq!(1,
                    db.vnodes
                        .read()
                        .unwrap()
                        .values()
-                       .map(|vn| vn.lock().unwrap()._log_len(db.dht.node()))
+                       .map(|vn| vn.lock().unwrap()._log_len(prev_node))
                        .sum::<usize>());
     }
 
     #[test]
-    fn test_reload_clearn_shutdown() {
+    fn test_reload_clean_shutdown() {
         test_reload_stub(true);
     }
 
