@@ -170,6 +170,7 @@ impl Database {
         if shutdown {
             self.meta_storage.set(b"clean_shutdown", b"1");
         }
+        self.meta_storage.sync();
     }
 
     // FIXME: leaky abstraction
@@ -512,7 +513,7 @@ mod tests {
         }
 
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        warn!("will check data in db2 before balancing");
+        warn!("will check data before balancing");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
@@ -522,7 +523,7 @@ mod tests {
 
         db2.dht.rebalance();
 
-        warn!("will check data in both dbs during balancing");
+        warn!("will check data during balancing");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
@@ -536,7 +537,7 @@ mod tests {
             sleep_ms(1000);
         }
 
-        warn!("will check after balancing");
+        warn!("will check data after balancing");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
@@ -546,8 +547,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn test_join_sync_reverse() {
+    fn test_join_sync_recover() {
         let _ = fs::remove_dir_all("./t");
         let _ = env_logger::init();
         let mut db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
@@ -572,11 +572,10 @@ mod tests {
         // wait for all writes to be replicated
         sleep_ms(5);
         for i in 0..TEST_JOIN_SIZE {
-            db1.get(i, i.to_string().as_bytes(), One);
-            let result1 = db1.values_response(i);
-            db2.get(i, i.to_string().as_bytes(), One);
-            let result2 = db2.values_response(i);
-            assert_eq!(result1, result2);
+            for &db in &[&db1, &db2] {
+                db.get(i, i.to_string().as_bytes(), One);
+                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
+            }
         }
 
         // sim unclean shutdown
@@ -584,11 +583,17 @@ mod tests {
         drop(db1);
         db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", false);
 
-        {
-            // during recover ASK is expected
-            db1.set(0, b"k", None, VersionVector::new(), One, true);
-            let response = format!("{:?}", db1.resp_response(0));
-            assert!(response.starts_with("Error(\"ASK"), "{} is not an Error(\"ASK", response);
+        // {
+        //     // during recover ASK is expected
+        //     db1.set(0, b"k", None, VersionVector::new(), One, true);
+        //     let response = format!("{:?}", db1.resp_response(0));
+        //     assert!(response.starts_with("Error(\"ASK"), "{} is not an Error(\"ASK", response);
+        // }
+
+        // force some syncs
+        warn!("starting syncs");
+        for i in 0..64u16 {
+            db1.start_sync(i);
         }
 
         sleep_ms(1000);
@@ -597,7 +602,7 @@ mod tests {
             sleep_ms(1000);
         }
 
-        warn!("will check after balancing");
+        warn!("will check after sync");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
