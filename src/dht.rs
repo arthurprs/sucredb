@@ -701,6 +701,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_rebalance() {
         let _ = env_logger::init();
         let addr = "0.0.0.0:0".parse().unwrap();
