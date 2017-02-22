@@ -159,12 +159,11 @@ impl Server {
         let token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<RespValue>>>> =
             Default::default();
         let token_chans_cloned = token_chans.clone();
-        let response_fn = Box::new(move |token, resp| {
-            if let Some(chan) = token_chans_cloned.lock().unwrap().get_mut(&token) {
-                let _ = chan.send(resp);
-            } else {
-                debug!("Can't find response channel for token {:?}", token);
-            }
+        let response_fn = Box::new(move |token, resp| if let Some(chan) =
+            token_chans_cloned.lock().unwrap().get_mut(&token) {
+            let _ = chan.send(resp);
+        } else {
+            debug!("Can't find response channel for token {:?}", token);
         });
 
         let database = Database::new(&self.config, response_fn);

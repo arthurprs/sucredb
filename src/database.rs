@@ -125,9 +125,7 @@ impl Database {
         });
 
         let mut dht_change_sender = db.sender();
-        db.dht.set_callback(Box::new(move || {
-            dht_change_sender.send(WorkerMsg::DHTChange);
-        }));
+        db.dht.set_callback(Box::new(move || { dht_change_sender.send(WorkerMsg::DHTChange); }));
 
         // register nodes into fabric
         db.dht.members().into_iter().map(|(n, a)| db.fabric.register_node(n, a)).count();
@@ -265,16 +263,14 @@ impl Database {
     pub fn set(&self, token: Token, key: &[u8], value: Option<&[u8]>, vv: VersionVector,
                consistency: ConsistencyLevel, reply_result: bool) {
         let vnode = self.dht.key_vnode(key);
-        vnode!(self, vnode, |mut vn| {
-            vn.do_set(self, token, key, value, vv, consistency, reply_result);
-        });
+        vnode!(self,
+               vnode,
+               |mut vn| { vn.do_set(self, token, key, value, vv, consistency, reply_result); });
     }
 
     pub fn get(&self, token: Token, key: &[u8], consistency: ConsistencyLevel) {
         let vnode = self.dht.key_vnode(key);
-        vnode!(self, vnode, |mut vn| {
-            vn.do_get(self, token, key, consistency);
-        });
+        vnode!(self, vnode, |mut vn| { vn.do_get(self, token, key, consistency); });
     }
 }
 
@@ -291,9 +287,9 @@ mod tests {
     use std::sync::{Mutex, Arc};
     use std::collections::HashMap;
     use super::*;
-    use version_vector::{DottedCausalContainer, VersionVector};
+    use version_vector::VersionVector;
     use env_logger;
-    use bincode::{serde as bincode_serde, SizeLimit};
+    use bincode::serde as bincode_serde;
     use resp::RespValue;
     use config;
     use types::ConsistencyLevel::*;
@@ -329,10 +325,10 @@ mod tests {
             };
             let db = Database::new(&config,
                                    Box::new(move |t, v| {
-                                       info!("response for {}", t);
-                                       let r = responses1.lock().unwrap().insert(t, v);
-                                       assert!(r.is_none(), "replaced a result");
-                                   }));
+                info!("response for {}", t);
+                let r = responses1.lock().unwrap().insert(t, v);
+                assert!(r.is_none(), "replaced a result");
+            }));
             TestDatabase {
                 db: db,
                 responses: responses2,
@@ -356,7 +352,6 @@ mod tests {
         fn values_response(&self, token: Token) -> Vec<Vec<u8>> {
             self.response(token).1
         }
-
     }
 
     impl ops::Deref for TestDatabase {
@@ -368,17 +363,15 @@ mod tests {
 
     fn decode_response(value: RespValue) -> (VersionVector, Vec<Vec<u8>>) {
         if let RespValue::Array(ref arr) = value {
-            let values: Vec<_> =  arr[0..arr.len() - 1]
+            let values: Vec<_> = arr[0..arr.len() - 1]
                 .iter()
-                .map(|d| {
-                    if let RespValue::Data(ref d) = *d {
-                        d[..].to_owned()
-                    } else {
-                        panic!();
-                    }
+                .map(|d| if let RespValue::Data(ref d) = *d {
+                    d[..].to_owned()
+                } else {
+                    panic!();
                 })
                 .collect();
-            let vv = if let RespValue::Data(ref d) = arr[arr.len() -1] {
+            let vv = if let RespValue::Data(ref d) = arr[arr.len() - 1] {
                 bincode_serde::deserialize(&d[..]).unwrap()
             } else {
                 panic!();

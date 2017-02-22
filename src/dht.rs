@@ -153,8 +153,7 @@ impl<T: Metadata> Ring<T> {
     }
 
     fn try_rebalance(&mut self) -> Result<usize, GenericError> {
-        // TODO: Vec -> VecDeque to avoid the O(N) insert(0, ..)
-        // TODO: return a cost so caller can select the best plan out of N
+        // TODO: this is a complete embarrassment, needs to be rewritten
         let mut rng = thread_rng();
         // special case when #nodes <= replication factor
         if self.nodes.len() <= self.replication_factor {
@@ -187,9 +186,6 @@ impl<T: Metadata> Ring<T> {
         // partitions per node
         let ppn = self.vnodes.len() * self.replication_factor / self.nodes.len();
         let ppn_rest = self.vnodes.len() * self.replication_factor % self.nodes.len();
-        if ppn == 0 {
-            panic!("partitions per node is 0!");
-        }
 
         let mut with_much: Vec<NodeId> = Vec::new();
         let mut with_little: Vec<NodeId> = Vec::new();
@@ -349,29 +345,6 @@ impl<T: Metadata> Ring<T> {
     }
 }
 
-// TODO: move to a member fn on DHT
-macro_rules! try_cas {
-    ($s: ident, $e: block) => (
-        try_cas!($s, $e, false)
-    );
-    ($s: ident, $e: block, $b: expr) => (
-        loop {
-            let (ring_version, new_ring) = $e;
-            match $s.propose(ring_version, new_ring, $b) {
-                Ok(()) => break,
-                Err(etcd::Error::Api(ref e)) if e.error_code == 101 => {
-                    warn!("Proposing new ring conflicted at version {}", ring_version);
-                    $s.wait_new_version(ring_version);
-                }
-                Err(e) => {
-                    error!("Proposing new ring failed with: {}", e);
-                    return Err(e.into());
-                }
-            }
-        }
-    );
-}
-
 impl<T: Metadata> DHT<T> {
     pub fn new(node: NodeId, fabric_addr: net::SocketAddr, cluster: &str, etcd: &str, meta: T,
                initial: Option<RingDescription>, old_node: Option<NodeId>)
@@ -473,28 +446,24 @@ impl<T: Metadata> DHT<T> {
 
     fn join(&self, meta: T) {
         self.refresh_ring();
-        let f = move || -> Result<(), GenericError> {
-            try_cas!(self, {
+        self.try_cas(|| {
                 let (mut ring, ring_version) = self.ring_clone();
                 try!(ring.join_node(self.node, self.addr, meta.clone()));
-                (ring_version, ring)
-            }, true);
-            Ok(())
-        };
-        f().unwrap();
+                Ok((ring_version, ring))
+            },
+                     true)
+            .unwrap();
     }
 
     fn replace(&self, old: NodeId, meta: T) {
         self.refresh_ring();
-        let f = move || -> Result<(), GenericError> {
-            try_cas!(self, {
+        self.try_cas(|| {
                 let (mut ring, ring_version) = self.ring_clone();
                 try!(ring.replace(old, self.node, self.addr, meta.clone()));
-                (ring_version, ring)
-            }, true);
-            Ok(())
-        };
-        f().unwrap();
+                Ok((ring_version, ring))
+            },
+                     true)
+            .unwrap();
     }
 
     fn reset(&self, meta: T, replication_factor: u8, partitions: u16) {
@@ -615,39 +584,39 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn rebalance(&self) -> Result<(), GenericError> {
-        try_cas!(self, {
+        self.try_cas(|| {
             let (mut ring, ring_version) = self.ring_clone();
             try!(ring.rebalance());
-            (ring_version, ring)
-        });
-        Ok(())
+            Ok((ring_version, ring))
+        },
+                     false)
     }
 
     pub fn remove_node(&self, node: NodeId) -> Result<(), GenericError> {
-        try_cas!(self, {
+        self.try_cas(|| {
             let (mut ring, ring_version) = self.ring_clone();
             try!(ring.remove_node(node));
-            (ring_version, ring)
-        });
-        Ok(())
+            Ok((ring_version, ring))
+        },
+                     false)
     }
 
     pub fn leave_node(&self, node: NodeId) -> Result<(), GenericError> {
-        try_cas!(self, {
+        self.try_cas(|| {
             let (mut ring, ring_version) = self.ring_clone();
             try!(ring.leave_node(node));
-            (ring_version, ring)
-        });
-        Ok(())
+            Ok((ring_version, ring))
+        },
+                     false)
     }
 
     pub fn promote_pending_node(&self, node: NodeId, vnode: VNodeId) -> Result<(), GenericError> {
-        try_cas!(self, {
+        self.try_cas(|| {
             let (mut ring, ring_version) = self.ring_clone();
             try!(ring.promote_pending_node(node, vnode));
-            (ring_version, ring)
-        });
-        Ok(())
+            Ok((ring_version, ring))
+        },
+                     false)
     }
 
     fn propose(&self, old_version: u64, new_ring: Ring<T>, update: bool)
@@ -663,6 +632,26 @@ impl<T: Metadata> DHT<T> {
             inner.ring = new_ring;
             inner.ring_version = r.node.unwrap().modified_index.unwrap();
             debug!("Updated ring to {:?} version {}", inner.ring, inner.ring_version);
+        }
+        Ok(())
+    }
+
+    fn try_cas<C>(&self, callback: C, update: bool) -> Result<(), GenericError>
+        where C: Fn() -> Result<(u64, Ring<T>), GenericError>
+    {
+        loop {
+            let (ring_version, new_ring) = callback()?;
+            match self.propose(ring_version, new_ring, update) {
+                Ok(()) => break,
+                Err(etcd::Error::Api(ref e)) if e.error_code == 101 => {
+                    warn!("Proposing new ring conflicted at version {}", ring_version);
+                    self.wait_new_version(ring_version);
+                }
+                Err(e) => {
+                    error!("Proposing new ring failed with: {}", e);
+                    return Err(e.into());
+                }
+            }
         }
         Ok(())
     }

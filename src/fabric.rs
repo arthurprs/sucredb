@@ -82,7 +82,7 @@ impl WriterContext {
         let mut locked = self.context.writer_chans.lock().unwrap();
         if let HMEntry::Occupied(mut o) = locked.entry(self.peer) {
             o.get_mut().retain(|i| unsafe {
-                use ::std::mem::transmute_copy;
+                use std::mem::transmute_copy;
                 transmute_copy::<fmpsc::UnboundedSender<_>, usize>(i) !=
                 transmute_copy::<fmpsc::UnboundedSender<_>, usize>(sender)
             });

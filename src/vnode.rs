@@ -205,13 +205,11 @@ impl VNode {
     }
 
     pub fn syncs_inflight(&self) -> (usize, usize) {
-        self.syncs.values().fold((0, 0), |(inc, out), s| {
-            match *s {
-                Synchronization::BootstrapReceiver { .. } => (inc + 1, out),
-                Synchronization::SyncReceiver { .. } => (inc + 1, out),
-                Synchronization::BootstrapSender { .. } => (inc, out + 1),
-                Synchronization::SyncSender { .. } => (inc, out + 1),
-            }
+        self.syncs.values().fold((0, 0), |(inc, out), s| match *s {
+            Synchronization::BootstrapReceiver { .. } => (inc + 1, out),
+            Synchronization::SyncReceiver { .. } => (inc + 1, out),
+            Synchronization::BootstrapSender { .. } => (inc, out + 1),
+            Synchronization::SyncSender { .. } => (inc, out + 1),
         })
     }
 
@@ -235,18 +233,16 @@ impl VNode {
                     let state = &mut self.state;
                     let canceled = self.syncs
                         .iter_mut()
-                        .filter_map(|(&cookie, m)| {
-                            match *m {
-                                Synchronization::BootstrapReceiver { .. } |
-                                Synchronization::SyncReceiver { .. } => {
-                                    m.on_cancel(db, state);
-                                    Some(cookie)
-                                }
-                                _ if status == VNodeStatus::Bootstrap => {
-                                    panic!("Invalid Sync for Bootstrap mode")
-                                }
-                                _ => None,
+                        .filter_map(|(&cookie, m)| match *m {
+                            Synchronization::BootstrapReceiver { .. } |
+                            Synchronization::SyncReceiver { .. } => {
+                                m.on_cancel(db, state);
+                                Some(cookie)
                             }
+                            _ if status == VNodeStatus::Bootstrap => {
+                                panic!("Invalid Sync for Bootstrap mode")
+                            }
+                            _ => None,
                         })
                         .collect::<Vec<_>>();
                     for cookie in canceled {
@@ -288,11 +284,9 @@ impl VNode {
             let state = &mut self.state;
             self.syncs
                 .iter_mut()
-                .filter_map(|(&cookie, s)| {
-                    match s.on_tick(db, state) {
-                        SyncResult::Continue => None,
-                        result => Some((cookie, result)),
-                    }
+                .filter_map(|(&cookie, s)| match s.on_tick(db, state) {
+                    SyncResult::Continue => None,
+                    result => Some((cookie, result)),
                 })
                 .collect::<Vec<_>>()
         };
@@ -721,6 +715,7 @@ impl VNodeState {
             }
             debug!("Recovered {} keys in total", count);
 
+            // fill holes in bvvs from this node
             let logical_n = split_u64(db.dht.node()).0;
             for (&node, bvv) in clocks.iter_mut() {
                 if logical_n == split_u64(node).0 {
