@@ -2,6 +2,7 @@ use std::{str, io, thread};
 use std::net::SocketAddr;
 use std::time::Duration;
 use std::sync::{Mutex, Arc};
+use std::sync::atomic::{Ordering, AtomicUsize};
 use std::collections::hash_map::Entry as HMEntry;
 
 use rand::{thread_rng, Rng};
@@ -20,6 +21,7 @@ use utils::{GenericError, IdHashMap};
 use database::NodeId;
 
 pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
+type SenderChan = fmpsc::UnboundedSender<FabricMsg>;
 const RECONNECT_INTERVAL_MS: u64 = 1000;
 
 #[derive(Debug)]
@@ -37,7 +39,8 @@ struct WriterContext {
     context: Arc<GlobalContext>,
     peer: NodeId,
     peer_addr: SocketAddr,
-    sender: fmpsc::UnboundedSender<FabricMsg>,
+    sender: SenderChan,
+    sender_chan_id: usize,
 }
 
 struct GlobalContext {
@@ -47,7 +50,8 @@ struct GlobalContext {
     msg_handlers: Mutex<IdHashMap<u8, FabricHandlerFn>>,
     nodes_addr: Mutex<IdHashMap<NodeId, SocketAddr>>,
     // FIXME: remove mutex or at least change to RwLock
-    writer_chans: Arc<Mutex<IdHashMap<NodeId, Vec<fmpsc::UnboundedSender<FabricMsg>>>>>,
+    writer_chans: Arc<Mutex<IdHashMap<NodeId, Vec<(usize, SenderChan)>>>>,
+    chan_id_gen: AtomicUsize,
 }
 
 pub struct Fabric {
@@ -57,35 +61,19 @@ pub struct Fabric {
 
 type InitType = Result<(Arc<GlobalContext>, futures::Complete<()>), io::Error>;
 
-impl ReaderContext {
-    fn dispatch(&self, msg: FabricMsg) {
-        let msg_type = msg.get_type();
-        if let Some(handler) = self.context
-            .msg_handlers
-            .lock()
-            .unwrap()
-            .get_mut(&(msg_type as u8)) {
-            handler(self.peer, msg);
-        } else {
-            error!("No handler for msg type {:?}", msg_type);
-        }
-    }
-}
-
-impl WriterContext {
-    fn add_writer_chan(&self, sender: fmpsc::UnboundedSender<FabricMsg>) {
-        let mut locked = self.context.writer_chans.lock().unwrap();
-        locked.entry(self.peer).or_insert(Default::default()).push(sender);
+impl GlobalContext {
+    fn add_writer_chan(&self, peer: NodeId, sender: SenderChan) -> usize {
+        let chan_id = self.chan_id_gen.fetch_add(1, Ordering::Relaxed);
+        let mut locked = self.writer_chans.lock().unwrap();
+        locked.entry(peer).or_insert(Default::default()).push((chan_id, sender.clone()));
+        chan_id
     }
 
-    fn remove_writer_chan(&self, sender: &fmpsc::UnboundedSender<FabricMsg>) {
-        let mut locked = self.context.writer_chans.lock().unwrap();
-        if let HMEntry::Occupied(mut o) = locked.entry(self.peer) {
-            o.get_mut().retain(|i| unsafe {
-                use std::mem::transmute_copy;
-                transmute_copy::<fmpsc::UnboundedSender<_>, usize>(i) !=
-                transmute_copy::<fmpsc::UnboundedSender<_>, usize>(sender)
-            });
+    fn remove_writer_chan(&self, peer:NodeId, sender_chan_id: usize) {
+        let mut locked = self.writer_chans.lock().unwrap();
+        if let HMEntry::Occupied(mut o) = locked.entry(peer) {
+            o.get_mut().retain(|&(i, _)| i != sender_chan_id);
+            // cleanup entry if empty
             if o.get().is_empty() {
                 o.remove();
             }
@@ -95,9 +83,45 @@ impl WriterContext {
     }
 }
 
+impl ReaderContext {
+    fn new(context: Arc<GlobalContext>, peer: NodeId, peer_addr: SocketAddr) -> Self {
+        ReaderContext{
+            context: context,
+            peer: peer,
+            peer_addr: peer_addr,
+        }
+    }
+
+    fn dispatch(&self, msg: FabricMsg) {
+        let msg_type = msg.get_type();
+        if let Some(handler) = self.context
+            .msg_handlers
+            .lock()
+            .unwrap()
+            .get_mut(&(msg_type as u8)) {
+            handler(self.peer, msg);
+        } else {
+            panic!("No handler for msg type {:?}", msg_type);
+        }
+    }
+}
+
+impl WriterContext {
+    fn new(context: Arc<GlobalContext>, peer: NodeId, peer_addr: SocketAddr, sender: SenderChan) -> Self {
+        let chan_id = context.add_writer_chan(peer, sender.clone());
+        WriterContext {
+            context: context,
+            peer: peer,
+            peer_addr: peer_addr,
+            sender_chan_id: chan_id,
+            sender: sender,
+        }
+    }
+}
+
 impl Drop for WriterContext {
     fn drop(&mut self) {
-        self.remove_writer_chan(&self.sender);
+        self.context.remove_writer_chan(self.peer, self.sender_chan_id);
     }
 }
 
@@ -187,18 +211,8 @@ impl Fabric {
                          -> Box<Future<Item = (), Error = io::Error>> {
         let (sock_rx, sock_tx) = socket.split();
         let (chan_tx, chan_rx) = fmpsc::unbounded();
-        let ctx_rx = ReaderContext {
-            context: context.clone(),
-            peer: peer,
-            peer_addr: peer_addr,
-        };
-        let ctx_tx = WriterContext {
-            context: context,
-            peer: peer,
-            peer_addr: peer_addr,
-            sender: chan_tx.clone(),
-        };
-        ctx_tx.add_writer_chan(chan_tx);
+        let ctx_rx = ReaderContext::new(context.clone(), peer, peer_addr);
+        let ctx_tx = WriterContext::new(context, peer, peer_addr, chan_tx);
 
         let rx_fut = stream::iter((0..).map(|_| -> Result<(), io::Error> { Ok(()) }))
             .fold((ctx_rx, sock_rx, Vec::new(), 0), |(ctx, s, mut b, p), _| {
@@ -291,6 +305,7 @@ impl Fabric {
             nodes_addr: Default::default(),
             msg_handlers: Default::default(),
             writer_chans: Default::default(),
+            chan_id_gen: AtomicUsize::new(0),
         });
         let init_result = tokio::net::TcpListener::bind(&context.addr, &handle)
             .map(|listener| {
@@ -329,7 +344,7 @@ impl Fabric {
 
     pub fn register_node(&self, node: NodeId, addr: SocketAddr) {
         if node == self.context.node {
-            return;
+            panic!("Can't register self");
         }
         let prev = self.context.nodes_addr.lock().unwrap().insert(node, addr);
         if prev.is_none() || prev.unwrap() != addr {
@@ -372,13 +387,12 @@ impl Fabric {
         let mut writers = self.context.writer_chans.lock().unwrap();
         match writers.entry(node) {
             HMEntry::Occupied(mut o) => {
-                let chans = o.get_mut();
-                if chans.is_empty() {
+                if let Some(&mut (_, ref mut chan)) = thread_rng().choose_mut(o.get_mut()) {
+                    let _ = chan.send(msg);
+                    Ok(())
+                } else {
                     warn!("DROPING MSG - No channel available");
                     Err(FabricError::NoChannel)
-                } else {
-                    let _ = thread_rng().choose_mut(chans).unwrap().send(msg);
-                    Ok(())
                 }
             }
             HMEntry::Vacant(_v) => {
