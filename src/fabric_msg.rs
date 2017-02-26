@@ -72,6 +72,7 @@ pub struct MsgRemoteSet {
     pub cookie: Cookie,
     pub key: Vec<u8>,
     pub container: DottedCausalContainer<Vec<u8>>,
+    pub reply: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

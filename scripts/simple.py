@@ -8,17 +8,25 @@ from docopt import docopt
 from redis._compat import xrange
 
 
+def resp(aa):
+    if len(aa) == 1:
+        return [], aa[0]
+    if len(aa) == 2:
+        return aa[0], aa[1]
+    raise Exception("multiple values returned ~ " + str(aa))
+
 def loop(rc, reset_last_key=None):
     """
     Regular debug loop that can be used to test how redis behaves during changes in the cluster.
     """
+    _, last_ctx = resp(rc.get("__last__"))
     if reset_last_key:
-        rc.set("__last__", 0)
+        rc.hset("__last__", 0, last_ctx)
 
     last = False
     while last is False:
         try:
-            last, last_ctx = rc.get("__last__") or [None, None]
+            last, last_ctx = resp(rc.get("__last__"))
             print "last is %s" % last
             last = 0 if not last else int(last)
             print("starting at foo{0}".format(last))
@@ -28,15 +36,14 @@ def loop(rc, reset_last_key=None):
 
     for i in xrange(last, 1000000000):  # noqa
         try:
-            print("SET foo{0} {1}".format(i, i))
-            rc.set("foo{0}".format(i), str(i))
-            got, got_ctx = rc.get("foo{0}".format(i))
-            print("GET foo{0} {1}".format(i, got))
+            print("SET foo{} {}".format(i, i))
+            rc.set("foo{}".format(i), str(i))
+            got, got_ctx = resp(rc.get("foo{}".format(i)))
+            print("GET foo{} {}".format(i, got))
             assert got == str(i), "%s != %s" % (got, i)
-            _, last_ctx = rc.get("__last__")
             rc.hset("__last__", i, last_ctx)
         except Exception as e:
-            print("error2 {0}".format(repr(e)))
+            print("error2 {}".format(repr(e)))
 
 
 def timeit(rc, itterations=50000):

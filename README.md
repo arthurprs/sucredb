@@ -4,13 +4,15 @@ Sugar, it's everywhere. It happens that I'm allergic to it, really.
 
 # Background
 
-A forever work in progress, the idea is to build a highly available database
-using vector clocks, similar to Riak. The actual algorithm is heavily
-inspired by [1].
+A forever work in progress, the idea is to build a highly available database using vector clocks, similar to Riak.
+The actual algorithm is heavily inspired by [1].
+
+I've been working on this for several months during my freetime, including some big rewrites.
+Code quality and commit messages could be of subpar quality, I'll try to improve that in the future.
 
 [1] Gonçalves, Ricardo, et al. "Concise server-wide causality management for eventually consistent data stores."
 
-### checklist
+### please ignore, checklist
 
 * [x] store node id
 * [x] store vnode state (skip logs unless it's shutting down)

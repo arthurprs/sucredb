@@ -375,6 +375,7 @@ impl VNode {
         assert!(self.inflight.insert(cookie, req, expire).is_none());
 
         self.process_set(db, cookie, true);
+        let reply = consistency != ConsistencyLevel::One;
         for node in nodes {
             if node != db.dht.node() {
                 let _ = db.fabric
@@ -384,6 +385,7 @@ impl VNode {
                                   vnode: self.state.num,
                                   key: key.into(),
                                   container: dcc.clone(),
+                                  reply: reply,
                               });
             }
         }
@@ -465,15 +467,17 @@ impl VNode {
                       msg,
                       MsgRemoteSetAck,
                       inflight_set);
-        let MsgRemoteSet { key, container, vnode, cookie } = msg;
+        let MsgRemoteSet { key, container, vnode, cookie, reply } = msg;
         let result = self.state.storage_set_remote(db, &key, container);
-        let _ = db.fabric
-            .send_msg(from,
-                      MsgRemoteSetAck {
-                          vnode: vnode,
-                          cookie: cookie,
-                          result: Ok(result),
-                      });
+        if reply {
+            let _ = db.fabric
+                .send_msg(from,
+                          MsgRemoteSetAck {
+                              vnode: vnode,
+                              cookie: cookie,
+                              result: Ok(result),
+                          });
+        }
     }
 
     pub fn handler_set_remote_ack(&mut self, db: &Database, _from: NodeId, msg: MsgRemoteSetAck) {
@@ -635,28 +639,29 @@ impl VNodeState {
     }
 
     pub fn set_status(&mut self, db: &Database, new: VNodeStatus) {
-        info!("VNode {} status change {:?} -> {:?}", self.num, self.status, new);
-        if new != self.status {
-            match new {
-                VNodeStatus::Bootstrap => {
-                    assert_eq!(self.sync_nodes.len(), 0);
-                    self.storage.clear();
-                }
-                VNodeStatus::Ready => {}
-                VNodeStatus::Absent => {
-                    // assert_eq!(self.pending_recoveries, 0);
-                    assert_eq!(self.sync_nodes.len(), 0);
-                    self.logs.clear();
-                    self.storage.clear();
-                }
-                VNodeStatus::Zombie => {}
-            }
-
-            self.last_status_change = Instant::now();
-            self.status = new;
-            // not important in all cases but nice to do
-            self.save(db, false);
+        if new == self.status {
+            return;
         }
+        info!("VNode {} status change {:?} -> {:?}", self.num, self.status, new);
+        match new {
+            VNodeStatus::Bootstrap => {
+                assert_eq!(self.sync_nodes.len(), 0);
+                self.storage.clear();
+            }
+            VNodeStatus::Ready => {}
+            VNodeStatus::Absent => {
+                // assert_eq!(self.pending_recoveries, 0);
+                assert_eq!(self.sync_nodes.len(), 0);
+                self.logs.clear();
+                self.storage.clear();
+            }
+            VNodeStatus::Zombie => {}
+        }
+
+        self.last_status_change = Instant::now();
+        self.status = new;
+        // not important in all cases but nice to do
+        self.save(db, false);
     }
 
     fn new_empty(num: u16, db: &Database, status: VNodeStatus) -> Self {

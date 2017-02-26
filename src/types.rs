@@ -20,7 +20,7 @@ impl ::std::fmt::Debug for Cookie {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ConsistencyLevel {
     One,
     Quorum,
