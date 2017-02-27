@@ -105,7 +105,6 @@ impl RespConnection {
                         Err(resp::RespError::Invalid(e)) => {
                             return Err(io::Error::new(io::ErrorKind::Other, e))
                         }
-
                     };
                     loop {
                         match parser.parse() {

@@ -15,11 +15,14 @@ pub enum WorkerMsg {
     Exit,
 }
 
+/// A Sender attached to a WorkerManager
+/// messages are distributed to threads in a Round-Robin manner.
 pub struct WorkerSender {
     cursor: usize,
     channels: Vec<mpsc::Sender<WorkerMsg>>,
 }
 
+/// A thread pool containing threads prepared to receive WorkerMsg's
 pub struct WorkerManager {
     ticker_interval: time::Duration,
     ticker_thread: Option<thread::JoinHandle<()>>,

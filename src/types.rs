@@ -1,10 +1,14 @@
 use std::convert::TryFrom;
 use std::str::FromStr;
 
+/// Identifier for a Database instance
 pub type NodeId = u64;
+/// Identifier connection with client
 pub type Token = u64;
+/// Identifier for a vnode
 pub type VNodeId = u16;
 
+/// Identifier for communication between nodes
 #[derive(PartialEq, Eq, Hash, Serialize, Deserialize, Default, Copy, Clone)]
 pub struct Cookie(u64, u64);
 
@@ -20,6 +24,7 @@ impl ::std::fmt::Debug for Cookie {
     }
 }
 
+/// Consistency Level as in Dynamo/Riak/Cassandra style
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ConsistencyLevel {
     One,

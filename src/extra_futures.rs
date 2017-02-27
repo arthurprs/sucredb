@@ -2,6 +2,10 @@ use std::mem;
 use futures::{Future, Poll, Async};
 use futures::stream::Stream;
 
+/// Wraps a Stream<T> and emits Option<T>:
+/// Some(T) means a message from wraped stream,
+/// None signals steam was fully drained.
+/// The signal can be usefull to hinting the consumer to flush, for example.
 pub struct SignaledChan<T: Stream> {
     inner: T,
     delivered: bool,
@@ -64,11 +68,11 @@ impl<T: Future> Future for ShortCircuit<T> {
     }
 }
 
-/// Tries to read some bytes directly into the given `buf` in asynchronous
-/// manner, returning a future type.
+/// Tries to read some bytes directly into the given `buf` at offset `at`
+//// in asynchronous manner, returning a future type.
 ///
 /// The returned future will resolve to both the I/O stream as well as the
-/// buffer once the read operation is completed.
+/// buffer, `at` and amount of bytes read, once the read operation is completed.
 pub fn read_at<R, T>(rd: R, buf: T, at: usize) -> ReadAt<R, T>
     where R: ::std::io::Read,
           T: AsMut<[u8]>
@@ -89,8 +93,6 @@ enum ReadAtState<R, T> {
 
 /// A future which can be used to easily read available number of bytes to fill
 /// a buffer.
-///
-/// Created by the [`read`] function.
 pub struct ReadAt<R, T> {
     state: ReadAtState<R, T>,
 }

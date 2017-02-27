@@ -20,9 +20,22 @@ pub use fabric_msg::*;
 use utils::{GenericError, IdHashMap};
 use database::NodeId;
 
+const RECONNECT_INTERVAL_MS: u64 = 1000;
+
 pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
 type SenderChan = fmpsc::UnboundedSender<FabricMsg>;
-const RECONNECT_INTERVAL_MS: u64 = 1000;
+type InitType = Result<(Arc<GlobalContext>, futures::Complete<()>), io::Error>;
+
+/// The messasing network that encompasses all nodes of the cluster
+/// using the fabric you can send messages (best-effort delivery)
+/// to any registered node.
+/// Currently each node keeps a connection to every other node. Due to the
+/// full-duplex nature of tcp this gives 2 pipes between each server, both are
+/// used to make better use of the socket buffers (is this a good idea though?).
+pub struct Fabric {
+    context: Arc<GlobalContext>,
+    loop_thread: Option<(futures::Complete<()>, thread::JoinHandle<()>)>,
+}
 
 #[derive(Debug)]
 pub enum FabricError {
@@ -53,13 +66,6 @@ struct GlobalContext {
     writer_chans: Arc<Mutex<IdHashMap<NodeId, Vec<(usize, SenderChan)>>>>,
     chan_id_gen: AtomicUsize,
 }
-
-pub struct Fabric {
-    context: Arc<GlobalContext>,
-    loop_thread: Option<(futures::Complete<()>, thread::JoinHandle<()>)>,
-}
-
-type InitType = Result<(Arc<GlobalContext>, futures::Complete<()>), io::Error>;
 
 impl GlobalContext {
     fn add_writer_chan(&self, peer: NodeId, sender: SenderChan) -> usize {

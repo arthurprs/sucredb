@@ -1,3 +1,4 @@
+// Not currently used, old-quick-dirty implementation of SWIM protocol
 use std::{cmp, thread, io, net, time, fmt};
 use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, VecDeque};

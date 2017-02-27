@@ -9,6 +9,11 @@ use linear_map::LinearMap;
 
 // FIXME: this is ridicullous, but so is lmdb write performance
 // FIXME: this module needs to be rewriten to use something like rocksdb
+// or at least employ a better buffering technique
+// FIXME: if lmdb is still to be used, the iterators should probably refresh
+// themselves to avoid bloating the database due to the read lock
+// (as strict snapshots are not required)
+
 const BUFFER_SOFT_LIM: usize = 32;
 const BUFFER_HARD_LIM: usize = 36;
 
@@ -159,6 +164,7 @@ impl Storage {
     }
 
     pub fn clear(&self) {
+        trace!("clear");
         self.buffer.lock().unwrap().map.clear();
         let _wlock = self.storages_handle.lock().unwrap();
         let txn = self.env.new_transaction().unwrap();
@@ -199,6 +205,7 @@ impl Storage {
     }
 
     pub fn sync(&self) {
+        debug!("sync");
         self.flush_buffer(true);
         let _wlock = self.storages_handle.lock().unwrap();
         self.env.sync(true).unwrap();

@@ -93,6 +93,8 @@ impl Parser {
         })
     }
 
+    // Quickly speculate a buffer, checking whatever it has a complete resp objects or not.
+    // If succesfull returns the resp objects length in bytes.
     fn speculate_buffer(buf: &[u8]) -> RespResult<usize> {
         if buf.len() < 3 {
             return Err(RespError::Incomplete);
