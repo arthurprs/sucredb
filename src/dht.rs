@@ -18,6 +18,14 @@ pub trait Metadata
 
 impl<T: Clone + Serialize + Deserialize + Send + fmt::Debug + 'static> Metadata for T {}
 
+/// The Cluster controller, it knows how to map keys to their vnodes and
+//// whose nodes hold data for each vnodes.
+/// Calls a callback on cluster changes so the database can execute logic to converge
+/// it's state to match the DHT.
+/// Consistency is achieved by using etcd in the background but it's only required for
+/// database startup and cluster changes.
+/// Only knows about NodeIds (and their fabric addresses), Vnodes and other high level info,
+/// Extra (static) information is attached to NodeId through a Metadata type.
 pub struct DHT<T: Metadata> {
     node: NodeId,
     addr: net::SocketAddr,

@@ -11,7 +11,7 @@ use linear_map::LinearMap;
 // FIXME: this module needs to be rewriten to use something like rocksdb
 // or at least employ a better buffering technique
 // FIXME: if lmdb is still to be used, the iterators should probably refresh
-// themselves to avoid bloating the database due to the read lock
+// themselves to avoid bloating the database due to the lmdb read transaction
 // (as strict snapshots are not required)
 
 const BUFFER_SOFT_LIM: usize = 32;
@@ -28,6 +28,8 @@ pub struct StorageManager {
     storages_handle: Arc<Mutex<LinearMap<i32, Arc<Mutex<Buffer>>>>>,
 }
 
+// This implementation goes to a lot of trouble to allow
+// safe-ish iterators that don't require a lifetime attached to them.
 pub struct Storage {
     env: lmdb_rs::Environment,
     db_h: lmdb_rs::DbHandle,

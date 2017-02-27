@@ -30,7 +30,7 @@ type InitType = Result<(Arc<GlobalContext>, futures::Complete<()>), io::Error>;
 /// using the fabric you can send messages (best-effort delivery)
 /// to any registered node.
 /// Currently each node keeps a connection to every other node. Due to the
-/// full-duplex nature of tcp this gives 2 pipes between each server, both are
+/// full-duplex nature of tcp this gives 2 pipes to each server, both are
 /// used to make better use of the socket buffers (is this a good idea though?).
 pub struct Fabric {
     context: Arc<GlobalContext>,
