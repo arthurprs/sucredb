@@ -1,6 +1,6 @@
 use std::time::{Instant, Duration};
 use std::collections::HashSet;
-use vnode::VNodeState;
+use vnode::{VNodeStatus, VNodeState};
 use fabric::*;
 use version_vector::*;
 use database::*;
@@ -135,6 +135,7 @@ impl Synchronization {
         let clocks_in_peer2 = clocks_in_peer.clone();
 
         let dots_delta = state.clocks.delta(&clocks_in_peer);
+        debug!("Delta from {:?} to {:?}",  state.clocks, clocks_in_peer);
         let log_uptodate = dots_delta.min_versions()
             .iter()
             .all(|&(n, v)| state.logs.get(&n).and_then(|log| log.min_version()).unwrap_or(0) <= v);
@@ -317,13 +318,21 @@ impl Synchronization {
         }
     }
 
-    pub fn on_remove(self, _db: &Database, state: &mut VNodeState) {
+    pub fn on_remove(self, db: &Database, state: &mut VNodeState) {
         match self {
             Synchronization::SyncReceiver { peer, .. } => {
                 state.sync_nodes.remove(&peer);
             }
             _ => (),
         }
+
+        let incomming = match self {
+            Synchronization::BootstrapReceiver { .. } |
+            Synchronization::SyncReceiver { .. } => true,
+            Synchronization::BootstrapSender { .. } |
+            Synchronization::SyncSender { .. } => false,
+        };
+        db.signal_sync_end(incomming);
     }
 
     pub fn on_tick(&mut self, db: &Database, state: &mut VNodeState) -> SyncResult {
@@ -373,6 +382,8 @@ impl Synchronization {
                     state.storage.sync();
                     // send it back as a form of ack-ack
                     let _ = db.fabric.send_msg(peer, msg);
+                } else if msg.result.err() == Some(FabricMsgError::NotReady) {
+                    return SyncResult::Continue;
                 }
             }
             Synchronization::SyncSender { /*ref clock_in_peer, peer,*/ .. } => {
@@ -397,6 +408,7 @@ impl Synchronization {
                         Ok(_) => {
                             // send it back as a form of ack-ack
                             let _ = db.fabric.send_msg(peer, msg);
+                            state.set_status(db, VNodeStatus::Ready);
                         }
                         Err(e) => {
                             warn!("Can't retire node {} vnode {}: {}", db.dht.node(), state.num(), e);

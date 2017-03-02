@@ -75,7 +75,7 @@ impl GlobalContext {
         chan_id
     }
 
-    fn remove_writer_chan(&self, peer:NodeId, sender_chan_id: usize) {
+    fn remove_writer_chan(&self, peer: NodeId, sender_chan_id: usize) {
         let mut locked = self.writer_chans.lock().unwrap();
         if let HMEntry::Occupied(mut o) = locked.entry(peer) {
             o.get_mut().retain(|&(i, _)| i != sender_chan_id);
@@ -91,7 +91,7 @@ impl GlobalContext {
 
 impl ReaderContext {
     fn new(context: Arc<GlobalContext>, peer: NodeId, peer_addr: SocketAddr) -> Self {
-        ReaderContext{
+        ReaderContext {
             context: context,
             peer: peer,
             peer_addr: peer_addr,
@@ -113,7 +113,8 @@ impl ReaderContext {
 }
 
 impl WriterContext {
-    fn new(context: Arc<GlobalContext>, peer: NodeId, peer_addr: SocketAddr, sender: SenderChan) -> Self {
+    fn new(context: Arc<GlobalContext>, peer: NodeId, peer_addr: SocketAddr, sender: SenderChan)
+           -> Self {
         let chan_id = context.add_writer_chan(peer, sender.clone());
         WriterContext {
             context: context,
@@ -349,12 +350,26 @@ impl Fabric {
     }
 
     pub fn register_node(&self, node: NodeId, addr: SocketAddr) {
-        if node == self.context.node {
-            panic!("Can't register self");
-        }
         let prev = self.context.nodes_addr.lock().unwrap().insert(node, addr);
         if prev.is_none() || prev.unwrap() != addr {
             self.start_connect(node, addr);
+        }
+    }
+
+    pub fn remove_node(&self, node: NodeId) {
+        self.context.nodes_addr.lock().unwrap().remove(&node);
+    }
+
+    pub fn set_nodes<I>(&self, it: I) where I: Iterator<Item=(NodeId, SocketAddr)> {
+        let mut x_nodes = self.context.nodes_addr.lock().unwrap().clone();
+        for (node, addr) in it {
+            if node != self.context.node {
+                x_nodes.remove(&node);
+                self.register_node(node, addr);
+            }
+        }
+        for (node, _) in x_nodes {
+            self.remove_node(node)
         }
     }
 

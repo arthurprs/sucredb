@@ -14,6 +14,12 @@ use config::Config;
 
 pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;
 
+#[derive(Default)]
+struct Stats {
+    incomming_syncs: u16,
+    outgoing_syncs: u16,
+}
+
 pub struct Database {
     pub dht: DHT<net::SocketAddr>,
     pub fabric: Fabric,
@@ -21,6 +27,7 @@ pub struct Database {
     pub storage_manager: StorageManager,
     pub response_fn: DatabaseResponseFn,
     pub config: Config,
+    stats: Mutex<Stats>,
     vnodes: RwLock<IdHashMap<VNodeId, Mutex<VNode>>>,
     workers: Mutex<WorkerManager>,
 }
@@ -100,6 +107,7 @@ impl Database {
             vnodes: Default::default(),
             workers: Mutex::new(workers),
             config: config.clone(),
+            stats: Default::default(),
         });
 
         db.workers.lock().unwrap().start(|| {
@@ -128,7 +136,7 @@ impl Database {
         db.dht.set_callback(Box::new(move || { dht_change_sender.send(WorkerMsg::DHTChange); }));
 
         // register nodes into fabric
-        db.dht.members().into_iter().map(|(n, a)| db.fabric.register_node(n, a)).count();
+        db.fabric.set_nodes(db.dht.members().into_iter());
         // FIXME: fabric should have a start method that receives the callbacks
         // set fabric callbacks
         for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch] {
@@ -178,9 +186,8 @@ impl Database {
     }
 
     fn handler_dht_change(&self) {
-        for (node, addr) in self.dht.members() {
-            self.fabric.register_node(node, addr);
-        }
+        // register nodes
+        self.fabric.set_nodes(self.dht.members().into_iter());
 
         for (&i, vn) in self.vnodes.read().unwrap().iter() {
             let final_status =
@@ -201,15 +208,16 @@ impl Database {
             vn.handler_tick(self, time);
             incomming_syncs += vn.syncs_inflight().0;
         }
-        if incomming_syncs < self.config.max_incomming_syncs as usize {
-            let mut rng = thread_rng();
-            for i in (0..vnodes.len()).map(|_| rng.gen::<u16>() % vnodes.len() as u16) {
-                incomming_syncs += vnodes.get(&i).unwrap().lock().unwrap().maybe_start_sync(self);
-                if incomming_syncs >= self.config.max_incomming_syncs as usize {
-                    break;
-                }
-            }
-        }
+        // start sync in random vnodes
+        // if incomming_syncs < self.config.max_incomming_syncs as usize {
+        //     let rnd = thread_rng().gen::<usize>() % vnodes.len();
+        //     for i in (0..vnodes.len()).map(|i| ((i + rnd) % vnodes.len()) as u16) {
+        //         incomming_syncs += vnodes.get(&i).unwrap().lock().unwrap().maybe_start_sync(self);
+        //         if incomming_syncs >= self.config.max_incomming_syncs as usize {
+        //             break;
+        //         }
+        //     }
+        // }
     }
 
     fn handler_fabric_msg(&self, from: NodeId, msg: FabricMsg) {
@@ -254,10 +262,33 @@ impl Database {
             .sum()
     }
 
-    fn start_sync(&self, vnode: VNodeId) {
+    #[cfg(test)]
+    fn _start_sync(&self, vnode: VNodeId) -> usize {
         let vnodes = self.vnodes.read().unwrap();
         let mut vnode = vnodes.get(&vnode).unwrap().lock().unwrap();
-        vnode.start_sync(self);
+        vnode._start_sync(self)
+    }
+
+    pub fn signal_sync_start(&self, incomming: bool) -> bool {
+        let mut stats = self.stats.lock().unwrap();
+        if incomming && stats.incomming_syncs < self.config.max_incomming_syncs {
+            stats.incomming_syncs = stats.incomming_syncs.checked_add(1).unwrap();
+            true
+        } else if !incomming && stats.outgoing_syncs < self.config.max_outgoing_syncs {
+            stats.outgoing_syncs = stats.outgoing_syncs.checked_add(1).unwrap();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn signal_sync_end(&self, incomming: bool) {
+        let mut stats = self.stats.lock().unwrap();
+        if incomming {
+            stats.incomming_syncs = stats.incomming_syncs.checked_sub(1).unwrap();
+        } else {
+            stats.outgoing_syncs = stats.outgoing_syncs.checked_sub(1).unwrap();
+        }
     }
 
     // CLIENT CRUD
@@ -313,7 +344,8 @@ mod tests {
                 data_dir: data_dir.into(),
                 fabric_addr: fabric_addr,
                 cluster_name: "test".into(),
-                max_incomming_syncs: 0,
+                max_incomming_syncs: 10,
+                max_outgoing_syncs: 10,
                 cmd_init: if create {
                     Some(config::InitCommand {
                         replication_factor: 3,
@@ -333,6 +365,23 @@ mod tests {
             TestDatabase {
                 db: db,
                 responses: responses2,
+            }
+        }
+
+        fn force_syncs(&self) {
+            for i in 0..64u16 {
+                while self._start_sync(i) == 0 {
+                    sleep_ms(200);
+                }
+            }
+            self.wait_syncs();
+        }
+
+        fn wait_syncs(&self) {
+            sleep_ms(200);
+            while self.syncs_inflight() != 0 {
+                //warn!("waiting for syncs to finish");
+                sleep_ms(200);
             }
         }
 
@@ -525,11 +574,8 @@ mod tests {
             }
         }
 
-        sleep_ms(1000);
-        while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
-            warn!("waiting for syncs to finish");
-            sleep_ms(1000);
-        }
+        db1.wait_syncs();
+        db2.wait_syncs();
 
         warn!("will check data after balancing");
         for i in 0..TEST_JOIN_SIZE {
@@ -548,12 +594,11 @@ mod tests {
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.rebalance();
 
-        sleep_ms(1000);
-        while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
-            warn!("waiting for syncs to finish");
-            sleep_ms(1000);
-        }
+        warn!("wait for rebalance");
+        db1.wait_syncs();
+        db2.wait_syncs();
 
+        warn!("inserting test data");
         for i in 0..TEST_JOIN_SIZE {
             db1.set(i,
                     i.to_string().as_bytes(),
@@ -565,6 +610,7 @@ mod tests {
         }
         // wait for all writes to be replicated
         sleep_ms(5);
+        warn!("check before sync");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
@@ -573,6 +619,7 @@ mod tests {
         }
 
         // sim unclean shutdown
+        warn!("killing db1");
         assert_ne!(db1.storage_manager.drop_buffer(), 0);
         drop(db1);
         db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", false);
@@ -586,15 +633,7 @@ mod tests {
 
         // force some syncs
         warn!("starting syncs");
-        for i in 0..64u16 {
-            db1.start_sync(i);
-        }
-
-        sleep_ms(1000);
-        while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
-            warn!("waiting for syncs to finish");
-            sleep_ms(1000);
-        }
+        db1.force_syncs();
 
         warn!("will check after sync");
         for i in 0..TEST_JOIN_SIZE {
@@ -651,9 +690,7 @@ mod tests {
 
         // force some syncs
         warn!("starting syncs");
-        for i in 0..64u16 {
-            db2.start_sync(i);
-        }
+        db2.force_syncs();
 
         sleep_ms(1000);
         while db1.syncs_inflight() + db2.syncs_inflight() > 0 {

@@ -47,7 +47,8 @@ pub struct VNodeState {
     pub clocks: BitmappedVersionVector,
     pub logs: IdHashMap<NodeId, VNodePeer>,
     pub storage: Storage,
-    // state for sync
+    // state for syncs
+    pub pending_bootstrap: bool,
     pub sync_nodes: HashSet<NodeId, IdHasherBuilder>,
 }
 
@@ -70,7 +71,6 @@ struct ReqState {
     required: u8,
     total: u8,
     reply_result: bool,
-    // only used for get
     container: DottedCausalContainer<Vec<u8>>,
     token: Token,
 }
@@ -179,10 +179,10 @@ impl VNode {
             syncs: Default::default(),
         };
 
-        // FIXME: need to handle failure
         match vnode.status() {
             VNodeStatus::Ready | VNodeStatus::Absent => (),
             VNodeStatus::Bootstrap => {
+                // mark pending if it doesn't start
                 vnode.start_bootstrap(db);
             }
             status => panic!("{:?} isn't a valid state after load", status),
@@ -205,10 +205,11 @@ impl VNode {
     }
 
     pub fn syncs_inflight(&self) -> (usize, usize) {
-        self.syncs.values().fold((0, 0), |(inc, out), s| match *s {
-            Synchronization::BootstrapReceiver { .. } => (inc + 1, out),
+        let pend = if self.state.pending_bootstrap { 1 } else { 0 };
+        self.syncs.values().fold((0 + pend, 0), |(inc, out), s| match *s {
+            Synchronization::BootstrapReceiver { .. } |
             Synchronization::SyncReceiver { .. } => (inc + 1, out),
-            Synchronization::BootstrapSender { .. } => (inc, out + 1),
+            Synchronization::BootstrapSender { .. } |
             Synchronization::SyncSender { .. } => (inc, out + 1),
         })
     }
@@ -250,10 +251,11 @@ impl VNode {
                     }
                 }
 
+                // vnode goes into zombie unless it was bootstraping
                 let new_status = if status == VNodeStatus::Bootstrap {
                     VNodeStatus::Absent
                 } else {
-                    VNodeStatus::Ready
+                    VNodeStatus::Zombie
                 };
 
                 self.state.set_status(db, new_status);
@@ -271,7 +273,7 @@ impl VNode {
                 self.start_bootstrap(db);
             }
             (VNodeStatus::Bootstrap, VNodeStatus::Ready) => {
-                self.state.set_status(db, VNodeStatus::Ready);
+                // do nothing, bootstrap will end and make it ready
             }
             (a, b) if a == b => (), // nothing to do
             (a, b) => panic!("Invalid status change from dht {:?} -> {:?}", a, b),
@@ -280,7 +282,7 @@ impl VNode {
 
     // TICK
     pub fn handler_tick(&mut self, db: &Database, _time: Instant) {
-        let terminated = {
+        let terminated_syncs = {
             let state = &mut self.state;
             self.syncs
                 .iter_mut()
@@ -290,7 +292,7 @@ impl VNode {
                 })
                 .collect::<Vec<_>>()
         };
-        for (cookie, result) in terminated {
+        for (cookie, result) in terminated_syncs {
             self.syncs.remove(&cookie).unwrap().on_remove(db, &mut self.state);
             match result {
                 SyncResult::RetryBoostrap => {
@@ -299,6 +301,10 @@ impl VNode {
                 }
                 _ => (),
             }
+        }
+
+        if self.state.pending_bootstrap {
+            self.start_bootstrap(db);
         }
 
         let now = Instant::now();
@@ -489,8 +495,15 @@ impl VNode {
         if !(self.state.status == VNodeStatus::Ready ||
              (self.state.status == VNodeStatus::Zombie &&
               self.state.last_status_change.elapsed() < Duration::from_millis(ZOMBIE_TIMEOUT_MS))) {
+            debug!("Can't start sync when {:?}", self.state.status);
             let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::BadVNodeStatus);
         } else if !self.syncs.contains_key(&msg.cookie) {
+            if !db.signal_sync_start(false) {
+                debug!("Aborting handler_sync_start");
+                let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::NotReady);
+                return;
+            }
+
             let cookie = msg.cookie;
             let sync = match msg.target {
                 None => {
@@ -567,11 +580,11 @@ impl VNode {
         }
     }
 
-    /// //////
-    pub fn start_bootstrap(&mut self, db: &Database) {
-        assert_eq!((self.state.status, self.syncs.len()),
-                   (VNodeStatus::Bootstrap, 0),
-                   "status must be Bootstrap before starting bootstrap");
+    fn start_bootstrap(&mut self, db: &Database) {
+        debug!("start_bootstrap vn:{} p:{:?}", self.state.num, self.state.pending_bootstrap);
+        assert_eq!(self.state.status, VNodeStatus::Bootstrap);
+        assert_eq!(self.syncs.len(), 0);
+        self.state.pending_bootstrap = false;
         self.state.storage.clear();
         let cookie = self.gen_cookie();
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
@@ -580,13 +593,18 @@ impl VNode {
             if node == db.dht.node() {
                 continue;
             }
+            if !db.signal_sync_start(true) {
+                debug!("Bootstrap not allowed to start, go pending");
+                self.state.pending_bootstrap = true;
+                return;
+            }
             info!("starting bootstrap receiver {:?} peer:{}", cookie, node);
             let bootstrap =
                 Synchronization::new_bootstrap_receiver(db, &mut self.state, node, cookie);
             assert!(self.syncs.insert(cookie, bootstrap).is_none());
             return;
         }
-        // nothing to boostrap
+        // nothing to boostrap from
         self.state.set_status(db, VNodeStatus::Ready);
     }
 
@@ -597,16 +615,22 @@ impl VNode {
         }
     }
 
-    pub fn start_sync(&mut self, db: &Database) -> usize {
+    #[cfg(test)]
+    pub fn _start_sync(&mut self, db: &Database) -> usize {
         assert_any!(self.state.status, VNodeStatus::Ready);
         self.do_start_sync(db)
     }
 
     fn do_start_sync(&mut self, db: &Database) -> usize {
+        debug!("do_start_sync vn:{}", self.state.num);
         let mut started = 0;
         let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
         for node in nodes {
             if node == db.dht.node() || self.state.sync_nodes.contains(&node) {
+                continue;
+            }
+            if !db.signal_sync_start(true) {
+                debug!("Aborting do_start_sync");
                 continue;
             }
 
@@ -645,12 +669,12 @@ impl VNodeState {
         info!("VNode {} status change {:?} -> {:?}", self.num, self.status, new);
         match new {
             VNodeStatus::Bootstrap => {
+                assert!(!self.pending_bootstrap);
                 assert_eq!(self.sync_nodes.len(), 0);
                 self.storage.clear();
             }
             VNodeStatus::Ready => {}
             VNodeStatus::Absent => {
-                // assert_eq!(self.pending_recoveries, 0);
                 assert_eq!(self.sync_nodes.len(), 0);
                 self.logs.clear();
                 self.storage.clear();
@@ -659,6 +683,7 @@ impl VNodeState {
         }
 
         self.last_status_change = Instant::now();
+        self.pending_bootstrap = false;
         self.status = new;
         // not important in all cases but nice to do
         self.save(db, false);
@@ -677,6 +702,7 @@ impl VNodeState {
             logs: Default::default(),
             storage: storage,
             unflushed_coord_writes: 0,
+            pending_bootstrap: false,
             sync_nodes: Default::default(),
         }
     }
@@ -738,6 +764,7 @@ impl VNodeState {
             logs: logs,
             unflushed_coord_writes: 0,
             sync_nodes: Default::default(),
+            pending_bootstrap: false,
         }
     }
 

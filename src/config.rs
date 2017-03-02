@@ -41,7 +41,7 @@ impl Default for Config {
             fabric_addr: DEFAULT_FABRIC_ADDR.parse().unwrap(),
             etcd_addr: DEFAULT_ETCD_ADDR.into(),
             cmd_init: None,
-            worker_timer: 2000,
+            worker_timer: 500,
             workers: 2,
             max_incomming_syncs: 1,
             max_outgoing_syncs: 1,

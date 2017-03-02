@@ -8,10 +8,11 @@ pub enum FabricMsgType {
     Unknown,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FabricMsgError {
     CookieNotFound,
     BadVNodeStatus,
+    NotReady,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

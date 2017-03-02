@@ -3,6 +3,7 @@ use database::Database;
 use types::*;
 use utils::assume_str;
 use version_vector::*;
+use std::num::ParseIntError;
 use std::{str, net};
 use std::convert::TryInto;
 use bincode::{serde as bincode_serde, SizeLimit};
@@ -13,13 +14,20 @@ pub enum CommandError {
     ProtocolError,
     UnknownCommand,
     InvalidArgCount,
-    InvalidConsistency,
+    InvalidConsistencyValue,
+    InvalidIntValue,
     Unavailable,
 }
 
 impl From<ConsistencyLevelParseError> for CommandError {
     fn from(_: ConsistencyLevelParseError) -> Self {
-        CommandError::InvalidConsistency
+        CommandError::InvalidConsistencyValue
+    }
+}
+
+impl From<ParseIntError> for CommandError {
+    fn from(_: ParseIntError) -> Self {
+        CommandError::InvalidIntValue
     }
 }
 

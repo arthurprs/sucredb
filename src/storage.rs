@@ -77,6 +77,7 @@ impl StorageManager {
             result += locked.map.len();
             locked.map.clear();
         }
+        warn!("dropped {} buffered updates", result);
         result
     }
 
