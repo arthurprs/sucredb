@@ -205,6 +205,10 @@ impl BitmappedVersionVector {
         BitmappedVersionVector(Default::default())
     }
 
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
     pub fn from_version(id: Id, bv: BitmappedVersion) -> Self {
         let mut bvv = Self::new();
         bvv.0.insert(id, bv);

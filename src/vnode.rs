@@ -28,7 +28,7 @@ pub enum VNodeStatus {
     // another node took over this vnode, this will stay in zombie until it times out
     // and syncs are completed, etc.
     Zombie,
-    // no actual data is present (metadata is retained though)
+    // no actual data is present
     Absent, /* TODO: consider adding an status for a node that just came back up and is still part of the cluster
              *       so it potentially has highly stale data */
 }
@@ -584,10 +584,16 @@ impl VNode {
         debug!("start_bootstrap vn:{} p:{:?}", self.state.num, self.state.pending_bootstrap);
         assert_eq!(self.state.status, VNodeStatus::Bootstrap);
         assert_eq!(self.syncs.len(), 0);
+        assert_eq!(self.inflight.len(), 0);
         self.state.pending_bootstrap = false;
-        self.state.storage.clear();
+        self.state.clear();
         let cookie = self.gen_cookie();
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
+        if nodes.is_empty() || nodes[0] == db.dht.node() {
+            // nothing to boostrap from
+            self.state.set_status(db, VNodeStatus::Ready);
+        }
+
         thread_rng().shuffle(&mut nodes);
         for node in nodes {
             if node == db.dht.node() {
@@ -604,8 +610,6 @@ impl VNode {
             assert!(self.syncs.insert(cookie, bootstrap).is_none());
             return;
         }
-        // nothing to boostrap from
-        self.state.set_status(db, VNodeStatus::Ready);
     }
 
     pub fn maybe_start_sync(&mut self, db: &Database) -> usize {
@@ -662,6 +666,12 @@ impl VNodeState {
         self.status
     }
 
+    pub fn clear(&mut self) {
+        self.clocks.clear();
+        self.logs.clear();
+        self.storage.clear();
+    }
+
     pub fn set_status(&mut self, db: &Database, new: VNodeStatus) {
         if new == self.status {
             return;
@@ -671,13 +681,12 @@ impl VNodeState {
             VNodeStatus::Bootstrap => {
                 assert!(!self.pending_bootstrap);
                 assert_eq!(self.sync_nodes.len(), 0);
-                self.storage.clear();
+                self.clear();
             }
             VNodeStatus::Ready => {}
             VNodeStatus::Absent => {
                 assert_eq!(self.sync_nodes.len(), 0);
-                self.logs.clear();
-                self.storage.clear();
+                self.clear();
             }
             VNodeStatus::Zombie => {}
         }
