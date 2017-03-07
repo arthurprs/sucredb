@@ -7,7 +7,7 @@ use std::collections::hash_map::Entry as HMEntry;
 
 use rand::{thread_rng, Rng};
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
-use bincode::{self, serde as bincode_serde};
+use bincode;
 
 use futures::{self, Future, IntoFuture};
 use futures::stream::{self, Stream};
@@ -243,7 +243,7 @@ impl Fabric {
                         }
 
                         let de_result =
-                            bincode_serde::deserialize_from(&mut slice,
+                            bincode::deserialize_from(&mut slice,
                                                             bincode::SizeLimit::Infinite);
 
                         match de_result {
@@ -279,7 +279,7 @@ impl Fabric {
                     debug!("Sending to node {} msg {:?}", ctx.peer, msg);
                     let offset = b.len();
                     b.write_u32::<LittleEndian>(0).unwrap();
-                    bincode_serde::serialize_into(&mut b, &msg, bincode::SizeLimit::Infinite)
+                    bincode::serialize_into(&mut b, &msg, bincode::SizeLimit::Infinite)
                         .unwrap();
                     let msg_len = (b.len() - offset - 4) as u32;
                     (&mut b[offset..offset + 4]).write_u32::<LittleEndian>(msg_len).unwrap();
@@ -361,6 +361,7 @@ impl Fabric {
     }
 
     pub fn set_nodes<I>(&self, it: I) where I: Iterator<Item=(NodeId, SocketAddr)> {
+        // FIXME: lock the mutex for the whole call
         let mut x_nodes = self.context.nodes_addr.lock().unwrap().clone();
         for (node, addr) in it {
             if node != self.context.node {

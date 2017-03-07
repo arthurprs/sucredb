@@ -6,7 +6,7 @@ use version_vector::*;
 use std::num::ParseIntError;
 use std::{str, net};
 use std::convert::TryInto;
-use bincode::{serde as bincode_serde, SizeLimit};
+use bincode::{self, SizeLimit};
 
 #[derive(Debug)]
 pub enum CommandError {
@@ -127,7 +127,7 @@ impl Database {
     fn cmd_set(&self, token: u64, args: &[&[u8]], reply_result: bool) -> Result<(), CommandError> {
         try!(check_arg_count(args.len(), 2, 4));
         let vv: VersionVector = if args.len() >= 3 && !args[2].is_empty() {
-            bincode_serde::deserialize(args[2]).unwrap()
+            bincode::deserialize(args[2]).unwrap()
         } else {
             VersionVector::new()
         };
@@ -142,7 +142,7 @@ impl Database {
     fn cmd_del(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
         try!(check_arg_count(args.len(), 1, 3));
         let vv: VersionVector = if args.len() >= 2 && !args[1].is_empty() {
-            bincode_serde::deserialize(args[1]).unwrap()
+            bincode::deserialize(args[1]).unwrap()
         } else {
             VersionVector::new()
         };
@@ -211,7 +211,7 @@ impl Database {
 
 fn dcc_to_resp(dcc: DottedCausalContainer<Vec<u8>>) -> RespValue {
     let mut values: Vec<_> = dcc.values().map(|v| RespValue::Data(v.as_slice().into())).collect();
-    let buffer = bincode_serde::serialize(dcc.version_vector(), SizeLimit::Infinite).unwrap();
+    let buffer = bincode::serialize(dcc.version_vector(), SizeLimit::Infinite).unwrap();
     values.push(RespValue::Data(buffer.as_slice().into()));
     RespValue::Array(values)
 }

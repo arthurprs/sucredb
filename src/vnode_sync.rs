@@ -6,7 +6,7 @@ use version_vector::*;
 use database::*;
 use storage::Storage;
 use inflightmap::InFlightMap;
-use bincode::serde as bincode_serde;
+use bincode;
 use utils::IdHasherBuilder;
 
 #[derive(Debug)]
@@ -103,7 +103,7 @@ impl Synchronization {
         let mut iter = (0..)
             .map(move |_| {
                 storage_iterator.iter().next().map(|(k, v)| {
-                    (k.into(), bincode_serde::deserialize::<DottedCausalContainer<_>>(&v).unwrap())
+                    (k.into(), bincode::deserialize::<DottedCausalContainer<_>>(&v).unwrap())
                 })
             })
             .take_while(|i| i.is_some())
@@ -156,7 +156,7 @@ impl Synchronization {
                         storage.get_vec(&k)
                             .map(|v| {
                                 let mut dcc: DottedCausalContainer<_> =
-                                    bincode_serde::deserialize(&v).unwrap();
+                                    bincode::deserialize(&v).unwrap();
                                 // TODO: fill should be done in the remote?
                                 dcc.fill(&clocks_snapshot);
                                 (k, dcc)
@@ -171,7 +171,7 @@ impl Synchronization {
                 .map(move |_| {
                     storage_iterator.iter().next().map(|(k, v)| {
                         (k.into(),
-                         bincode_serde::deserialize::<DottedCausalContainer<_>>(&v).unwrap())
+                         bincode::deserialize::<DottedCausalContainer<_>>(&v).unwrap())
                     })
                 })
                 .take_while(|i| i.is_some())

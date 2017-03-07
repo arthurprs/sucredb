@@ -6,7 +6,7 @@ use version_vector::*;
 use storage::*;
 use database::*;
 use command::CommandError;
-use bincode::{self, serde as bincode_serde};
+use bincode;
 use inflightmap::InFlightMap;
 use fabric::*;
 use vnode_sync::*;
@@ -610,6 +610,7 @@ impl VNode {
             assert!(self.syncs.insert(cookie, bootstrap).is_none());
             return;
         }
+        unreachable!();
     }
 
     pub fn maybe_start_sync(&mut self, db: &Database) -> usize {
@@ -719,7 +720,7 @@ impl VNodeState {
     fn load(num: u16, db: &Database, status: VNodeStatus) -> Self {
         info!("Loading vnode {} state", num);
         let saved_state_opt = db.meta_storage
-            .get(num.to_string().as_bytes(), |bytes| bincode_serde::deserialize(bytes).unwrap());
+            .get(num.to_string().as_bytes(), |bytes| bincode::deserialize(bytes).unwrap());
         if saved_state_opt.is_none() {
             info!("No saved state");
             return Self::new_empty(num, db, status);
@@ -741,7 +742,7 @@ impl VNodeState {
             let mut iter = storage.iterator();
             let mut count = 0;
             for (k, v) in iter.iter() {
-                let dcc: DottedCausalContainer<Vec<u8>> = bincode_serde::deserialize(v).unwrap();
+                let dcc: DottedCausalContainer<Vec<u8>> = bincode::deserialize(v).unwrap();
                 dcc.add_to_bvv(&mut clocks);
                 for (&(node, version), _) in dcc.iter() {
                     logs.entry(node)
@@ -791,14 +792,14 @@ impl VNodeState {
         };
         debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
         let serialized_saved_state =
-            bincode_serde::serialize(&saved_state, bincode::SizeLimit::Infinite).unwrap();
+            bincode::serialize(&saved_state, bincode::SizeLimit::Infinite).unwrap();
         db.meta_storage.set(self.num.to_string().as_bytes(), &serialized_saved_state);
     }
 
     // STORAGE
     pub fn storage_get(&self, key: &[u8]) -> DottedCausalContainer<Vec<u8>> {
         let mut dcc = if let Some(bytes) = self.storage.get_vec(key) {
-            bincode_serde::deserialize(&bytes).unwrap()
+            bincode::deserialize(&bytes).unwrap()
         } else {
             DottedCausalContainer::new()
         };
@@ -820,7 +821,7 @@ impl VNodeState {
         if dcc.is_dcc_empty() {
             self.storage.del(key);
         } else {
-            let bytes = bincode_serde::serialize(&dcc, bincode::SizeLimit::Infinite).unwrap();
+            let bytes = bincode::serialize(&dcc, bincode::SizeLimit::Infinite).unwrap();
             self.storage.set(key, &bytes);
         }
 
@@ -847,7 +848,7 @@ impl VNodeState {
         if new_dcc.is_dcc_empty() {
             self.storage.del(key);
         } else {
-            let bytes = bincode_serde::serialize(&new_dcc, bincode::SizeLimit::Infinite).unwrap();
+            let bytes = bincode::serialize(&new_dcc, bincode::SizeLimit::Infinite).unwrap();
             self.storage.set(key, &bytes);
         }
 

@@ -171,7 +171,7 @@ impl BitmappedVersionVectorDelta {
     }
 }
 
-pub fn serialize_ramp<S>(value: &ramp::Int, serializer: &mut S) -> Result<(), S::Error>
+pub fn serialize_ramp<S>(value: &ramp::Int, serializer: S) -> Result<S::Ok, S::Error>
     where S: serde::Serializer
 {
     let bit_length = value.bit_length();
@@ -183,7 +183,7 @@ pub fn serialize_ramp<S>(value: &ramp::Int, serializer: &mut S) -> Result<(), S:
     serializer.serialize_bytes(&buffer)
 }
 
-pub fn deserialize_ramp<D>(deserializer: &mut D) -> Result<ramp::Int, D::Error>
+pub fn deserialize_ramp<D>(deserializer: D) -> Result<ramp::Int, D::Error>
     where D: serde::Deserializer
 {
     use serde::de::Error;

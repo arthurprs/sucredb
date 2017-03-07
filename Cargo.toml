@@ -26,7 +26,8 @@ git = "https://github.com/arthurprs/linear-map.git"
 features = ["serde_impl"]
 
 [dependencies.bincode]
-version = "*"
+git = "https://github.com/TyOverby/bincode.git"
+commit="824f921"
 features = ["serde"]
 
 [dependencies.etcd]
