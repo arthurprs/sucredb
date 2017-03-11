@@ -584,7 +584,6 @@ impl VNode {
         debug!("start_bootstrap vn:{} p:{:?}", self.state.num, self.state.pending_bootstrap);
         assert_eq!(self.state.status, VNodeStatus::Bootstrap);
         assert_eq!(self.syncs.len(), 0);
-        assert_eq!(self.inflight.len(), 0);
         self.state.pending_bootstrap = false;
         self.state.clear();
         let cookie = self.gen_cookie();

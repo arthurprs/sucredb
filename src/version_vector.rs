@@ -187,9 +187,9 @@ pub fn deserialize_ramp<D>(deserializer: D) -> Result<ramp::Int, D::Error>
     where D: serde::Deserializer
 {
     use serde::de::Error;
-    use serde::de::impls::VecVisitor;
+    use serde::bytes::ByteBufVisitor;
 
-    deserializer.deserialize_bytes(VecVisitor::new())
+    deserializer.deserialize_bytes(ByteBufVisitor)
         .and_then(|b| {
             let mut b = &b[..];
             let trailing_zeros = try!(b.read_u32::<LittleEndian>()
@@ -484,15 +484,15 @@ impl<T> DottedCausalContainer<T> {
 #[cfg(test)]
 mod test_bv {
     use super::*;
-    use bincode::{self, serde as bincode_serde};
+    use bincode;
 
     #[test]
     fn test_bv_serde() {
         for &base in &[0u64, 123] {
             for &bits in &[0u32, 0b10000000000000, 0b10000000000001, 0b10000000000010] {
                 let bv1 = BitmappedVersion::new(base, bits);
-                let buffer = bincode_serde::serialize(&bv1, bincode::SizeLimit::Infinite).unwrap();
-                let bv2: BitmappedVersion = bincode_serde::deserialize(&buffer).unwrap();
+                let buffer = bincode::serialize(&bv1, bincode::SizeLimit::Infinite).unwrap();
+                let bv2: BitmappedVersion = bincode::deserialize(&buffer).unwrap();
                 assert_eq!(bv1.base, bv2.base);
                 assert_eq!(bv1.bitmap, bv2.bitmap);
             }

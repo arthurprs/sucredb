@@ -108,10 +108,10 @@ impl Drop for WorkerManager {
             let _ = chan.send(WorkerMsg::Exit);
         }
         if let Some(t) = self.ticker_thread.take() {
-            t.join().unwrap();
+            let _ = t.join();
         }
         for t in self.threads.drain(..) {
-            t.join().unwrap();
+            let _ = t.join();
         }
     }
 }

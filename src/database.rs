@@ -321,7 +321,7 @@ mod tests {
     use super::*;
     use version_vector::VersionVector;
     use env_logger;
-    use bincode::serde as bincode_serde;
+    use bincode;
     use resp::RespValue;
     use config;
     use types::ConsistencyLevel::*;
@@ -422,7 +422,7 @@ mod tests {
                 })
                 .collect();
             let vv = if let RespValue::Data(ref d) = arr[arr.len() - 1] {
-                bincode_serde::deserialize(&d[..]).unwrap()
+                bincode::deserialize(&d[..]).unwrap()
             } else {
                 panic!();
             };
