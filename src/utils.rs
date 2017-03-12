@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::{path, fs};
 use std::error::Error;
 use serde;
-use serde_yaml;
+use serde_json;
 
 pub type GenericError = Box<Error + Send + Sync + 'static>;
 
@@ -67,7 +67,7 @@ pub fn write_yaml_to_file<T: serde::Serialize, P: AsRef<path::Path>>
     tmp_ext.push(".tmp");
     let tmp_path = path.as_ref().with_extension(tmp_ext);
     let mut tmp_file = try!(fs::File::create(&tmp_path));
-    try!(serde_yaml::to_writer(&mut tmp_file, data));
+    try!(serde_json::to_writer(&mut tmp_file, data));
     drop(tmp_file);
     try!(fs::rename(&tmp_path, path));
     Ok(())
@@ -77,7 +77,7 @@ pub fn read_yaml_from_file<T: serde::Deserialize, P: AsRef<path::Path>>
     (path: P)
      -> Result<T, GenericError> {
     let file = try!(fs::File::open(path));
-    let result = try!(serde_yaml::from_reader(&file));
+    let result = try!(serde_json::from_reader(&file));
     Ok(result)
 }
 

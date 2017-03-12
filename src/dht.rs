@@ -5,7 +5,7 @@ use std::collections::{HashMap, BTreeMap};
 use linear_map::set::LinearSet;
 use rand::{thread_rng, Rng};
 use serde::{Serialize, Deserialize};
-use serde_yaml;
+use serde_json;
 use hash::{hash_slot, HASH_SLOTS};
 use database::{NodeId, VNodeId};
 use etcd;
@@ -664,12 +664,12 @@ impl<T: Metadata> DHT<T> {
         Ok(())
     }
 
-    fn serialize(ring: &Ring<T>) -> serde_yaml::Result<String> {
-        serde_yaml::to_string(&ring)
+    fn serialize(ring: &Ring<T>) -> serde_json::Result<String> {
+        serde_json::to_string_pretty(&ring)
     }
 
-    fn deserialize(json_ring: &str) -> serde_yaml::Result<Ring<T>> {
-        serde_yaml::from_str(json_ring)
+    fn deserialize(json_ring: &str) -> serde_json::Result<Ring<T>> {
+        serde_json::from_str(json_ring)
     }
 }
 

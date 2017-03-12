@@ -12,9 +12,9 @@ extern crate rand;
 extern crate ramp;
 extern crate linear_map;
 extern crate serde;
+extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
-extern crate serde_yaml;
 extern crate bincode;
 extern crate tendril;
 extern crate lmdb_rs;
