@@ -11,6 +11,7 @@ use rand::{thread_rng, Rng};
 use utils::{IdHashMap, split_u64, join_u64};
 pub use types::*;
 use config::Config;
+use vnode_sync::SyncDirection;
 
 pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;
 
@@ -209,15 +210,16 @@ impl Database {
             incomming_syncs += vn.syncs_inflight().0;
         }
         // start sync in random vnodes
-        // if incomming_syncs < self.config.max_incomming_syncs as usize {
-        //     let rnd = thread_rng().gen::<usize>() % vnodes.len();
-        //     for i in (0..vnodes.len()).map(|i| ((i + rnd) % vnodes.len()) as u16) {
-        //         incomming_syncs += vnodes.get(&i).unwrap().lock().unwrap().maybe_start_sync(self);
-        //         if incomming_syncs >= self.config.max_incomming_syncs as usize {
-        //             break;
-        //         }
-        //     }
-        // }
+        if incomming_syncs < self.config.max_incomming_syncs as usize {
+            let vnodes_len = vnodes.len() as u16;
+            let rnd = thread_rng().gen::<u16>() % vnodes_len;
+            for vnode in (0..vnodes_len).map(|i| vnodes.get(&((i + rnd) % vnodes_len))) {
+                incomming_syncs += vnode.unwrap().lock().unwrap().maybe_start_sync(self);
+                if incomming_syncs >= self.config.max_incomming_syncs as usize {
+                    break;
+                }
+            }
+        }
     }
 
     fn handler_fabric_msg(&self, from: NodeId, msg: FabricMsg) {
@@ -269,25 +271,37 @@ impl Database {
         vnode._start_sync(self)
     }
 
-    pub fn signal_sync_start(&self, incomming: bool) -> bool {
+    pub fn signal_sync_start(&self, direction: SyncDirection) -> bool {
         let mut stats = self.stats.lock().unwrap();
-        if incomming && stats.incomming_syncs < self.config.max_incomming_syncs {
-            stats.incomming_syncs = stats.incomming_syncs.checked_add(1).unwrap();
-            true
-        } else if !incomming && stats.outgoing_syncs < self.config.max_outgoing_syncs {
-            stats.outgoing_syncs = stats.outgoing_syncs.checked_add(1).unwrap();
-            true
-        } else {
-            false
+        match direction {
+            SyncDirection::Incomming => {
+                if stats.incomming_syncs < self.config.max_incomming_syncs {
+                    stats.incomming_syncs = stats.incomming_syncs.checked_add(1).unwrap();
+                    true
+                } else {
+                    false
+                }
+            }
+            SyncDirection::Outgoing => {
+                if stats.outgoing_syncs < self.config.max_outgoing_syncs {
+                    stats.outgoing_syncs = stats.outgoing_syncs.checked_add(1).unwrap();
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 
-    pub fn signal_sync_end(&self, incomming: bool) {
+    pub fn signal_sync_end(&self, direction: SyncDirection) {
         let mut stats = self.stats.lock().unwrap();
-        if incomming {
-            stats.incomming_syncs = stats.incomming_syncs.checked_sub(1).unwrap();
-        } else {
-            stats.outgoing_syncs = stats.outgoing_syncs.checked_sub(1).unwrap();
+        match direction {
+            SyncDirection::Incomming => {
+                stats.incomming_syncs = stats.incomming_syncs.checked_sub(1).unwrap();
+            }
+            SyncDirection::Outgoing => {
+                stats.outgoing_syncs = stats.outgoing_syncs.checked_sub(1).unwrap();
+            }
         }
     }
 

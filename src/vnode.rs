@@ -234,16 +234,13 @@ impl VNode {
                     let state = &mut self.state;
                     let canceled = self.syncs
                         .iter_mut()
-                        .filter_map(|(&cookie, m)| match *m {
-                            Synchronization::BootstrapReceiver { .. } |
-                            Synchronization::SyncReceiver { .. } => {
+                        .filter_map(|(&cookie, m)| {
+                            if let SyncDirection::Incomming = m.direction() {
                                 m.on_cancel(db, state);
                                 Some(cookie)
+                            } else {
+                                None
                             }
-                            _ if status == VNodeStatus::Bootstrap => {
-                                panic!("Invalid Sync for Bootstrap mode")
-                            }
-                            _ => None,
                         })
                         .collect::<Vec<_>>();
                     for cookie in canceled {
@@ -498,7 +495,7 @@ impl VNode {
             debug!("Can't start sync when {:?}", self.state.status);
             let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::BadVNodeStatus);
         } else if !self.syncs.contains_key(&msg.cookie) {
-            if !db.signal_sync_start(false) {
+            if !db.signal_sync_start(SyncDirection::Outgoing) {
                 debug!("Aborting handler_sync_start");
                 let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::NotReady);
                 return;
@@ -598,7 +595,7 @@ impl VNode {
             if node == db.dht.node() {
                 continue;
             }
-            if !db.signal_sync_start(true) {
+            if !db.signal_sync_start(SyncDirection::Incomming) {
                 debug!("Bootstrap not allowed to start, go pending");
                 self.state.pending_bootstrap = true;
                 return;
@@ -633,7 +630,7 @@ impl VNode {
             if node == db.dht.node() || self.state.sync_nodes.contains(&node) {
                 continue;
             }
-            if !db.signal_sync_start(true) {
+            if !db.signal_sync_start(SyncDirection::Incomming) {
                 debug!("Aborting do_start_sync");
                 continue;
             }

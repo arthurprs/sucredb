@@ -20,6 +20,12 @@ pub enum SyncResult {
     RetryBoostrap,
 }
 
+#[derive(Debug)]
+pub enum SyncDirection {
+    Incomming,
+    Outgoing,
+}
+
 // TODO: take &mut buffers instead of returning them
 type IteratorFn = Box<FnMut(&Storage) -> Option<(Vec<u8>, DottedCausalContainer<Vec<u8>>)> + Send>;
 type InFlightSyncMsgMap = InFlightMap<u64,
@@ -70,6 +76,15 @@ pub enum Synchronization {
 }
 
 impl Synchronization {
+    pub fn direction(&self) -> SyncDirection {
+        match *self {
+            Synchronization::BootstrapReceiver { .. } |
+            Synchronization::SyncReceiver { .. } => SyncDirection::Incomming,
+            Synchronization::BootstrapSender { .. } |
+            Synchronization::SyncSender { .. } => SyncDirection::Outgoing,
+        }
+    }
+
     pub fn new_sync_receiver(db: &Database, state: &mut VNodeState, peer: NodeId, cookie: Cookie)
                              -> Self {
         let mut sync = Synchronization::SyncReceiver {
@@ -326,13 +341,7 @@ impl Synchronization {
             _ => (),
         }
 
-        let incomming = match self {
-            Synchronization::BootstrapReceiver { .. } |
-            Synchronization::SyncReceiver { .. } => true,
-            Synchronization::BootstrapSender { .. } |
-            Synchronization::SyncSender { .. } => false,
-        };
-        db.signal_sync_end(incomming);
+        db.signal_sync_end(self.direction());
     }
 
     pub fn on_tick(&mut self, db: &Database, state: &mut VNodeState) -> SyncResult {
