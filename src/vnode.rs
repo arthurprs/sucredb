@@ -1,5 +1,5 @@
 use std::time::{Instant, Duration};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::collections::hash_map::Entry as HMEntry;
 use std::borrow::Cow;
 use version_vector::*;
@@ -12,7 +12,7 @@ use fabric::*;
 use vnode_sync::*;
 use hash::hash_slot;
 use rand::{Rng, thread_rng};
-use utils::{IdHashMap, IdHasherBuilder, split_u64};
+use utils::{IdHashMap, IdHasherBuilder, IdHashSet, split_u64};
 
 // FIXME: use a more efficient log data structure
 // 1MB of storage considering key avg length of 32B and 16B overhead
@@ -49,7 +49,7 @@ pub struct VNodeState {
     pub storage: Storage,
     // state for syncs
     pub pending_bootstrap: bool,
-    pub sync_nodes: HashSet<NodeId, IdHasherBuilder>,
+    pub sync_nodes: IdHashSet<NodeId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -214,7 +214,7 @@ impl VNode {
         })
     }
 
-    fn gen_cookie(&mut self) -> Cookie {
+    fn gen_cookie(&self) -> Cookie {
         let mut rng = thread_rng();
         Cookie::new(rng.gen(), rng.gen())
     }
@@ -234,13 +234,12 @@ impl VNode {
                     let state = &mut self.state;
                     let canceled = self.syncs
                         .iter_mut()
-                        .filter_map(|(&cookie, m)| {
-                            if let SyncDirection::Incomming = m.direction() {
-                                m.on_cancel(db, state);
-                                Some(cookie)
-                            } else {
-                                None
-                            }
+                        .filter_map(|(&cookie, m)| if let SyncDirection::Incomming =
+                            m.direction() {
+                            m.on_cancel(db, state);
+                            Some(cookie)
+                        } else {
+                            None
                         })
                         .collect::<Vec<_>>();
                     for cookie in canceled {
@@ -291,12 +290,9 @@ impl VNode {
         };
         for (cookie, result) in terminated_syncs {
             self.syncs.remove(&cookie).unwrap().on_remove(db, &mut self.state);
-            match result {
-                SyncResult::RetryBoostrap => {
-                    info!("Retrying bootstrap {:?}", cookie);
-                    self.start_bootstrap(db);
-                }
-                _ => (),
+            if result == SyncResult::Error && self.status() == VNodeStatus::Bootstrap {
+                info!("Retrying bootstrap {:?}", cookie);
+                self.start_bootstrap(db);
             }
         }
 
@@ -513,7 +509,8 @@ impl VNode {
                     Synchronization::new_sync_sender(db, &mut self.state, from, msg)
                 }
             };
-            self.syncs.insert(cookie, sync);
+            // FIXME: use entry api
+            assert!(self.syncs.insert(cookie, sync).is_none());
             self.syncs.get_mut(&cookie).unwrap().on_start(db, &mut self.state);
         }
     }
@@ -526,7 +523,7 @@ impl VNode {
                  msg,
                  MsgSyncFin,
                  syncs,
-                 on_send);
+                 on_msg_send);
     }
 
     pub fn handler_sync_ack(&mut self, db: &Database, from: NodeId, msg: MsgSyncAck) {
@@ -537,7 +534,7 @@ impl VNode {
                  msg,
                  MsgSyncFin,
                  syncs,
-                 on_ack);
+                 on_msg_ack);
     }
 
     pub fn handler_sync_fin(&mut self, db: &Database, from: NodeId, msg: MsgSyncFin) {
@@ -548,12 +545,11 @@ impl VNode {
                       msg,
                       MsgSyncFin,
                       syncs);
-        let result = if let HMEntry::Occupied(mut o) = self.syncs.entry(msg.cookie) {
-            let cookie = msg.cookie;
-            let result = o.get_mut().on_fin(db, &mut self.state, msg);
+        let cookie = msg.cookie;
+        let result = if let HMEntry::Occupied(mut o) = self.syncs.entry(cookie) {
+            let result = o.get_mut().on_msg_fin(db, &mut self.state, msg);
             match result {
-                SyncResult::Done |
-                SyncResult::RetryBoostrap => {
+                SyncResult::Done | SyncResult::Error => {
                     info!("Removing sync/bootstrap {:?}", cookie);
                     o.remove().on_remove(db, &mut self.state);
                 }
@@ -569,11 +565,9 @@ impl VNode {
             return;
         };
 
-        match result {
-            SyncResult::RetryBoostrap => {
-                self.start_bootstrap(db);
-            }
-            SyncResult::Done | SyncResult::Continue => (),
+        if result == SyncResult::Error && self.status() == VNodeStatus::Bootstrap {
+            info!("Retrying bootstrap {:?}", cookie);
+            self.start_bootstrap(db);
         }
     }
 
@@ -609,25 +603,25 @@ impl VNode {
         unreachable!();
     }
 
-    pub fn maybe_start_sync(&mut self, db: &Database) -> usize {
+    pub fn maybe_start_sync(&mut self, db: &Database) -> bool {
         match self.state.status {
             VNodeStatus::Ready => self.do_start_sync(db),
-            _ => 0,
+            _ => false,
         }
     }
 
     #[cfg(test)]
-    pub fn _start_sync(&mut self, db: &Database) -> usize {
+    pub fn _start_sync(&mut self, db: &Database) -> bool {
         assert_any!(self.state.status, VNodeStatus::Ready);
         self.do_start_sync(db)
     }
 
-    fn do_start_sync(&mut self, db: &Database) -> usize {
+    fn do_start_sync(&mut self, db: &Database) -> bool {
         debug!("do_start_sync vn:{}", self.state.num);
-        let mut started = 0;
-        let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
+        let mut nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
+        thread_rng().shuffle(&mut nodes);
         for node in nodes {
-            if node == db.dht.node() || self.state.sync_nodes.contains(&node) {
+            if node == db.dht.node() {
                 continue;
             }
             if !db.signal_sync_start(SyncDirection::Incomming) {
@@ -640,9 +634,9 @@ impl VNode {
             info!("starting sync receiver {:?} peer:{}", cookie, node);
             let sync = Synchronization::new_sync_receiver(db, &mut self.state, node, cookie);
             assert!(self.syncs.insert(cookie, sync).is_none());
-            started += 1;
+            return true;
         }
-        started
+        false
     }
 }
 
@@ -787,8 +781,8 @@ impl VNodeState {
             clean_shutdown: shutdown,
         };
         debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
-        let serialized_saved_state =
-            bincode::serialize(&saved_state, bincode::SizeLimit::Infinite).unwrap();
+        let serialized_saved_state = bincode::serialize(&saved_state, bincode::SizeLimit::Infinite)
+            .unwrap();
         db.meta_storage.set(self.num.to_string().as_bytes(), &serialized_saved_state);
     }
 

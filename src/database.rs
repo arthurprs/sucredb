@@ -210,16 +210,16 @@ impl Database {
             incomming_syncs += vn.syncs_inflight().0;
         }
         // start sync in random vnodes
-        if incomming_syncs < self.config.max_incomming_syncs as usize {
-            let vnodes_len = vnodes.len() as u16;
-            let rnd = thread_rng().gen::<u16>() % vnodes_len;
-            for vnode in (0..vnodes_len).map(|i| vnodes.get(&((i + rnd) % vnodes_len))) {
-                incomming_syncs += vnode.unwrap().lock().unwrap().maybe_start_sync(self);
-                if incomming_syncs >= self.config.max_incomming_syncs as usize {
-                    break;
-                }
-            }
-        }
+        // if incomming_syncs < self.config.max_incomming_syncs as usize {
+        //     let vnodes_len = vnodes.len() as u16;
+        //     let rnd = thread_rng().gen::<u16>() % vnodes_len;
+        //     for vnode in (0..vnodes_len).map(|i| vnodes.get(&((i + rnd) % vnodes_len))) {
+        //         incomming_syncs += vnode.unwrap().lock().unwrap().maybe_start_sync(self) as _;
+        //         if incomming_syncs >= self.config.max_incomming_syncs as usize {
+        //             break;
+        //         }
+        //     }
+        // }
     }
 
     fn handler_fabric_msg(&self, from: NodeId, msg: FabricMsg) {
@@ -265,7 +265,7 @@ impl Database {
     }
 
     #[cfg(test)]
-    fn _start_sync(&self, vnode: VNodeId) -> usize {
+    fn _start_sync(&self, vnode: VNodeId) -> bool {
         let vnodes = self.vnodes.read().unwrap();
         let mut vnode = vnodes.get(&vnode).unwrap().lock().unwrap();
         vnode._start_sync(self)
@@ -384,7 +384,7 @@ mod tests {
 
         fn force_syncs(&self) {
             for i in 0..64u16 {
-                while self._start_sync(i) == 0 {
+                while !self._start_sync(i) {
                     sleep_ms(200);
                 }
             }

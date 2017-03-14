@@ -1,5 +1,5 @@
 use std::hash::{Hasher, BuildHasherDefault};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::{path, fs};
 use std::error::Error;
 use serde;
@@ -9,6 +9,7 @@ pub type GenericError = Box<Error + Send + Sync + 'static>;
 
 pub type IdHasherBuilder = BuildHasherDefault<IdHasher>;
 pub type IdHashMap<K, V> = HashMap<K, V, IdHasherBuilder>;
+pub type IdHashSet<K> = HashSet<K, IdHasherBuilder>;
 pub struct IdHasher(u64);
 
 impl Default for IdHasher {
@@ -60,20 +61,20 @@ pub fn assume_str(bytes: &[u8]) -> &str {
     unsafe { ::std::str::from_utf8_unchecked(bytes) }
 }
 
-pub fn write_yaml_to_file<T: serde::Serialize, P: AsRef<path::Path>>
+pub fn write_json_to_file<T: serde::Serialize, P: AsRef<path::Path>>
     (data: &T, path: P)
      -> Result<(), GenericError> {
     let mut tmp_ext = path.as_ref().extension().unwrap().to_owned();
     tmp_ext.push(".tmp");
     let tmp_path = path.as_ref().with_extension(tmp_ext);
     let mut tmp_file = try!(fs::File::create(&tmp_path));
-    try!(serde_json::to_writer(&mut tmp_file, data));
+    try!(serde_json::to_writer_pretty(&mut tmp_file, data));
     drop(tmp_file);
     try!(fs::rename(&tmp_path, path));
     Ok(())
 }
 
-pub fn read_yaml_from_file<T: serde::Deserialize, P: AsRef<path::Path>>
+pub fn read_json_from_file<T: serde::Deserialize, P: AsRef<path::Path>>
     (path: P)
      -> Result<T, GenericError> {
     let file = try!(fs::File::open(path));
