@@ -414,7 +414,10 @@ impl<T: Metadata> DHT<T> {
             let r = match etcd.watch(&cluster_key, Some(watch_version), false) {
                 Ok(r) => r,
                 Err(e) => {
-                    warn!("etcd err: {:?}", e);
+                    if !inner.lock().unwrap().running {
+                        return;
+                    }
+                    warn!("etcd.watch error: {:?}", e);
                     continue;
                 }
             };
@@ -423,6 +426,7 @@ impl<T: Metadata> DHT<T> {
             let node = r.node.unwrap();
             let ring = Self::deserialize(&node.value.unwrap()).unwrap();
             let ring_version = node.modified_index.unwrap();
+            info!("New ring version {}", ring_version);
             debug!("Callback with new ring {:?} version {}", ring, ring_version);
             // update state
             {
@@ -649,6 +653,7 @@ impl<T: Metadata> DHT<T> {
     {
         loop {
             let (ring_version, new_ring) = callback()?;
+            info!("Proposing new ring using version {}", ring_version);
             match self.propose(ring_version, new_ring, update) {
                 Ok(()) => break,
                 Err(etcd::Error::Api(ref e)) if e.error_code == 101 => {
