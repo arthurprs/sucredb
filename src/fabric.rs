@@ -39,7 +39,7 @@ pub struct Fabric {
 
 #[derive(Debug)]
 pub enum FabricError {
-    NoChannel,
+    NoRoute,
 }
 
 struct ReaderContext {
@@ -242,9 +242,8 @@ impl Fabric {
                             break;
                         }
 
-                        let de_result =
-                            bincode::deserialize_from(&mut slice,
-                                                            bincode::SizeLimit::Infinite);
+                        let de_result = bincode::deserialize_from(&mut slice,
+                                                                  bincode::SizeLimit::Infinite);
 
                         match de_result {
                             Ok(msg) => {
@@ -279,8 +278,7 @@ impl Fabric {
                     debug!("Sending to node {} msg {:?}", ctx.peer, msg);
                     let offset = b.len();
                     b.write_u32::<LittleEndian>(0).unwrap();
-                    bincode::serialize_into(&mut b, &msg, bincode::SizeLimit::Infinite)
-                        .unwrap();
+                    bincode::serialize_into(&mut b, &msg, bincode::SizeLimit::Infinite).unwrap();
                     let msg_len = (b.len() - offset - 4) as u32;
                     (&mut b[offset..offset + 4]).write_u32::<LittleEndian>(msg_len).unwrap();
                     b.len() >= 4 * 1024
@@ -360,17 +358,20 @@ impl Fabric {
         self.context.nodes_addr.lock().unwrap().remove(&node);
     }
 
-    pub fn set_nodes<I>(&self, it: I) where I: Iterator<Item=(NodeId, SocketAddr)> {
-        // FIXME: lock the mutex for the whole call
-        let mut x_nodes = self.context.nodes_addr.lock().unwrap().clone();
+    pub fn set_nodes<I>(&self, it: I) where I: Iterator<Item = (NodeId, SocketAddr)> {
+        let mut nodes = self.context.nodes_addr.lock().unwrap();
+        let mut x_nodes = nodes.clone();
         for (node, addr) in it {
             if node != self.context.node {
                 x_nodes.remove(&node);
-                self.register_node(node, addr);
+                let prev = nodes.insert(node, addr);
+                if prev.is_none() || prev.unwrap() != addr {
+                    self.start_connect(node, addr);
+                }
             }
         }
         for (node, _) in x_nodes {
-            self.remove_node(node)
+            nodes.remove(&node);
         }
     }
 
@@ -413,13 +414,13 @@ impl Fabric {
                     let _ = chan.send(msg);
                     Ok(())
                 } else {
-                    warn!("DROPING MSG - No channel available");
-                    Err(FabricError::NoChannel)
+                    warn!("DROPING MSG - No channel available for {:?}", node);
+                    Err(FabricError::NoRoute)
                 }
             }
             HMEntry::Vacant(_v) => {
-                warn!("DROPING MSG - No entry for node");
-                Err(FabricError::NoChannel)
+                warn!("DROPING MSG - No entry for node {:?}", node);
+                Err(FabricError::NoRoute)
             }
         }
     }
