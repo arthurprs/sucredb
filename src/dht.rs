@@ -411,19 +411,21 @@ impl<T: Metadata> DHT<T> {
                 inner.ring_version + 1
             };
             // listen for changes
-            let r = match etcd.watch(&cluster_key, Some(watch_version), false) {
-                Ok(r) => r,
+            let watch_r = etcd.watch(&cluster_key, Some(watch_version), false);
+            // FIXME: we have no way of canceling the watch right now
+            // so before anything make sure the dht is still marked as running
+            if !inner.lock().unwrap().running {
+                return;
+            }
+            let node = match watch_r {
+                Ok(r) => r.node.unwrap(),
                 Err(e) => {
-                    if !inner.lock().unwrap().running {
-                        return;
-                    }
                     warn!("etcd.watch error: {:?}", e);
                     continue;
                 }
             };
 
             // deserialize
-            let node = r.node.unwrap();
             let ring = Self::deserialize(&node.value.unwrap()).unwrap();
             let ring_version = node.modified_index.unwrap();
             info!("New ring version {}", ring_version);
