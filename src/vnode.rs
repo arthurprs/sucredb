@@ -45,7 +45,7 @@ pub struct VNodeState {
     last_status_change: Instant,
     unflushed_coord_writes: usize,
     pub clocks: BitmappedVersionVector,
-    pub logs: IdHashMap<NodeId, VNodePeer>,
+    pub logs: IdHashMap<NodeId, VNodeLog>,
     pub storage: Storage,
     // state for syncs
     pub pending_bootstrap: bool,
@@ -54,13 +54,13 @@ pub struct VNodeState {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SavedVNodeState {
-    logs: IdHashMap<NodeId, VNodePeer>,
+    logs: IdHashMap<NodeId, VNodeLog>,
     clocks: BitmappedVersionVector,
     clean_shutdown: bool,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct VNodePeer {
+pub struct VNodeLog {
     knowledge: Version,
     log: BTreeMap<Version, Vec<u8>>,
 }
@@ -75,9 +75,9 @@ struct ReqState {
     token: Token,
 }
 
-impl VNodePeer {
-    fn new() -> VNodePeer {
-        VNodePeer {
+impl VNodeLog {
+    fn new() -> VNodeLog {
+        VNodeLog {
             knowledge: 0,
             log: Default::default(),
         }
