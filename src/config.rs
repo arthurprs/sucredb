@@ -28,6 +28,7 @@ pub struct Config {
     pub fabric_keepalive: u32,
     pub fabric_timeout: u32,
     pub max_connections: u32,
+    pub auto_sync: bool,
     pub read_consistency: ConsistencyLevel,
     pub write_consistency: ConsistencyLevel,
 }
@@ -52,6 +53,7 @@ impl Default for Config {
             fabric_keepalive: 1000,
             fabric_timeout: 1000,
             max_connections: 100,
+            auto_sync: true,
             read_consistency: ConsistencyLevel::One,
             write_consistency: ConsistencyLevel::One,
         }

@@ -209,17 +209,17 @@ impl Database {
             vn.handler_tick(self, time);
             incomming_syncs += vn.syncs_inflight().0;
         }
-        // start sync in random vnodes
-        // if incomming_syncs < self.config.max_incomming_syncs as usize {
-        //     let vnodes_len = vnodes.len() as u16;
-        //     let rnd = thread_rng().gen::<u16>() % vnodes_len;
-        //     for vnode in (0..vnodes_len).map(|i| vnodes.get(&((i + rnd) % vnodes_len))) {
-        //         incomming_syncs += vnode.unwrap().lock().unwrap().maybe_start_sync(self) as _;
-        //         if incomming_syncs >= self.config.max_incomming_syncs as usize {
-        //             break;
-        //         }
-        //     }
-        // }
+        // auto start sync in random vnodes
+        if self.config.auto_sync && incomming_syncs < self.config.max_incomming_syncs as usize {
+            let vnodes_len = vnodes.len() as u16;
+            let rnd = thread_rng().gen::<u16>() % vnodes_len;
+            for vnode in (0..vnodes_len).map(|i| vnodes.get(&((i + rnd) % vnodes_len))) {
+                incomming_syncs += vnode.unwrap().lock().unwrap().maybe_start_sync(self) as _;
+                if incomming_syncs >= self.config.max_incomming_syncs as usize {
+                    break;
+                }
+            }
+        }
     }
 
     fn handler_fabric_msg(&self, from: NodeId, msg: FabricMsg) {
@@ -360,6 +360,7 @@ mod tests {
                 cluster_name: "test".into(),
                 max_incomming_syncs: 10,
                 max_outgoing_syncs: 10,
+                auto_sync: false,
                 cmd_init: if create {
                     Some(config::InitCommand {
                         replication_factor: 3,
