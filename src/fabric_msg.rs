@@ -13,6 +13,7 @@ pub enum FabricMsgError {
     CookieNotFound,
     BadVNodeStatus,
     NotReady,
+    SyncInterrupted,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

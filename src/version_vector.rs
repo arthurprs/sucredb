@@ -149,7 +149,7 @@ impl Iterator for BitmappedVersionDelta {
 }
 
 pub struct BitmappedVersionVectorDelta {
-    iter: Box<Iterator<Item = (Id, Version)>>,
+    iter: Box<Iterator<Item = (Id, Version)> + Send>,
     min_versions: Vec<(Id, Version)>,
 }
 

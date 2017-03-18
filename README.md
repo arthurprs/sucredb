@@ -33,7 +33,7 @@ Code quality and commit messages could be of subpar quality, I'll try to improve
 * [ ] dead node handling (either with gossip or smarter fabric)
 * [ ] pruning old nodes from node clocks (is it possible?)
 * [ ] persisted log (is this a good idea?)
-* [ ] prevent log overflow from affecting ongoing syncs
+* [x] prevent log overflow from crashing ongoing syncs
 * [ ] track deleted keys pending physical deletion
 * [ ] gc dot->key log
 * [x] limit # of syncs on both directions by config
