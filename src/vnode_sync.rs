@@ -180,8 +180,8 @@ impl Synchronization {
         let iterator: IteratorFn = Box::new(move |_| {
             storage_iterator.iter()
                 .map(|(k, v)| {
-                    (k.into(), bincode::deserialize::<DottedCausalContainer<_>>(&v).unwrap())
-                })
+                         (k.into(), bincode::deserialize::<DottedCausalContainer<_>>(&v).unwrap())
+                     })
                 .next()
                 .ok_or(Ok(()))
         });
@@ -214,9 +214,9 @@ impl Synchronization {
 
         let dots_delta = state.clocks.delta(&clocks_in_peer);
         debug!("Delta from {:?} to {:?}", state.clocks, clocks_in_peer);
-        let log_uptodate = dots_delta.min_versions()
-            .iter()
-            .all(|&(n, v)| state.logs.get(&n).and_then(|log| log.min_version()).unwrap_or(0) <= v);
+        let log_uptodate = dots_delta.min_versions().iter().all(|&(n, v)| {
+            state.logs.get(&n).and_then(|log| log.min_version()).unwrap_or(0) <= v
+        });
 
         let iterator: IteratorFn = if log_uptodate {
             let mut sync_keys = SyncKeysIterator::new(dots_delta);
@@ -304,13 +304,12 @@ impl Synchronization {
             SyncSender { peer, cookie, ref mut last_send, .. } |
             BootstrapSender { peer, cookie, ref mut last_send, .. } => {
                 *last_send = Instant::now();
-                let _ = db.fabric
-                    .send_msg(peer,
-                              MsgSyncFin {
-                                  cookie: cookie,
-                                  vnode: state.num(),
-                                  result: Err(e),
-                              });
+                let _ = db.fabric.send_msg(peer,
+                                           MsgSyncFin {
+                                               cookie: cookie,
+                                               vnode: state.num(),
+                                               result: Err(e),
+                                           });
                 SyncResult::Error
             }
         }
@@ -358,29 +357,27 @@ impl Synchronization {
                 let timeout = now + Duration::from_millis(db.config.sync_msg_timeout as _);
                 while let Some((seq, &(ref k, ref dcc))) = inflight.touch_expired(now, timeout) {
                     debug!("resending seq {} for sync/bootstrap {:?}", seq, cookie);
-                    let _ = stry!(db.fabric
-                        .send_msg(peer,
-                                  MsgSyncSend {
-                                      cookie: cookie,
-                                      vnode: state.num(),
-                                      seq: seq,
-                                      key: k.clone(),
-                                      container: dcc.clone(),
-                                  }));
+                    let _ = stry!(db.fabric.send_msg(peer,
+                                                     MsgSyncSend {
+                                                         cookie: cookie,
+                                                         vnode: state.num(),
+                                                         seq: seq,
+                                                         key: k.clone(),
+                                                         container: dcc.clone(),
+                                                     }));
                 }
                 let mut error = false;
                 while inflight.len() < db.config.sync_msg_inflight as usize {
                     match iterator(&state) {
                         Ok((k, dcc)) => {
-                            let _ = stry!(db.fabric
-                                .send_msg(peer,
-                                          MsgSyncSend {
-                                              cookie: cookie,
-                                              vnode: state.num(),
-                                              seq: *count,
-                                              key: k.clone(),
-                                              container: dcc.clone(),
-                                          }));
+                            let _ = stry!(db.fabric.send_msg(peer,
+                                                             MsgSyncSend {
+                                                                 cookie: cookie,
+                                                                 vnode: state.num(),
+                                                                 seq: *count,
+                                                                 key: k.clone(),
+                                                                 container: dcc.clone(),
+                                                             }));
                             inflight.insert(*count, (k, dcc), timeout);
                             *count += 1;
                             *last_send = now;
@@ -530,13 +527,12 @@ impl Synchronization {
                 //        until the bvv join on Fin
                 state.storage_set_remote(db, &msg.key, msg.container);
 
-                let _ = db.fabric
-                    .send_msg(peer,
-                              MsgSyncAck {
-                                  cookie: msg.cookie,
-                                  vnode: state.num(),
-                                  seq: msg.seq,
-                              });
+                let _ = db.fabric.send_msg(peer,
+                                           MsgSyncAck {
+                                               cookie: msg.cookie,
+                                               vnode: state.num(),
+                                               seq: msg.seq,
+                                           });
 
                 *recv_count += 1;
                 let now = Instant::now();

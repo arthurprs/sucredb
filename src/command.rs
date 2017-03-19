@@ -46,9 +46,7 @@ fn quick_int(bytes: &[u8]) -> Result<i64, CommandError> {
             _ => Err(CommandError::ProtocolError),
         }
     } else {
-        assume_str(bytes)
-            .parse::<i64>()
-            .map_err(|_| CommandError::ProtocolError)
+        assume_str(bytes).parse::<i64>().map_err(|_| CommandError::ProtocolError)
     }
 }
 
@@ -115,9 +113,9 @@ impl Database {
     }
 
     fn cmd_get(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
-        try!(check_arg_count(args.len(), 1, 2));
+        check_arg_count(args.len(), 1, 2)?;
         let consistency: ConsistencyLevel = if args.len() >= 2 {
-            try!(args[1].try_into())
+            args[1].try_into()?
         } else {
             self.config.read_consistency
         };
@@ -125,14 +123,14 @@ impl Database {
     }
 
     fn cmd_set(&self, token: u64, args: &[&[u8]], reply_result: bool) -> Result<(), CommandError> {
-        try!(check_arg_count(args.len(), 2, 4));
+        check_arg_count(args.len(), 2, 4)?;
         let vv: VersionVector = if args.len() >= 3 && !args[2].is_empty() {
             bincode::deserialize(args[2]).unwrap()
         } else {
             VersionVector::new()
         };
         let consistency: ConsistencyLevel = if args.len() >= 4 {
-            try!(args[3].try_into())
+            args[3].try_into()?
         } else {
             self.config.write_consistency
         };
@@ -140,14 +138,14 @@ impl Database {
     }
 
     fn cmd_del(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
-        try!(check_arg_count(args.len(), 1, 3));
+        check_arg_count(args.len(), 1, 3)?;
         let vv: VersionVector = if args.len() >= 2 && !args[1].is_empty() {
             bincode::deserialize(args[1]).unwrap()
         } else {
             VersionVector::new()
         };
         let consistency: ConsistencyLevel = if args.len() >= 3 {
-            try!(args[2].try_into())
+            args[2].try_into()?
         } else {
             self.config.write_consistency
         };
@@ -164,17 +162,14 @@ impl Database {
                 let mut slots = Vec::new();
                 for (&(start, end), members) in self.dht.slots().iter() {
                     let mut slot = vec![RespValue::Int(start as _), RespValue::Int(end as _)];
-                    slot.extend(members.iter()
-                        .map(|&(node, (_, ext_addr))| {
-                            RespValue::Array(vec![RespValue::Data(ext_addr.ip()
-                                                      .to_string()
-                                                      .as_bytes()
-                                                      .into()),
-                                                  RespValue::Int(ext_addr.port() as _),
-                                                  RespValue::Data(node.to_string()
-                                                      .as_bytes()
-                                                      .into())])
-                        }));
+                    slot.extend(members.iter().map(|&(node, (_, ext_addr))| {
+                        RespValue::Array(vec![RespValue::Data(ext_addr.ip()
+                                                                  .to_string()
+                                                                  .as_bytes()
+                                                                  .into()),
+                                              RespValue::Int(ext_addr.port() as _),
+                                              RespValue::Data(node.to_string().as_bytes().into())])
+                    }));
                     slots.push(RespValue::Array(slot));
                 }
                 Ok(self.respond(token, RespValue::Array(slots)))

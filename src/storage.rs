@@ -53,19 +53,18 @@ unsafe impl Sync for StorageIterator {}
 
 impl StorageManager {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<StorageManager, GenericError> {
-        let mut env = try!(lmdb_rs::Environment::new()
-            .map_size(10 * 1024 * 1024)
+        let mut env = lmdb_rs::Environment::new().map_size(10 * 1024 * 1024)
             .flags(lmdb_rs::core::EnvCreateNoTls | lmdb_rs::core::EnvCreateNoMemInit |
                    lmdb_rs::core::EnvCreateWriteMap)
             .autocreate_dir(true)
             .max_dbs(1025)
-            .open(path.as_ref(), 0o666));
-        try!(env.set_flags(lmdb_rs::core::EnvNoMetaSync | lmdb_rs::core::EnvNoMemInit, true));
+            .open(path.as_ref(), 0o666)?;
+        env.set_flags(lmdb_rs::core::EnvNoMetaSync | lmdb_rs::core::EnvNoMemInit, true)?;
         Ok(StorageManager {
-            path: path.as_ref().into(),
-            env: env,
-            storages_handle: Default::default(),
-        })
+               path: path.as_ref().into(),
+               env: env,
+               storages_handle: Default::default(),
+           })
     }
 
     #[cfg(test)]
@@ -84,25 +83,25 @@ impl StorageManager {
     pub fn open(&self, db_num: i32, create: bool) -> Result<Storage, GenericError> {
         let mut wlock = self.storages_handle.lock().unwrap();
         let db_name = db_num.to_string();
-        let db_h = try!(if create {
+        let db_h = if create {
             self.env.create_db(&db_name, lmdb_rs::DbFlags::empty())
         } else {
             self.env.get_db(&db_name, lmdb_rs::DbFlags::empty())
-        });
+        }?;
         let buffer = Arc::new(Mutex::new(Buffer {
-            map: Default::default(),
-            db_h: db_h.clone(),
-        }));
+                                             map: Default::default(),
+                                             db_h: db_h.clone(),
+                                         }));
         wlock.insert(db_num, buffer.clone());
 
         Ok(Storage {
-            num: db_num,
-            env: self.env.clone(),
-            db_h: db_h,
-            storages_handle: self.storages_handle.clone(),
-            iterators_handle: Arc::new(()),
-            buffer: buffer,
-        })
+               num: db_num,
+               env: self.env.clone(),
+               db_h: db_h,
+               storages_handle: self.storages_handle.clone(),
+               iterators_handle: Arc::new(()),
+               buffer: buffer,
+           })
     }
 }
 
@@ -112,7 +111,14 @@ impl Storage {
         let r: Option<&[u8]> = match buffer.map.get(key) {
             Some(&Some(ref v)) => Some(v.as_slice()),
             Some(&None) => None,
-            None => self.env.get_reader().unwrap().bind(&self.db_h).get(&key).ok(),
+            None => {
+                self.env
+                    .get_reader()
+                    .unwrap()
+                    .bind(&self.db_h)
+                    .get(&key)
+                    .ok()
+            }
         };
         trace!("get {:?} ({:?} bytes)", str::from_utf8(key), r.map(|x| x.len()));
         r.map(|r| callback(r))

@@ -1,4 +1,6 @@
 fn_args_density="compressed"
 where_density="compressed"
 fn_call_width=80
-closure_block_indent_threshold=3
+closure_block_indent_threshold=2
+chain_one_line_max=6
+use_try_shorthand=true

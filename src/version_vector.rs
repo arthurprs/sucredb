@@ -92,13 +92,13 @@ impl BitmappedVersion {
     pub fn delta(&self, other: &Self) -> BitmappedVersionDelta {
         if other.base > self.base {
             return BitmappedVersionDelta {
-                base: 0,
-                ones: 0,
-                bself: ramp::Int::zero(),
-                other: ramp::Int::zero(),
-                pos: 0,
-                len: 0,
-            };
+                       base: 0,
+                       ones: 0,
+                       bself: ramp::Int::zero(),
+                       other: ramp::Int::zero(),
+                       pos: 0,
+                       len: 0,
+                   };
         }
         let ones = (self.base - other.base) as usize;
         let len = if self.bitmap == 0 {
@@ -189,15 +189,14 @@ pub fn deserialize_ramp<D>(deserializer: D) -> Result<ramp::Int, D::Error>
     use serde::de::Error;
     use serde::bytes::ByteBufVisitor;
 
-    deserializer.deserialize_bytes(ByteBufVisitor)
-        .and_then(|b| {
-            let mut b = &b[..];
-            let trailing_zeros = try!(b.read_u32::<LittleEndian>()
-                .map_err(|e| Error::custom(e.to_string())));
-            let value = try!(ramp::Int::from_str_radix(assume_str(b), 32)
-                .map_err(|e| Error::custom(e.to_string())));
-            Ok(value << trailing_zeros as usize)
-        })
+    deserializer.deserialize_bytes(ByteBufVisitor).and_then(|b| {
+        let mut b = &b[..];
+        let trailing_zeros =
+            b.read_u32::<LittleEndian>().map_err(|e| Error::custom(e.to_string()))?;
+        let value =
+            ramp::Int::from_str_radix(assume_str(b), 32).map_err(|e| Error::custom(e.to_string()))?;
+        Ok(value << trailing_zeros as usize)
+    })
 }
 
 impl BitmappedVersionVector {

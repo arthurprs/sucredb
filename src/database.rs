@@ -100,16 +100,16 @@ impl Database {
                                          config.workers as _,
                                          time::Duration::from_millis(config.worker_timer as _));
         let db = Arc::new(Database {
-            fabric: fabric,
-            dht: dht,
-            storage_manager: storage_manager,
-            meta_storage: meta_storage,
-            response_fn: response_fn,
-            vnodes: Default::default(),
-            workers: Mutex::new(workers),
-            config: config.clone(),
-            stats: Default::default(),
-        });
+                              fabric: fabric,
+                              dht: dht,
+                              storage_manager: storage_manager,
+                              meta_storage: meta_storage,
+                              response_fn: response_fn,
+                              vnodes: Default::default(),
+                              workers: Mutex::new(workers),
+                              config: config.clone(),
+                              stats: Default::default(),
+                          });
 
         db.workers.lock().unwrap().start(|| {
             let cdb = Arc::downgrade(&db);
@@ -144,8 +144,8 @@ impl Database {
             let mut sender = db.sender();
             db.fabric.register_msg_handler(msg_type,
                                            Box::new(move |f, m| {
-                                               sender.send(WorkerMsg::Fabric(f, m));
-                                           }));
+                                                        sender.send(WorkerMsg::Fabric(f, m));
+                                                    }));
         }
 
         {
@@ -363,9 +363,9 @@ mod tests {
                 auto_sync: false,
                 cmd_init: if create {
                     Some(config::InitCommand {
-                        replication_factor: 3,
-                        partitions: 64,
-                    })
+                             replication_factor: 3,
+                             partitions: 64,
+                         })
                 } else {
                     None
                 },
@@ -431,10 +431,10 @@ mod tests {
             let values: Vec<_> = arr[0..arr.len() - 1]
                 .iter()
                 .map(|d| if let RespValue::Data(ref d) = *d {
-                    d[..].to_owned()
-                } else {
-                    panic!();
-                })
+                         d[..].to_owned()
+                     } else {
+                         panic!();
+                     })
                 .collect();
             let vv = if let RespValue::Data(ref d) = arr[arr.len() - 1] {
                 bincode::deserialize(&d[..]).unwrap()

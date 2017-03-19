@@ -55,9 +55,9 @@ impl WorkerManager {
             let worker_fn = worker_fn_gen();
             let (tx, rx) = mpsc::channel();
             self.threads.push(thread::Builder::new()
-                .name(format!("Worker:{}:{}", self.node, i))
-                .spawn(move || worker_fn(rx))
-                .unwrap());
+                                  .name(format!("Worker:{}:{}", self.node, i))
+                                  .spawn(move || worker_fn(rx))
+                                  .unwrap());
             self.channels.push(tx);
         }
 
@@ -65,17 +65,18 @@ impl WorkerManager {
         self.ticker_chan = Some(ticker_tx);
         let ticker_interval = self.ticker_interval;
         let mut sender = self.sender();
-        self.ticker_thread = Some(thread::Builder::new()
-            .name(format!("WorkerTicker:{}", self.node))
-            .spawn(move || loop {
-                thread::sleep(ticker_interval);
-                match ticker_rx.try_recv() {
-                    Err(mpsc::TryRecvError::Empty) => (),
-                    _ => break,
-                }
-                let _ = sender.try_send(WorkerMsg::Tick(time::Instant::now()));
-            })
-            .unwrap());
+        self.ticker_thread =
+            Some(thread::Builder::new()
+                     .name(format!("WorkerTicker:{}", self.node))
+                     .spawn(move || loop {
+                                thread::sleep(ticker_interval);
+                                match ticker_rx.try_recv() {
+                                    Err(mpsc::TryRecvError::Empty) => (),
+                                    _ => break,
+                                }
+                                let _ = sender.try_send(WorkerMsg::Tick(time::Instant::now()));
+                            })
+                     .unwrap());
     }
 
     pub fn sender(&self) -> WorkerSender {

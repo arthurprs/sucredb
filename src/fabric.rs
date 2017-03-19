@@ -100,11 +100,8 @@ impl ReaderContext {
 
     fn dispatch(&self, msg: FabricMsg) {
         let msg_type = msg.get_type();
-        if let Some(handler) = self.context
-            .msg_handlers
-            .lock()
-            .unwrap()
-            .get_mut(&(msg_type as u8)) {
+        if let Some(handler) =
+            self.context.msg_handlers.lock().unwrap().get_mut(&(msg_type as u8)) {
             handler(self.peer, msg);
         } else {
             panic!("No handler for msg type {:?}", msg_type);
@@ -304,18 +301,18 @@ impl Fabric {
         let handle = core.handle();
         let remote = core.remote();
         let context = Arc::new(GlobalContext {
-            node: node,
-            addr: addr,
-            loop_remote: remote,
-            nodes_addr: Default::default(),
-            msg_handlers: Default::default(),
-            writer_chans: Default::default(),
-            chan_id_gen: AtomicUsize::new(0),
-        });
+                                   node: node,
+                                   addr: addr,
+                                   loop_remote: remote,
+                                   nodes_addr: Default::default(),
+                                   msg_handlers: Default::default(),
+                                   writer_chans: Default::default(),
+                                   chan_id_gen: AtomicUsize::new(0),
+                               });
         let init_result = tokio::net::TcpListener::bind(&context.addr, &handle)
             .map(|listener| {
-                core.handle().spawn(Self::listen(listener, context.clone(), core.handle()))
-            });
+                     core.handle().spawn(Self::listen(listener, context.clone(), core.handle()))
+                 });
 
         match init_result {
             Ok(_) => {
@@ -336,11 +333,11 @@ impl Fabric {
             .name(format!("Fabric:{}", node))
             .spawn(move || Self::run(node, addr, init_tx))
             .unwrap();
-        let (context, completer) = try!(try!(init_rx.recv()));
+        let (context, completer) = init_rx.recv()??;
         Ok(Fabric {
-            context: context,
-            loop_thread: Some((completer, thread)),
-        })
+               context: context,
+               loop_thread: Some((completer, thread)),
+           })
     }
 
     pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: FabricHandlerFn) {
@@ -457,15 +454,15 @@ mod tests {
         let counter_ = counter.clone();
         fabric2.register_msg_handler(FabricMsgType::Crud,
                                      Box::new(move |_, m| {
-                                         counter_.fetch_add(1, atomic::Ordering::Relaxed);
-                                     }));
+                                                  counter_.fetch_add(1, atomic::Ordering::Relaxed);
+                                              }));
         for _ in 0..3 {
             fabric1.send_msg(2,
-                          MsgRemoteSetAck {
-                              cookie: Default::default(),
-                              vnode: Default::default(),
-                              result: Ok(()),
-                          })
+                             MsgRemoteSetAck {
+                                 cookie: Default::default(),
+                                 vnode: Default::default(),
+                                 result: Ok(()),
+                             })
                 .unwrap();
         }
         thread::sleep(Duration::from_millis(10));

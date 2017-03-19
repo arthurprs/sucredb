@@ -79,11 +79,11 @@ impl RespConnection {
         let (pipe_tx, pipe_rx) = fmpsc::unbounded();
         context.token_chans.lock().unwrap().insert(self.token, pipe_tx);
         let ctx_rx = Rc::new(RefCell::new(LocalContext {
-            token: self.token,
-            context: context,
-            inflight: false,
-            requests: VecDeque::new(),
-        }));
+                                              token: self.token,
+                                              context: context,
+                                              inflight: false,
+                                              requests: VecDeque::new(),
+                                          }));
         let ctx_tx = ctx_rx.clone();
 
         let read_fut = stream::iter((0..).map(|_| -> Result<(), io::Error> { Ok(()) }))
@@ -160,18 +160,18 @@ impl Server {
         let token_chans_cloned = token_chans.clone();
         let response_fn = Box::new(move |token, resp| if let Some(chan) =
             token_chans_cloned.lock().unwrap().get_mut(&token) {
-            let _ = chan.send(resp);
-        } else {
-            debug!("Can't find response channel for token {:?}", token);
-        });
+                                       let _ = chan.send(resp);
+                                   } else {
+                                       debug!("Can't find response channel for token {:?}", token);
+                                   });
 
         let database = Database::new(&self.config, response_fn);
 
         let context = Rc::new(GlobalContext {
-            db_sender: RefCell::new(database.sender()),
-            database: database,
-            token_chans: token_chans,
-        });
+                                  db_sender: RefCell::new(database.sender()),
+                                  database: database,
+                                  token_chans: token_chans,
+                              });
 
         let mut next_token = 0;
         let handle = core.handle();

@@ -520,8 +520,8 @@ impl<T: Metadata> Inner<T> {
 
 impl<T: Metadata + 'static> Gossiper<T> {
     pub fn new(listen_addr: &str, meta: T) -> Result<Gossiper<T>, io::Error> {
-        let socket = try!(net::UdpSocket::bind(listen_addr));
-        try!(socket.set_nonblocking(true));
+        let socket = net::UdpSocket::bind(listen_addr)?;
+        socket.set_nonblocking(true)?;
         let inner = Arc::new(Mutex::new(Inner {
             addr: socket.local_addr().unwrap(),
             nodes: Default::default(),

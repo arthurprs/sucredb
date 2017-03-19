@@ -68,8 +68,8 @@ impl fmt::Debug for RespValue {
             RespValue::Int(v) => write!(f, "Int({:?})", v),
             RespValue::Data(ref v) => write!(f, "Data({:?})", String::from_utf8_lossy(v)),
             RespValue::Array(ref b) => {
-                try!(write!(f, "Array("));
-                try!(f.debug_list().entries(b).finish());
+                write!(f, "Array(")?;
+                f.debug_list().entries(b).finish()?;
                 write!(f, ")")
             }
             RespValue::Status(ref v) => write!(f, "Status({:?})", v.as_ref()),
@@ -86,11 +86,11 @@ pub struct Parser {
 
 impl Parser {
     pub fn new<T: AsRef<[u8]>>(body: T) -> RespResult<Parser> {
-        let valid_to = try!(Self::speculate_buffer(body.as_ref()));
+        let valid_to = Self::speculate_buffer(body.as_ref())?;
         Ok(Parser {
-            consumed: 0,
-            body: body.as_ref()[..valid_to].into(),
-        })
+               consumed: 0,
+               body: body.as_ref()[..valid_to].into(),
+           })
     }
 
     // Quickly speculate a buffer, checking whatever it has a complete resp objects or not.
@@ -177,14 +177,14 @@ impl Parser {
     }
 
     fn parse_value(&mut self) -> RespResult<RespValue> {
-        match try!(self.read_byte()) {
+        match self.read_byte()? {
             b'+' => self.parse_status(),
             b':' => self.parse_int(),
             b'$' => self.parse_data(),
             b'*' => self.parse_array(),
             b'-' => self.parse_error(),
             c => {
-                if c == b'\r' && try!(self.read_byte()) == b'\n' {
+                if c == b'\r' && self.read_byte()? == b'\n' {
                     return self.parse_value();
                 }
                 debug!("Invalid prefix {:?}{:?} when parsing value",
@@ -218,7 +218,7 @@ impl Parser {
     }
 
     fn read_with_separator(&mut self, len: usize) -> RespResult<ByteTendril> {
-        let mut result = try!(self.read(len + 2));
+        let mut result = self.read(len + 2)?;
         if &result[len..] != b"\r\n" {
             Err("Invalid line separator".into())
         } else {
@@ -232,11 +232,11 @@ impl Parser {
             Some(nl_pos) => nl_pos,
             None => return Err(RespError::Incomplete),
         };
-        Ok(try!(self.read_with_separator(nl_pos)))
+        Ok(self.read_with_separator(nl_pos)?)
     }
 
     fn read_string_line(&mut self) -> RespResult<StrTendril> {
-        let line = try!(self.read_line());
+        let line = self.read_line()?;
         match line.try_reinterpret() {
             Ok(str_line) => Ok(str_line),
             Err(_) => Err("Expected valid string, got garbage".into()),
@@ -244,7 +244,7 @@ impl Parser {
     }
 
     fn read_int_line(&mut self) -> RespResult<i64> {
-        let line = try!(self.read_line());
+        let line = self.read_line()?;
         let line_str = assume_str(line.as_ref());
         match line_str.parse::<i64>() {
             Err(_) => Err("Expected integer, got garbage".into()),
@@ -253,32 +253,32 @@ impl Parser {
     }
 
     fn parse_status(&mut self) -> RespResult<RespValue> {
-        let line = try!(self.read_string_line());
+        let line = self.read_string_line()?;
         Ok(RespValue::Status(line))
     }
 
     fn parse_int(&mut self) -> RespResult<RespValue> {
-        Ok(RespValue::Int(try!(self.read_int_line())))
+        Ok(RespValue::Int(self.read_int_line()?))
     }
 
     fn parse_data(&mut self) -> RespResult<RespValue> {
-        let length = try!(self.read_int_line());
+        let length = self.read_int_line()?;
         if length < 0 {
             Ok(RespValue::Nil)
         } else {
-            let data = try!(self.read_with_separator(length as usize));
+            let data = self.read_with_separator(length as usize)?;
             Ok(RespValue::Data(data))
         }
     }
 
     fn parse_array(&mut self) -> RespResult<RespValue> {
-        let length = try!(self.read_int_line());
+        let length = self.read_int_line()?;
         if length < 0 {
             Ok(RespValue::Nil)
         } else {
             let mut rv = Vec::with_capacity(length as usize);
             for _ in 0..length {
-                let value = try!(self.parse_value());
+                let value = self.parse_value()?;
                 rv.push(value);
             }
             Ok(RespValue::Array(rv))
@@ -286,7 +286,7 @@ impl Parser {
     }
 
     fn parse_error(&mut self) -> RespResult<RespValue> {
-        let line = try!(self.read_string_line());
+        let line = self.read_string_line()?;
         Ok(RespValue::Error(line))
     }
 }
@@ -296,7 +296,7 @@ mod tests {
     use super::{RespResult, RespError, Parser, RespValue};
 
     fn parse(slice: &[u8]) -> RespResult<RespValue> {
-        try!(Parser::new(slice)).parse()
+        Parser::new(slice)?.parse()
     }
 
     #[test]
@@ -312,10 +312,10 @@ mod tests {
 
         let r = parse(b"-invalid line sep\r\r");
         assert!(if let RespError::Invalid(_) = r.unwrap_err() {
-            true
-        } else {
-            false
-        });
+                    true
+                } else {
+                    false
+                });
     }
 
     #[test]
@@ -331,8 +331,8 @@ mod tests {
     fn parser_multiple2() {
         let mut parser =
             Parser::new(b"*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n"
-                    .as_ref())
-                .unwrap();
+                            .as_ref())
+                    .unwrap();
         for _ in 0..2 {
             let r = parser.parse();
             assert!(r.is_ok(), "{:?} not ok", r.unwrap_err());
