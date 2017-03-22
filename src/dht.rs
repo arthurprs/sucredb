@@ -714,11 +714,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    // #[ignore]
     fn test_rebalance() {
         let _ = env_logger::init();
         let addr = "0.0.0.0:0".parse().unwrap();
-        for i in 0..100_000 {
+        for i in 0..1_000 {
             let mut ring = Ring::new(0, addr, (), 64, 1 + thread_rng().gen::<u8>() % 4);
             for i in 0..thread_rng().gen::<u64>() % 64 {
                 ring.join_node(i, addr, ());

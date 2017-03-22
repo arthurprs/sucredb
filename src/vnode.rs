@@ -776,7 +776,7 @@ impl VNodeState {
             clean_shutdown: shutdown,
         };
         debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
-        let serialized_saved_state = bincode::serialize(&saved_state, bincode::SizeLimit::Infinite)
+        let serialized_saved_state = bincode::serialize(&saved_state, bincode::Infinite)
             .unwrap();
         db.meta_storage.set(self.num.to_string().as_bytes(), &serialized_saved_state);
     }
@@ -806,7 +806,7 @@ impl VNodeState {
         if dcc.is_dcc_empty() {
             self.storage.del(key);
         } else {
-            let bytes = bincode::serialize(&dcc, bincode::SizeLimit::Infinite).unwrap();
+            let bytes = bincode::serialize(&dcc, bincode::Infinite).unwrap();
             self.storage.set(key, &bytes);
         }
 
@@ -833,7 +833,7 @@ impl VNodeState {
         if new_dcc.is_dcc_empty() {
             self.storage.del(key);
         } else {
-            let bytes = bincode::serialize(&new_dcc, bincode::SizeLimit::Infinite).unwrap();
+            let bytes = bincode::serialize(&new_dcc, bincode::Infinite).unwrap();
             self.storage.set(key, &bytes);
         }
 

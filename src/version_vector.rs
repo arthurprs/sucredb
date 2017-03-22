@@ -490,7 +490,7 @@ mod test_bv {
         for &base in &[0u64, 123] {
             for &bits in &[0u32, 0b10000000000000, 0b10000000000001, 0b10000000000010] {
                 let bv1 = BitmappedVersion::new(base, bits);
-                let buffer = bincode::serialize(&bv1, bincode::SizeLimit::Infinite).unwrap();
+                let buffer = bincode::serialize(&bv1, bincode::Infinite).unwrap();
                 let bv2: BitmappedVersion = bincode::deserialize(&buffer).unwrap();
                 assert_eq!(bv1.base, bv2.base);
                 assert_eq!(bv1.bitmap, bv2.bitmap);

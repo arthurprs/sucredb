@@ -14,7 +14,7 @@ use futures::stream::{self, Stream};
 use futures::sync::mpsc as fmpsc;
 use extra_futures::{read_at, SignaledChan, ShortCircuit};
 use tokio_core as tokio;
-use tokio_core::io::Io;
+use tokio_io::{io as tokio_io, AsyncRead};
 
 pub use fabric_msg::*;
 use utils::{GenericError, IdHashMap};
@@ -188,8 +188,8 @@ impl Fabric {
         let _ = socket.set_keepalive_ms(Some(2000));
         let mut buffer = [0u8; 8];
         (&mut buffer[..]).write_u64::<LittleEndian>(context.node).unwrap();
-        let fut = tokio::io::write_all(socket, buffer)
-            .and_then(|(s, b)| tokio::io::read_exact(s, b))
+        let fut = tokio_io::write_all(socket, buffer)
+            .and_then(|(s, b)| tokio_io::read_exact(s, b))
             .and_then(move |(s, b)| {
                 let peer_id = (&b[..]).read_u64::<LittleEndian>().unwrap();
                 if expected_node.unwrap_or(peer_id) == peer_id {
@@ -240,7 +240,7 @@ impl Fabric {
                         }
 
                         let de_result = bincode::deserialize_from(&mut slice,
-                                                                  bincode::SizeLimit::Infinite);
+                                                                  bincode::Infinite);
 
                         match de_result {
                             Ok(msg) => {
@@ -275,7 +275,7 @@ impl Fabric {
                     debug!("Sending to node {} msg {:?}", ctx.peer, msg);
                     let offset = b.len();
                     b.write_u32::<LittleEndian>(0).unwrap();
-                    bincode::serialize_into(&mut b, &msg, bincode::SizeLimit::Infinite).unwrap();
+                    bincode::serialize_into(&mut b, &msg, bincode::Infinite).unwrap();
                     let msg_len = (b.len() - offset - 4) as u32;
                     (&mut b[offset..offset + 4]).write_u32::<LittleEndian>(msg_len).unwrap();
                     b.len() >= 4 * 1024
@@ -284,7 +284,7 @@ impl Fabric {
                 };
                 if flush {
                     trace!("flushing msgs to node {:?}", ctx.peer);
-                    ShortCircuit::from_future(tokio::io::write_all(s, b).map(|(s, mut b)| {
+                    ShortCircuit::from_future(tokio_io::write_all(s, b).map(|(s, mut b)| {
                         b.clear();
                         (ctx, s, b)
                     }))
@@ -427,7 +427,7 @@ impl Drop for Fabric {
     fn drop(&mut self) {
         warn!("droping fabric");
         if let Some((c, t)) = self.loop_thread.take() {
-            c.complete(());
+            let _ = c.send(());
             t.join().unwrap();
         }
     }

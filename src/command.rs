@@ -1,12 +1,11 @@
 use resp::RespValue;
 use database::Database;
 use types::*;
-use utils::assume_str;
 use version_vector::*;
 use std::num::ParseIntError;
 use std::{str, net};
 use std::convert::TryInto;
-use bincode::{self, SizeLimit};
+use bincode;
 
 #[derive(Debug)]
 pub enum CommandError {
@@ -36,17 +35,6 @@ fn check_arg_count(count: usize, min: usize, max: usize) -> Result<(), CommandEr
         Err(CommandError::InvalidArgCount)
     } else {
         Ok(())
-    }
-}
-
-fn quick_int(bytes: &[u8]) -> Result<i64, CommandError> {
-    if bytes.len() == 1 {
-        match bytes[0] {
-            b'0'...b'9' => Ok((bytes[0] - b'0') as i64),
-            _ => Err(CommandError::ProtocolError),
-        }
-    } else {
-        assume_str(bytes).parse::<i64>().map_err(|_| CommandError::ProtocolError)
     }
 }
 
@@ -206,7 +194,7 @@ impl Database {
 
 fn dcc_to_resp(dcc: DottedCausalContainer<Vec<u8>>) -> RespValue {
     let mut values: Vec<_> = dcc.values().map(|v| RespValue::Data(v.as_slice().into())).collect();
-    let buffer = bincode::serialize(dcc.version_vector(), SizeLimit::Infinite).unwrap();
+    let buffer = bincode::serialize(dcc.version_vector(), bincode::Infinite).unwrap();
     values.push(RespValue::Data(buffer.as_slice().into()));
     RespValue::Array(values)
 }

@@ -12,7 +12,7 @@ use futures::stream::{self, Stream};
 use futures::sync::mpsc as fmpsc;
 use extra_futures::read_at;
 use tokio_core as tokio;
-use tokio_core::io::Io;
+use tokio_io::{io as tokio_io, AsyncRead};
 use resp::{self, RespValue};
 use config::Config;
 use utils::IdHashMap;
@@ -134,7 +134,7 @@ impl RespConnection {
                 ctx.borrow_mut().dispatch_next();
                 b.clear();
                 resp.serialize_to(&mut b);
-                tokio::io::write_all(s, b).map(move |(s, b)| (ctx, s, b))
+                tokio_io::write_all(s, b).map(move |(s, b)| (ctx, s, b))
             })
             .map(|_| ());
 
