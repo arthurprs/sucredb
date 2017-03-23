@@ -79,16 +79,17 @@ impl Database {
                 self.respond(token, cmd.clone());
                 Ok(())
             }
-            _ if args.len() > 0 => {
-                let arg1 = args[0];
-                let args = &args[1..];
-                match (arg0, arg1) {
-                    (b"CONFIG", b"GET") |
-                    (b"config", b"get") => self.cmd_config_get(token, args),
-                    _ => Err(CommandError::UnknownCommand),
-                }
+            b"ASKING" | b"asking" => {
+                self.respond_ok(token);
+                Ok(())
             }
-            _ => Err(CommandError::UnknownCommand),
+            b"CONFIG" | b"config" => {
+                self.cmd_config(token, args)
+            }
+            _ => {
+                debug!("unknown command {:?}", cmd);
+                Err(CommandError::UnknownCommand)
+            },
         };
 
         if let Err(err) = ret {
@@ -96,7 +97,7 @@ impl Database {
         }
     }
 
-    fn cmd_config_get(&self, token: u64, _args: &[&[u8]]) -> Result<(), CommandError> {
+    fn cmd_config(&self, token: u64, _args: &[&[u8]]) -> Result<(), CommandError> {
         Ok(self.respond(token, RespValue::Array(Default::default())))
     }
 

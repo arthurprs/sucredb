@@ -239,8 +239,7 @@ impl Fabric {
                             break;
                         }
 
-                        let de_result = bincode::deserialize_from(&mut slice,
-                                                                  bincode::Infinite);
+                        let de_result = bincode::deserialize_from(&mut slice, bincode::Infinite);
 
                         match de_result {
                             Ok(msg) => {

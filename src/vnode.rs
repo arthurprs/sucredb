@@ -776,8 +776,7 @@ impl VNodeState {
             clean_shutdown: shutdown,
         };
         debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
-        let serialized_saved_state = bincode::serialize(&saved_state, bincode::Infinite)
-            .unwrap();
+        let serialized_saved_state = bincode::serialize(&saved_state, bincode::Infinite).unwrap();
         db.meta_storage.set(self.num.to_string().as_bytes(), &serialized_saved_state);
     }
 

@@ -214,9 +214,10 @@ impl Synchronization {
 
         let dots_delta = state.clocks.delta(&clocks_in_peer);
         debug!("Delta from {:?} to {:?}", state.clocks, clocks_in_peer);
-        let log_uptodate = dots_delta.min_versions().iter().all(|&(n, v)| {
-            state.logs.get(&n).and_then(|log| log.min_version()).unwrap_or(0) <= v
-        });
+        let log_uptodate =
+            dots_delta.min_versions().iter().all(|&(n, v)| {
+                state.logs.get(&n).and_then(|log| log.min_version()).unwrap_or(0) <= v
+            });
 
         let iterator: IteratorFn = if log_uptodate {
             let mut sync_keys = SyncKeysIterator::new(dots_delta);

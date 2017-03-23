@@ -21,7 +21,7 @@ impl From<&'static str> for RespError {
 
 pub type RespResult<T> = Result<T, RespError>;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum RespValue {
     Nil,
     Int(i64),

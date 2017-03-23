@@ -41,7 +41,7 @@ def loop(rc, reset_last_key=None):
             got, got_ctx = resp(rc.get("foo{}".format(i)))
             print("GET foo{} {}".format(i, got))
             assert got == str(i), "%s != %s" % (got, i)
-            rc.hset("__last__", i, last_ctx)
+            _, last_ctx = rc.execute_command("getset", "__last__", i, last_ctx)
         except Exception as e:
             print("error2 {}".format(repr(e)))
 

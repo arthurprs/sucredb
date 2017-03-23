@@ -155,7 +155,7 @@ impl Server {
         let listener = tokio::net::TcpListener::bind(&self.config.listen_addr, &core.handle())
             .unwrap();
 
-        let token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<RespValue>>>> =
+        let token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<_>>>> =
             Default::default();
         let token_chans_cloned = token_chans.clone();
         let response_fn = Box::new(move |token, resp| if let Some(chan) =
