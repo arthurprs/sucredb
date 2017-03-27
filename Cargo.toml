@@ -27,8 +27,7 @@ features = ["serde_impl"]
 
 [dependencies.bincode]
 git = "https://github.com/TyOverby/bincode.git"
-commit="cff1ec658ae30b327e1487dce0de52251b9255e7"
-features = ["serde"]
+commit="c971c4956d3719c62fa07e385b349428b94dddf7"
 
 [dependencies.etcd]
 version="*"

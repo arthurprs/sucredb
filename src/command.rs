@@ -83,13 +83,11 @@ impl Database {
                 self.respond_ok(token);
                 Ok(())
             }
-            b"CONFIG" | b"config" => {
-                self.cmd_config(token, args)
-            }
+            b"CONFIG" | b"config" => self.cmd_config(token, args),
             _ => {
                 debug!("unknown command {:?}", cmd);
                 Err(CommandError::UnknownCommand)
-            },
+            }
         };
 
         if let Err(err) = ret {

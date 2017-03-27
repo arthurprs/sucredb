@@ -149,7 +149,7 @@ impl Database {
         }
 
         {
-            // acquire exclusive lock to vnodes to intialize them
+            // acquire exclusive lock to vnodes to initialize them
             let mut vnodes = db.vnodes.write().unwrap();
             let (ready_vnodes, pending_vnodes) = db.dht.vnodes_for_node(db.dht.node());
             // create vnodes

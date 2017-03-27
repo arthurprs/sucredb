@@ -15,8 +15,8 @@ use rand::{Rng, thread_rng};
 use utils::{IdHashMap, IdHasherBuilder, IdHashSet, split_u64};
 
 // FIXME: use a more efficient log data structure
-// 1MB of storage considering key avg length of 32B and 16B overhead
-const PEER_LOG_SIZE: usize = 1024 * 1024 / (32 + 16);
+// 5MB of storage considering key avg length of 32B and 16B overhead
+const PEER_LOG_SIZE: usize = 5 * 1024 * 1024 / (32 + 16);
 const ZOMBIE_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
