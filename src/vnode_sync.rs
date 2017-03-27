@@ -1,6 +1,6 @@
 use std::time::{Instant, Duration};
 use std::collections::{hash_set, HashSet};
-use vnode::{VNodeStatus, VNodeState};
+use vnode::VNodeState;
 use fabric::*;
 use version_vector::*;
 use database::*;
@@ -488,22 +488,9 @@ impl Synchronization {
                     state.clocks.merge(msg.result.as_ref().unwrap());
                     state.save(db, false);
                     state.storage.sync();
-                    // now we're ready!
-                    match db.dht.promote_pending_node(db.dht.node(), state.num()) {
-                        Ok(_) => {
-                            // send it back as a form of ack-ack
-                            let _ = db.fabric.send_msg(peer, msg);
-                            state.set_status(db, VNodeStatus::Ready);
-                            SyncResult::Done
-                        }
-                        Err(e) => {
-                            warn!("Can't retire node {} vnode {}: {}",
-                                  db.dht.node(),
-                                  state.num(),
-                                  e);
-                            SyncResult::Continue
-                        }
-                    }
+                    // send it back as a form of ack-ack
+                    let _ = db.fabric.send_msg(peer, msg);
+                    SyncResult::Done
                 } else if msg.result.err() == Some(FabricMsgError::NotReady) {
                     SyncResult::Continue
                 } else {

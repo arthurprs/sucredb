@@ -290,13 +290,12 @@ impl VNode {
         };
         for (cookie, result) in terminated_syncs {
             self.syncs.remove(&cookie).unwrap().on_remove(db, &mut self.state);
-            if result == SyncResult::Error && self.status() == VNodeStatus::Bootstrap {
-                info!("Retrying bootstrap {:?}", cookie);
-                self.start_bootstrap(db);
+            if self.status() == VNodeStatus::Bootstrap {
+                self.handle_bootstrap_result(db, result);
             }
         }
 
-        if self.state.pending_bootstrap {
+        if self.status() == VNodeStatus::Bootstrap && self.state.pending_bootstrap {
             self.start_bootstrap(db);
         }
 
@@ -561,9 +560,35 @@ impl VNode {
             return;
         };
 
-        if result == SyncResult::Error && self.status() == VNodeStatus::Bootstrap {
-            info!("Retrying bootstrap {:?}", cookie);
-            self.start_bootstrap(db);
+        if self.status() == VNodeStatus::Bootstrap {
+            self.handle_bootstrap_result(db, result);
+        }
+    }
+
+    fn handle_bootstrap_result(&mut self, db: &Database, result: SyncResult) {
+        match result {
+            SyncResult::Error => {
+                info!("Retrying bootstrap");
+                self.start_bootstrap(db);
+            }
+            SyncResult::Done => {
+                match db.dht.promote_pending_node(db.dht.node(), self.state.num()) {
+                    Ok(_) => {
+                        // now we're ready!
+                        self.state.set_status(db, VNodeStatus::Ready);
+                    }
+                    Err(e) => {
+                        // it's not clear what happened
+                        // go absent and wait for a dht callback to fix it
+                        self.state.set_status(db, VNodeStatus::Absent);
+                        warn!("Can't retire node {} vnode {}: {}",
+                              db.dht.node(),
+                              self.state.num(),
+                              e);
+                    }
+                }
+            }
+            SyncResult::Continue => (),
         }
     }
 
