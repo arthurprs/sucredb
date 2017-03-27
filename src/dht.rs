@@ -1,9 +1,9 @@
-use std::{fmt, thread, net, time};
+use std::{fmt, thread, net};
+use std::cmp::min;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
-use std::collections::{HashMap, BTreeMap};
+use std::collections::{HashMap, HashSet, BTreeMap};
 use linear_map::set::LinearSet;
-use rand::{thread_rng, Rng};
 use serde::{Serialize, Deserialize};
 use serde_json;
 use hash::{hash_slot, HASH_SLOTS};
@@ -52,7 +52,8 @@ pub struct Ring<T: Metadata> {
     vnodes: Vec<LinearSet<NodeId>>,
     pending: Vec<LinearSet<NodeId>>,
     retiring: Vec<LinearSet<NodeId>>,
-    nodes: IdHashMap<NodeId, (net::SocketAddr, T)>,
+    // map of nodes to (fabric_addr, leaving_flag, meta)
+    nodes: IdHashMap<NodeId, (net::SocketAddr, bool, T)>,
 }
 
 pub struct RingDescription {
@@ -77,7 +78,7 @@ impl<T: Metadata> Ring<T> {
             vnodes: vec![[node].iter().cloned().collect(); partitions as usize],
             pending: vec![Default::default(); partitions as usize],
             retiring: vec![Default::default(); partitions as usize],
-            nodes: vec![(node, (addr, meta))].into_iter().collect(),
+            nodes: vec![(node, (addr, false, meta))].into_iter().collect(),
         }
     }
 
@@ -90,12 +91,13 @@ impl<T: Metadata> Ring<T> {
                 assert!(self.pending[i].remove(&node));
             }
         }
+        self.nodes.get_mut(&node).unwrap().1 = true;
         Ok(())
     }
 
     fn join_node(&mut self, node: NodeId, addr: net::SocketAddr, meta: T)
                  -> Result<(), GenericError> {
-        self.nodes.insert(node, (addr, meta));
+        self.nodes.insert(node, (addr, false, meta));
         Ok(())
     }
 
@@ -124,10 +126,7 @@ impl<T: Metadata> Ring<T> {
 
     fn replace(&mut self, old: NodeId, node: NodeId, addr: net::SocketAddr, meta: T)
                -> Result<(), GenericError> {
-        if self.nodes.insert(node, (addr, meta)).is_some() {
-            return Err(format!("{} is already in the cluster", node).into());
-        }
-        if self.nodes.remove(&old).is_some() {
+        let (_, leaving, _) = if let Some(removed) = self.nodes.remove(&old) {
             let iter =
                 self.vnodes.iter_mut().chain(self.pending.iter_mut().chain(self.retiring
                                                                                .iter_mut()));
@@ -136,187 +135,118 @@ impl<T: Metadata> Ring<T> {
                     assert!(v.insert(node));
                 }
             }
+            removed
         } else {
             return Err(format!("{} is not in the cluster", node).into());
+        };
+        if self.nodes.insert(node, (addr, leaving, meta)).is_some() {
+            return Err(format!("{} is already in the cluster", node).into());
         }
         Ok(())
     }
 
     fn rebalance(&mut self) -> Result<(), GenericError> {
-        let simulations = 100;
-        let start = time::Instant::now();
-        for retry in 0..simulations {
-            let mut cloned = self.clone();
-            let result = cloned.try_rebalance();
-            if let Ok(cost) = result {
-                debug!("found a rebalance solution in simulation #{} with cost {} took: {:?}",
-                       retry,
-                       cost,
-                       time::Instant::elapsed(&start));
-                *self = cloned;
-                return Ok(());
-            }
-        }
-        panic!("Can't find a solution after {} simulations: {:?}", simulations, self);
-    }
-
-    fn try_rebalance(&mut self) -> Result<usize, GenericError> {
-        // TODO: this is a complete embarrassment, needs to be rewritten
-        let mut rng = thread_rng();
         // special case when #nodes <= replication factor
         if self.nodes.len() <= self.replication_factor {
             for (vn_num, vn_replicas) in self.vnodes.iter().enumerate() {
-                for node in self.nodes.keys().cloned() {
+                for &node in self.nodes.keys() {
                     if !vn_replicas.contains(&node) {
                         self.pending[vn_num].insert(node);
                     }
                 }
             }
-            return Ok(0);
+            return Ok(());
         }
 
         // simple 2-steps eager rebalancing
-        // 1. take from who is doing too much work and give to who is doing little
-        // 2. assing replicas for under replicated vnodes based on who is doing less work
-        let mut node_partitions = HashMap::new();
-        for &node in self.nodes.keys() {
-            node_partitions.insert(node, Vec::new());
-        }
-        for (v_num, vn) in self.vnodes.iter().enumerate() {
-            for node in vn {
-                node_partitions.get_mut(node).unwrap().push(v_num);
+        // 1. take from who is doing too much work
+        // 2. assing replicas for under replicated vnodes
+
+        // map of active nodes to vnodes
+        let mut node_map = HashMap::new();
+        for (&node, &(_, leaving, _)) in &self.nodes {
+            if !leaving {
+                node_map.insert(node, Vec::new());
             }
         }
-        for partitions in node_partitions.values_mut() {
-            rng.shuffle(partitions);
+        for vn in 0..self.vnodes.len() {
+            let vnodes = &mut self.vnodes[vn];
+            let pending = &mut self.pending[vn];
+            // let retiring = &mut self.retiring[vn];
+            for node in vnodes.iter().chain(pending.iter()) {
+                node_map.get_mut(node).unwrap().push(vn);
+            }
         }
 
         // partitions per node
-        let ppn = self.vnodes.len() * self.replication_factor / self.nodes.len();
-        let ppn_rest = self.vnodes.len() * self.replication_factor % self.nodes.len();
+        let vnpn = self.vnodes.len() * self.replication_factor / node_map.len();
 
-        let mut with_much: Vec<NodeId> = Vec::new();
-        let mut with_little: Vec<NodeId> = Vec::new();
-        loop {
-            if with_much.is_empty() {
-                with_much.extend(node_partitions.iter()
-                                     .filter(|&(_, p)| p.len() > ppn)
-                                     .map(|(&n, _)| n));
-                if with_much.is_empty() {
-                    break;
-                }
-                rng.shuffle(&mut with_much);
-            }
-            if with_little.is_empty() {
-                with_little.extend(node_partitions.iter()
-                                       .filter(|&(_, p)| p.len() < ppn)
-                                       .map(|(&n, _)| n));
-                if with_little.is_empty() {
-                    break;
-                }
-                rng.shuffle(&mut with_little);
-            }
-
-            while !with_little.is_empty() && !with_much.is_empty() {
-                let from = with_much.pop().unwrap();
-                let to = with_little.pop().unwrap();
-                let vn = node_partitions.get_mut(&from).unwrap().pop().unwrap();
-                if !self.vnodes[vn].contains(&to) && self.pending[vn].insert(to) {
-                    assert!(self.vnodes[vn].remove(&from));
-                    assert!(self.retiring[vn].insert(from));
-                    node_partitions.get_mut(&to).unwrap().push(vn);
-                } else {
-                    with_much.insert(0, from);
-                    with_little.insert(0, to);
-                    node_partitions.get_mut(&from).unwrap().insert(0, vn);
-                }
+        // 1. robin-hood
+        for vn in 0..self.vnodes.len() {
+            let vnodes = &mut self.vnodes[vn];
+            let pending = &mut self.pending[vn];
+            let retiring = &mut self.retiring[vn];
+            let doing_much: HashSet<_> = vnodes.iter()
+                .chain(pending.iter())
+                .filter(|n| node_map.get(n).unwrap().len() > vnpn)
+                .cloned()
+                .collect();
+            let candidates: HashSet<_> = node_map.keys()
+                .filter(|n| {
+                    node_map.get(n).unwrap().len() < vnpn && !vnodes.contains(n) &&
+                    !pending.contains(n) && !retiring.contains(n)
+                })
+                .cloned()
+                .collect();
+            for (from, to) in doing_much.into_iter().zip(candidates.into_iter()) {
+                assert!(vnodes.remove(&from) || pending.remove(&from));
+                assert!(pending.insert(to));
+                assert!(retiring.insert(from));
             }
         }
 
-        with_little.clear();
-        with_little.extend(node_partitions.iter()
-                               .filter(|&(_, p)| p.len() < ppn)
-                               .flat_map(|(&n, p)| (p.len()..ppn).map(move |_| n)));
-        rng.shuffle(&mut with_little);
-
-        with_much.clear();
-        with_much.extend(node_partitions.iter().filter(|&(_, p)| p.len() >= ppn).map(|(&n, _)| n));
-        rng.shuffle(&mut with_much);
-
-        let mut extra_nodes: Vec<NodeId> = Vec::new();
-        extra_nodes.extend(self.nodes.keys().cloned());
-        rng.shuffle(&mut extra_nodes);
-        extra_nodes.truncate(ppn_rest);
-
-        let mut under_replicated: Vec<usize> = self.vnodes
-            .iter()
-            .zip(self.pending.iter())
-            .enumerate()
-            .filter(|&(_, (v, p))| self.replication_factor > v.len() + p.len())
-            .flat_map(|(vn, (v, p))| {
-                          (0..self.replication_factor - v.len() - p.len()).map(move |_| vn)
-                      })
-            .collect();
-        rng.shuffle(&mut under_replicated);
-
-        'next: while let Some(vn) = under_replicated.pop() {
-            for _ in 0..with_little.len() {
-                if let Some(taker) = with_little.pop() {
-                    assert!(!self.retiring[vn].contains(&taker));
-                    if !self.vnodes[vn].contains(&taker) && self.pending[vn].insert(taker) {
-                        node_partitions.get_mut(&taker).unwrap().push(vn);
-                        continue 'next;
-                    } else {
-                        with_little.insert(0, taker);
+        // 2. complete replicas
+        for vn in 0..self.vnodes.len() {
+            let vnodes = &mut self.vnodes[vn];
+            let pending = &mut self.pending[vn];
+            let retiring = &mut self.retiring[vn];
+            'outer: while vnodes.len() + pending.len() < self.replication_factor {
+                for (&node, partitions) in &mut node_map {
+                    if partitions.len() < vnpn && !vnodes.contains(&node) &&
+                       !pending.contains(&node) {
+                        partitions.push(vn);
+                        pending.insert(node);
+                        continue 'outer;
                     }
                 }
-            }
-            for _ in 0..with_much.len() {
-                if let Some(taker) = with_much.pop() {
-                    if self.retiring[vn].remove(&taker) {
-                        assert!(!self.pending[vn].contains(&taker));
-                        assert!(self.vnodes[vn].insert(taker));
-                        node_partitions.get_mut(&taker).unwrap().push(vn);
-                        continue 'next;
-                    } else if !self.vnodes[vn].contains(&taker) &&
-                              !self.retiring[vn].contains(&taker) &&
-                              self.pending[vn].insert(taker) {
-                        node_partitions.get_mut(&taker).unwrap().push(vn);
-                        continue 'next;
-                    } else {
-                        with_much.insert(0, taker);
+                for (&node, partitions) in &mut node_map {
+                    if !vnodes.contains(&node) && !pending.contains(&node) &&
+                       !retiring.contains(&node) {
+                        partitions.push(vn);
+                        pending.insert(node);
+                        continue 'outer;
                     }
                 }
-            }
-            for _ in 0..extra_nodes.len() {
-                if let Some(taker) = extra_nodes.pop() {
-                    if self.retiring[vn].remove(&taker) {
-                        assert!(!self.pending[vn].contains(&taker));
-                        assert!(self.vnodes[vn].insert(taker));
-                        node_partitions.get_mut(&taker).unwrap().push(vn);
-                        continue 'next;
-                    } else if !self.vnodes[vn].contains(&taker) &&
-                              !self.retiring[vn].contains(&taker) &&
-                              self.pending[vn].insert(taker) {
-                        node_partitions.get_mut(&taker).unwrap().push(vn);
-                        continue 'next;
-                    } else {
-                        extra_nodes.insert(0, taker);
-                    }
+                if let Some(&node) = retiring.iter().min_by_key(|n| {
+                                                                    node_map.get(n).unwrap().len()
+                                                                }) {
+                    node_map.get_mut(&node).unwrap().push(vn);
+                    retiring.remove(&node);
+                    vnodes.insert(node);
+                    continue 'outer;
                 }
+                unreachable!("cant find replica for vnode {} v{:?} p{:?} r{:?} rf:{}",
+                             vn,
+                             vnodes,
+                             pending,
+                             retiring,
+                             self.replication_factor);
             }
-
-            return Err(format!("Cant find replica for vnode {:?}", vn).into());
         }
+
         self.is_valid()?;
 
-        let mut cost = 0;
-        cost += node_partitions.values()
-            .map(|p| (ppn as isize - p.len() as isize).abs() as usize)
-            .sum::<usize>();
-        cost += self.pending.iter().map(|p| p.len()).sum::<usize>();
-
-        Ok(cost)
+        Ok(())
     }
 
     #[cfg(test)]
@@ -334,17 +264,13 @@ impl<T: Metadata> Ring<T> {
     }
 
     fn is_valid(&self) -> Result<(), GenericError> {
-        if self.nodes.len() <= self.replication_factor {
-            for (vn, (v, p)) in self.vnodes.iter().zip(self.pending.iter()).enumerate() {
-                if v.len() + p.len() != self.nodes.len() {
-                    return Err(format!("vn {} has {:?}{:?} replicas", vn, v, p).into());
-                }
-            }
-        } else {
-            for (vn, (v, p)) in self.vnodes.iter().zip(self.pending.iter()).enumerate() {
-                if v.len() + p.len() != self.replication_factor {
-                    return Err(format!("vn {} has {:?}{:?} replicas", vn, v, p).into());
-                }
+        let replicas = min(self.nodes.len(), self.replication_factor);
+        for vn in 0..self.vnodes.len() {
+            let vnodes = &self.vnodes[vn];
+            let pending = &self.pending[vn];
+            // let retiring = &self.retiring[vn];
+            if vnodes.len() + pending.len() != replicas {
+                return Err(format!("vn {} has {:?}{:?} replicas", vn, vnodes, pending).into());
             }
         }
         Ok(())
@@ -361,9 +287,9 @@ impl<T: Metadata> DHT<T> {
                                             ring: Ring {
                                                 replication_factor: Default::default(),
                                                 vnodes: Default::default(),
-                                                nodes: Default::default(),
                                                 pending: Default::default(),
                                                 retiring: Default::default(),
+                                                nodes: Default::default(),
                                             },
                                             ring_version: 0,
                                             cluster: cluster.into(),
@@ -558,8 +484,11 @@ impl<T: Metadata> DHT<T> {
         let inner = self.inner.lock().unwrap();
         result.extend(inner.ring.vnodes[vnode as usize]
                           .iter()
-                          .chain(inner.ring.retiring[vnode as usize].iter())
-                          .map(|n| (*n, inner.ring.nodes.get(n).cloned().unwrap())));
+                          .chain(inner.ring.pending[vnode as usize].iter())
+                          .map(|n| {
+            let (addr, _, meta) = inner.ring.nodes.get(n).cloned().unwrap();
+            (*n, (addr, meta))
+        }));
         result
     }
 
@@ -582,7 +511,10 @@ impl<T: Metadata> DHT<T> {
             let members: Vec<_> = v.iter()
                 .chain(p.iter())
                 .chain(r.iter())
-                .map(|n| (*n, inner.ring.nodes.get(n).cloned().unwrap()))
+                .map(|n| {
+                    let (addr, _, meta) = inner.ring.nodes.get(n).cloned().unwrap();
+                    (*n, (addr, meta))
+                })
                 .collect();
             let hi = hi as u16;
             result.insert((hi * slots_per_partition, (hi + 1) * slots_per_partition - 1), members);
