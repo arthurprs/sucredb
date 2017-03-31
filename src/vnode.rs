@@ -269,7 +269,10 @@ impl VNode {
                 self.start_bootstrap(db);
             }
             (VNodeStatus::Bootstrap, VNodeStatus::Ready) => {
-                // do nothing, bootstrap will end and make it ready
+                // check if there's a pending bootstrap we need to start
+                if self.state.pending_bootstrap {
+                    self.start_bootstrap(db);
+                }
             }
             (a, b) if a == b => (), // nothing to do
             (a, b) => panic!("Invalid status change from dht {:?} -> {:?}", a, b),
@@ -295,14 +298,15 @@ impl VNode {
             }
         }
 
-        if self.status() == VNodeStatus::Bootstrap && self.state.pending_bootstrap {
-            self.start_bootstrap(db);
-        }
-
         let now = Instant::now();
         while let Some((cookie, req)) = self.inflight.pop_expired(now) {
             debug!("Request cookie:{:?} token:{} timed out", cookie, req.token);
             db.respond_error(req.token, CommandError::Timeout);
+        }
+
+        // check if there's a pending bootstrap we need to start
+        if self.state.pending_bootstrap {
+            self.start_bootstrap(db);
         }
     }
 
@@ -313,7 +317,7 @@ impl VNode {
         // TODO: lots of optimizations to be done here
         let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
         let cookie = self.gen_cookie();
-        let expire = Instant::now() + Duration::from_millis(1000);
+        let expire = Instant::now() + Duration::from_millis(db.config.request_timeout as _);
         let req = ReqState::new(token, nodes.len(), consistency, true);
         assert!(self.inflight.insert(cookie, req, expire).is_none());
 
@@ -504,9 +508,12 @@ impl VNode {
                     Synchronization::new_sync_sender(db, &mut self.state, from, msg)
                 }
             };
-            // FIXME: use entry api
-            assert!(self.syncs.insert(cookie, sync).is_none());
-            self.syncs.get_mut(&cookie).unwrap().on_start(db, &mut self.state);
+            match self.syncs.entry(cookie) {
+                HMEntry::Vacant(v) => {
+                    v.insert(sync).on_start(db, &mut self.state);
+                }
+                HMEntry::Occupied(_) => unreachable!(),
+            }
         }
     }
 
@@ -550,8 +557,10 @@ impl VNode {
                 }
                 SyncResult::Continue => (),
             }
+            trace!("handler_sync_fin {:?}: {:?}", cookie, result);
             result
         } else {
+            trace!("Can't find cookie {:?} for msg sync fin", cookie);
             // only send error if Ok, otherwise the message will be sent back and forth forever
             if msg.result.is_ok() {
                 let _ =
@@ -597,12 +606,12 @@ impl VNode {
         assert_eq!(self.state.status, VNodeStatus::Bootstrap);
         assert_eq!(self.syncs.len(), 0);
         self.state.pending_bootstrap = false;
-        self.state.clear();
         let cookie = self.gen_cookie();
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
         if nodes.is_empty() || nodes[0] == db.dht.node() {
             // nothing to boostrap from
             self.state.set_status(db, VNodeStatus::Ready);
+            return;
         }
 
         thread_rng().shuffle(&mut nodes);
@@ -616,9 +625,13 @@ impl VNode {
                 return;
             }
             info!("starting bootstrap receiver {:?} peer:{}", cookie, node);
-            let bootstrap =
-                Synchronization::new_bootstrap_receiver(db, &mut self.state, node, cookie);
-            assert!(self.syncs.insert(cookie, bootstrap).is_none());
+            let sync = Synchronization::new_bootstrap_receiver(db, &mut self.state, node, cookie);
+            match self.syncs.entry(cookie) {
+                HMEntry::Vacant(v) => {
+                    v.insert(sync).on_start(db, &mut self.state);
+                }
+                HMEntry::Occupied(_) => unreachable!(),
+            }
             return;
         }
         unreachable!();
@@ -654,7 +667,12 @@ impl VNode {
             self.state.sync_nodes.insert(node);
             info!("starting sync receiver {:?} peer:{}", cookie, node);
             let sync = Synchronization::new_sync_receiver(db, &mut self.state, node, cookie);
-            assert!(self.syncs.insert(cookie, sync).is_none());
+            match self.syncs.entry(cookie) {
+                HMEntry::Vacant(v) => {
+                    v.insert(sync).on_start(db, &mut self.state);
+                }
+                HMEntry::Occupied(_) => unreachable!(),
+            }
             return true;
         }
         false

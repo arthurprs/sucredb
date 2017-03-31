@@ -20,6 +20,8 @@ tokio-io = "*"
 futures = "*"
 clap="*"
 crc16="*"
+metrics="*"
+lazy_static = "*"
 
 [dependencies.linear-map]
 git = "https://github.com/arthurprs/linear-map.git"

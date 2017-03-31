@@ -11,6 +11,7 @@ use rand::{thread_rng, Rng};
 use utils::{IdHashMap, split_u64, join_u64};
 pub use types::*;
 use config::Config;
+use metrics::{self, Gauge};
 use vnode_sync::SyncDirection;
 
 pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;
@@ -115,12 +116,12 @@ impl Database {
             let cdb = Arc::downgrade(&db);
             Box::new(move |chan| {
                 for wm in chan {
-                    trace!("worker got msg {:?}", wm);
                     let db = if let Some(db) = cdb.upgrade() {
                         db
                     } else {
                         break;
                     };
+                    trace!("worker {} got msg {:?}", ::std::thread::current().name().unwrap(), wm);
                     match wm {
                         WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
                         WorkerMsg::Tick(time) => db.handler_tick(time),
@@ -142,10 +143,11 @@ impl Database {
         // set fabric callbacks
         for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch] {
             let mut sender = db.sender();
-            db.fabric.register_msg_handler(msg_type,
-                                           Box::new(move |f, m| {
-                                                        sender.send(WorkerMsg::Fabric(f, m));
-                                                    }));
+            let callback = Box::new(move |f, m| {
+                // trace!("fabric callback {:?} {:?}", msg_type, m);
+                sender.send(WorkerMsg::Fabric(f, m));
+            });
+            db.fabric.register_msg_handler(msg_type, callback);
         }
 
         {
@@ -276,7 +278,8 @@ impl Database {
         match direction {
             SyncDirection::Incomming => {
                 if stats.incomming_syncs < self.config.max_incomming_syncs {
-                    stats.incomming_syncs = stats.incomming_syncs.checked_add(1).unwrap();
+                    stats.incomming_syncs += 1;
+                    metrics::SYNC_INCOMING.inc();
                     true
                 } else {
                     false
@@ -284,7 +287,8 @@ impl Database {
             }
             SyncDirection::Outgoing => {
                 if stats.outgoing_syncs < self.config.max_outgoing_syncs {
-                    stats.outgoing_syncs = stats.outgoing_syncs.checked_add(1).unwrap();
+                    stats.outgoing_syncs += 1;
+                    metrics::SYNC_OUTGOING.inc();
                     true
                 } else {
                     false
@@ -298,9 +302,11 @@ impl Database {
         match direction {
             SyncDirection::Incomming => {
                 stats.incomming_syncs = stats.incomming_syncs.checked_sub(1).unwrap();
+                metrics::SYNC_INCOMING.dec();
             }
             SyncDirection::Outgoing => {
                 stats.outgoing_syncs = stats.outgoing_syncs.checked_sub(1).unwrap();
+                metrics::SYNC_OUTGOING.dec();
             }
         }
     }
@@ -410,12 +416,12 @@ mod tests {
                 .unwrap()
         }
 
-        fn response(&self, token: Token) -> (VersionVector, Vec<Vec<u8>>) {
+        fn response(&self, token: Token) -> (Vec<Vec<u8>>, VersionVector) {
             decode_response(self.resp_response(token))
         }
 
         fn values_response(&self, token: Token) -> Vec<Vec<u8>> {
-            self.response(token).1
+            self.response(token).0
         }
     }
 
@@ -426,7 +432,7 @@ mod tests {
         }
     }
 
-    fn decode_response(value: RespValue) -> (VersionVector, Vec<Vec<u8>>) {
+    fn decode_response(value: RespValue) -> (Vec<Vec<u8>>, VersionVector) {
         if let RespValue::Array(ref arr) = value {
             let values: Vec<_> = arr[0..arr.len() - 1]
                 .iter()
@@ -441,9 +447,9 @@ mod tests {
             } else {
                 panic!();
             };
-            return (vv, values);
+            return (values, vv);
         }
-        panic!("Invalid bincode data")
+        panic!("Can't decode response {:?}", value);
     }
 
     fn test_reload_stub(shutdown: bool) {
@@ -510,14 +516,14 @@ mod tests {
         assert!(db.values_response(1).len() == 2);
 
         db.get(1, b"test", One);
-        let (vv, values) = db.response(1);
+        let (values, vv) = db.response(1);
         assert!(values.eq(&[b"value1", b"value2"]));
 
         db.set(1, b"test", Some(b"value12"), vv, One, true);
         assert!(db.values_response(1).len() == 1);
 
         db.get(1, b"test", One);
-        let (vv, values) = db.response(1);
+        let (values, vv) = db.response(1);
         assert!(values.eq(&[b"value12"]));
 
         db.set(1, b"test", None, vv, One, true);

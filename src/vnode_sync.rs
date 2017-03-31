@@ -7,6 +7,7 @@ use database::*;
 use inflightmap::InFlightMap;
 use bincode;
 use utils::IdHasherBuilder;
+use metrics::{self, Meter};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[must_use]
@@ -64,6 +65,7 @@ pub enum Synchronization {
         // local bvv at the time of sync start
         clocks_snapshot: BitmappedVersionVector,
         iterator: IteratorFn,
+        // TODO: only store keys as resends should be rare
         inflight: InFlightSyncMsgMap,
         cookie: Cookie,
         peer: NodeId,
@@ -121,7 +123,9 @@ impl SyncKeysIterator {
                 return Err(Err(()));
             }
             // fetch log in 10_000 key batches
-            let mut keys = HashSet::new();
+            // reserve a dedup hashmap with half of iter len + 1
+            // this way it will only resize once at the worst case
+            let mut keys = HashSet::with_capacity(self.dots_delta.size_hint().0 / 2 + 1);
             for (n, v) in self.dots_delta.by_ref() {
                 if let Some(key) = state.logs.get(&n).and_then(|log| log.get(v)).cloned() {
                     keys.insert(key);
@@ -131,10 +135,11 @@ impl SyncKeysIterator {
                 } else {
                     warn!("Can't find key for ({}, {}), stopping sync iterator", n, v);
                     self.broken = true;
-                    break;
+                    return Err(Err(()));
                 }
             }
-            if !self.broken && keys.is_empty() {
+            debug_assert!(!self.broken);
+            if keys.is_empty() {
                 return Err(Ok(()));
             }
             debug!("sync will send key batch {:?}", keys);
@@ -146,31 +151,16 @@ impl SyncKeysIterator {
 use self::Synchronization::*;
 
 impl Synchronization {
-    pub fn new_sync_receiver(db: &Database, state: &mut VNodeState, peer: NodeId, cookie: Cookie)
-                             -> Self {
-        let mut sync = SyncReceiver {
-            clocks_in_peer: state.clocks.clone(),
-            peer: peer,
-            cookie: cookie,
-            recv_count: 0,
-            last_recv: Instant::now(),
-            last_send: Instant::now(),
-        };
-        let _ = sync.send_start(db, state);
-        sync
-    }
-    pub fn new_bootstrap_receiver(db: &Database, state: &mut VNodeState, peer: NodeId,
+    pub fn new_bootstrap_receiver(_db: &Database, _state: &mut VNodeState, peer: NodeId,
                                   cookie: Cookie)
                                   -> Self {
-        let mut sync = BootstrapReceiver {
+        BootstrapReceiver {
             cookie: cookie,
             peer: peer,
             recv_count: 0,
             last_recv: Instant::now(),
             last_send: Instant::now(),
-        };
-        let _ = sync.send_start(db, state);
-        sync
+        }
     }
 
     pub fn new_bootstrap_sender(_db: &Database, state: &mut VNodeState, peer: NodeId,
@@ -193,6 +183,18 @@ impl Synchronization {
             inflight: InFlightMap::new(),
             peer: peer,
             count: 0,
+            last_recv: Instant::now(),
+            last_send: Instant::now(),
+        }
+    }
+
+    pub fn new_sync_receiver(_db: &Database, state: &mut VNodeState, peer: NodeId, cookie: Cookie)
+                             -> Self {
+        SyncReceiver {
+            clocks_in_peer: state.clocks.clone(),
+            peer: peer,
+            cookie: cookie,
+            recv_count: 0,
             last_recv: Instant::now(),
             last_send: Instant::now(),
         }
@@ -340,6 +342,7 @@ impl Synchronization {
     // (also takes care of expired SyncSend)
     fn send_next(&mut self, db: &Database, state: &mut VNodeState) -> SyncResult {
         let now = Instant::now();
+        let timeout = now + Duration::from_millis(db.config.sync_msg_timeout as _);
         let (error, inflight_empty) = match *self {
             SyncSender { peer,
                          cookie,
@@ -355,7 +358,6 @@ impl Synchronization {
                               ref mut inflight,
                               ref mut last_send,
                               .. } => {
-                let timeout = now + Duration::from_millis(db.config.sync_msg_timeout as _);
                 while let Some((seq, &(ref k, ref dcc))) = inflight.touch_expired(now, timeout) {
                     debug!("resending seq {} for sync/bootstrap {:?}", seq, cookie);
                     let _ = stry!(db.fabric.send_msg(peer,
@@ -366,6 +368,7 @@ impl Synchronization {
                                                          key: k.clone(),
                                                          container: dcc.clone(),
                                                      }));
+                    metrics::SYNC_RESEND.mark(1);
                 }
                 let mut error = false;
                 while inflight.len() < db.config.sync_msg_inflight as usize {
@@ -382,6 +385,7 @@ impl Synchronization {
                             inflight.insert(*count, (k, dcc), timeout);
                             *count += 1;
                             *last_send = now;
+                            metrics::SYNC_SEND.mark(1);
                             continue;
                         }
                         Err(e) => {
@@ -460,9 +464,10 @@ impl Synchronization {
     // called by vnode as soon as the sync is registered (after creation)
     pub fn on_start(&mut self, db: &Database, state: &mut VNodeState) {
         let _ = match *self {
-            SyncSender { .. } => self.send_next(db, state),
+            SyncReceiver { .. } |
+            BootstrapReceiver { .. } => self.send_start(db, state),
+            SyncSender { .. } |
             BootstrapSender { .. } => self.send_next(db, state),
-            _ => unreachable!(),
         };
     }
 
@@ -526,6 +531,7 @@ impl Synchronization {
                 let now = Instant::now();
                 *last_recv = now;
                 *last_send = now;
+                metrics::SYNC_RECV.mark(1);
             }
             _ => unreachable!(),
         }

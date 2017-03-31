@@ -23,7 +23,9 @@ extern crate etcd;
 extern crate nodrop;
 extern crate clap;
 extern crate crc16;
-
+extern crate metrics as rust_metrics;
+#[macro_use]
+extern crate lazy_static;
 extern crate futures;
 #[macro_use]
 extern crate tokio_core;
@@ -50,6 +52,7 @@ mod server;
 mod workers;
 mod command;
 mod config;
+mod metrics;
 
 
 fn configure() -> config::Config {

@@ -6,6 +6,7 @@ use std::num::ParseIntError;
 use std::{str, net};
 use std::convert::TryInto;
 use bincode;
+use metrics::{self, Meter};
 
 #[derive(Debug)]
 pub enum CommandError {
@@ -106,6 +107,7 @@ impl Database {
         } else {
             self.config.read_consistency
         };
+        metrics::REQUEST_READ.mark(1);
         Ok(self.get(token, args[0], consistency))
     }
 
@@ -121,6 +123,7 @@ impl Database {
         } else {
             self.config.write_consistency
         };
+        metrics::REQUEST_WRITE.mark(1);
         Ok(self.set(token, args[0], Some(args[1]), vv, consistency, reply_result))
     }
 
@@ -136,6 +139,7 @@ impl Database {
         } else {
             self.config.write_consistency
         };
+        metrics::REQUEST_DELETE.mark(1);
         Ok(self.set(token, args[0], None, vv, consistency, false))
     }
 

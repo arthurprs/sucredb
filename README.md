@@ -43,7 +43,8 @@ Code quality and commit messages could be of subpar quality, I'll try to improve
 * [x] cluster tests
 * [ ] more cluster tests
 * [ ] configurations everywhere
-* [ ] stats everywhere
+* [x] metrics
+* [ ] expose metrics
 * [ ] config file
 * [ ] better logging
 * [ ] modernize tokio servers (client and fabric)

@@ -15,6 +15,7 @@ use tokio_core as tokio;
 use tokio_io::{io as tokio_io, AsyncRead};
 use resp::{self, RespValue};
 use config::Config;
+use metrics::{self, Gauge};
 use utils::IdHashMap;
 
 struct RespConnection {
@@ -64,6 +65,7 @@ impl LocalContext {
 
 impl RespConnection {
     fn new(addr: SocketAddr, token: Token) -> Self {
+        metrics::CLIENT_CONNECTION.inc();
         RespConnection {
             addr: addr,
             token: token,
@@ -142,6 +144,12 @@ impl RespConnection {
             debug!("finished token {}", self.token);
             futures::finished::<(), ()>(())
         }))
+    }
+}
+
+impl Drop for RespConnection {
+    fn drop(&mut self) {
+        metrics::CLIENT_CONNECTION.dec();
     }
 }
 
