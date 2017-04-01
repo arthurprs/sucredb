@@ -1,11 +1,8 @@
 use std::{str, fmt};
 use std::io::Write;
 use std::error::Error;
-use tendril;
+use bytes::Bytes;
 use utils::assume_str;
-
-pub type ByteTendril = tendril::Tendril<tendril::fmt::Bytes, tendril::Atomic>;
-pub type StrTendril = tendril::Tendril<tendril::fmt::UTF8, tendril::Atomic>;
 
 #[derive(Eq, PartialEq, Debug)]
 pub enum RespError {
@@ -25,10 +22,10 @@ pub type RespResult<T> = Result<T, RespError>;
 pub enum RespValue {
     Nil,
     Int(i64),
-    Data(ByteTendril),
+    Data(Bytes),
     Array(Vec<RespValue>),
-    Status(StrTendril),
-    Error(StrTendril),
+    Status(Bytes),
+    Error(Bytes),
 }
 
 impl RespValue {
@@ -37,7 +34,7 @@ impl RespValue {
                 RespValue::Nil => write!(f, "$-1\r\n"),
                 RespValue::Int(v) => write!(f, ":{}\r\n", v),
                 RespValue::Data(v) => {
-                    write!(f, "${}\r\n", v.len32()).unwrap();
+                    write!(f, "${}\r\n", v.len()).unwrap();
                     f.write_all(v.as_ref()).unwrap();
                     write!(f, "\r\n")
                 }
@@ -48,8 +45,16 @@ impl RespValue {
                     }
                     Ok(())
                 }
-                RespValue::Status(v) => write!(f, "+{}\r\n", v.as_ref()),
-                RespValue::Error(v) => write!(f, "-{}\r\n", v.as_ref()),
+                RespValue::Status(v) => {
+                    write!(f, "+").unwrap();
+                    f.write_all(v.as_ref()).unwrap();
+                    write!(f, "\r\n")
+                }
+                RespValue::Error(v) => {
+                    write!(f, "-").unwrap();
+                    f.write_all(v.as_ref()).unwrap();
+                    write!(f, "\r\n")
+                }
             }
             .unwrap()
     }
@@ -57,7 +62,7 @@ impl RespValue {
 
 impl<T: Error> From<T> for RespValue {
     fn from(from: T) -> Self {
-        RespValue::Error(StrTendril::format(format_args!("{}", from)))
+        RespValue::Error(format!("{}", from).into())
     }
 }
 
@@ -81,7 +86,7 @@ impl fmt::Debug for RespValue {
 /// The internal redis response parser.
 pub struct Parser {
     consumed: usize,
-    body: ByteTendril,
+    body: Bytes,
 }
 
 impl Parser {
@@ -199,7 +204,7 @@ impl Parser {
     fn read_byte(&mut self) -> RespResult<u8> {
         if self.body.len() >= 1 {
             let byte = self.body[0];
-            self.body.pop_front(1);
+            self.body = self.body.slice_from(1);
             Ok(byte)
         } else {
             Err(RespError::Incomplete)
@@ -207,40 +212,29 @@ impl Parser {
     }
 
     #[inline]
-    fn read(&mut self, len: usize) -> RespResult<ByteTendril> {
+    fn read(&mut self, len: usize) -> RespResult<Bytes> {
         if self.body.len() >= len {
-            let result = self.body.subtendril(0, len as u32);
-            self.body.pop_front(len as u32);
-            Ok(result)
+            Ok(self.body.split_to(len))
         } else {
             Err(RespError::Incomplete)
         }
     }
 
-    fn read_with_separator(&mut self, len: usize) -> RespResult<ByteTendril> {
-        let mut result = self.read(len + 2)?;
+    fn read_with_separator(&mut self, len: usize) -> RespResult<Bytes> {
+        let result = self.read(len + 2)?;
         if &result[len..] != b"\r\n" {
             Err("Invalid line separator".into())
         } else {
-            result.pop_back(2);
-            Ok(result)
+            Ok(result.slice_to(len))
         }
     }
 
-    fn read_line(&mut self) -> RespResult<ByteTendril> {
+    fn read_line(&mut self) -> RespResult<Bytes> {
         let nl_pos = match self.body.iter().position(|&b| b == b'\r') {
             Some(nl_pos) => nl_pos,
             None => return Err(RespError::Incomplete),
         };
         Ok(self.read_with_separator(nl_pos)?)
-    }
-
-    fn read_string_line(&mut self) -> RespResult<StrTendril> {
-        let line = self.read_line()?;
-        match line.try_reinterpret() {
-            Ok(str_line) => Ok(str_line),
-            Err(_) => Err("Expected valid string, got garbage".into()),
-        }
     }
 
     fn read_int_line(&mut self) -> RespResult<i64> {
@@ -253,8 +247,7 @@ impl Parser {
     }
 
     fn parse_status(&mut self) -> RespResult<RespValue> {
-        let line = self.read_string_line()?;
-        Ok(RespValue::Status(line))
+        Ok(RespValue::Status(self.read_line()?))
     }
 
     fn parse_int(&mut self) -> RespResult<RespValue> {
@@ -278,16 +271,14 @@ impl Parser {
         } else {
             let mut rv = Vec::with_capacity(length as usize);
             for _ in 0..length {
-                let value = self.parse_value()?;
-                rv.push(value);
+                rv.push(self.parse_value()?);
             }
             Ok(RespValue::Array(rv))
         }
     }
 
     fn parse_error(&mut self) -> RespResult<RespValue> {
-        let line = self.read_string_line()?;
-        Ok(RespValue::Error(line))
+        Ok(RespValue::Error(self.read_line()?))
     }
 }
 

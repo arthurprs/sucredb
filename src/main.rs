@@ -16,7 +16,6 @@ extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
 extern crate bincode;
-extern crate tendril;
 extern crate lmdb_rs;
 extern crate byteorder;
 extern crate etcd;
@@ -30,6 +29,7 @@ extern crate futures;
 #[macro_use]
 extern crate tokio_core;
 extern crate tokio_io;
+extern crate bytes;
 
 #[macro_use]
 mod utils;
@@ -53,7 +53,6 @@ mod workers;
 mod command;
 mod config;
 mod metrics;
-
 
 fn configure() -> config::Config {
     use config::*;
