@@ -8,6 +8,7 @@ use inflightmap::InFlightMap;
 use bincode;
 use utils::IdHasherBuilder;
 use metrics::{self, Meter};
+use bytes::Bytes;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[must_use]
@@ -46,15 +47,15 @@ pub enum SyncDirection {
 
 // TODO: take &mut buffers instead of returning them
 type IteratorFn =
-    Box<FnMut(&VNodeState) -> Result<(Vec<u8>, DottedCausalContainer<Vec<u8>>), Result<(), ()>> + Send>;
+    Box<FnMut(&VNodeState) -> Result<(Bytes, DottedCausalContainer<Bytes>), Result<(), ()>> + Send>;
 type InFlightSyncMsgMap = InFlightMap<u64,
-                                      (Vec<u8>, DottedCausalContainer<Vec<u8>>),
+                                      (Bytes, DottedCausalContainer<Bytes>),
                                       Instant,
                                       IdHasherBuilder>;
 
 struct SyncKeysIterator {
     dots_delta: BitmappedVersionVectorDelta,
-    keys: hash_set::IntoIter<Vec<u8>>,
+    keys: hash_set::IntoIter<Bytes>,
     broken: bool,
 }
 
@@ -114,7 +115,7 @@ impl SyncKeysIterator {
         }
     }
 
-    fn next(&mut self, state: &VNodeState) -> Result<Vec<u8>, Result<(), ()>> {
+    fn next(&mut self, state: &VNodeState) -> Result<Bytes, Result<(), ()>> {
         loop {
             if let Some(key) = self.keys.next() {
                 return Ok(key);
@@ -227,7 +228,7 @@ impl Synchronization {
                 loop {
                     match sync_keys.next(state) {
                         Ok(k) => {
-                            if let Some(v) = state.storage.get_vec(&k) {
+                            if let Some(v) = state.storage.get(&k, |v| Bytes::from(v)) {
                                 let mut dcc: DottedCausalContainer<_> = bincode::deserialize(&v)
                                     .unwrap();
                                 // TODO: fill should be done in the remote?

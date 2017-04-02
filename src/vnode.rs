@@ -1,7 +1,6 @@
 use std::time::{Instant, Duration};
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry as HMEntry;
-use std::borrow::Cow;
 use version_vector::*;
 use storage::*;
 use database::*;
@@ -12,6 +11,7 @@ use fabric::*;
 use vnode_sync::*;
 use hash::hash_slot;
 use rand::{Rng, thread_rng};
+use bytes::Bytes;
 use utils::{IdHashMap, IdHasherBuilder, IdHashSet, split_u64};
 
 // FIXME: use a more efficient log data structure
@@ -62,7 +62,7 @@ struct SavedVNodeState {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct VNodeLog {
     knowledge: Version,
-    log: BTreeMap<Version, Vec<u8>>,
+    log: BTreeMap<Version, Bytes>,
 }
 
 struct ReqState {
@@ -71,7 +71,7 @@ struct ReqState {
     required: u8,
     total: u8,
     reply_result: bool,
-    container: DottedCausalContainer<Vec<u8>>,
+    container: DottedCausalContainer<Bytes>,
     token: Token,
 }
 
@@ -89,18 +89,18 @@ impl VNodeLog {
     //     self.knowledge = until;
     // }
 
-    pub fn log(&mut self, version: Version, key: Cow<[u8]>) {
+    pub fn log(&mut self, version: Version, key: Bytes) {
         let min = self.min_version().unwrap_or(0);
         if version > min {
             // debug_assert!(Some(&key) != self.log.get(&version));
-            self.log.insert(version, key.into());
+            self.log.insert(version, key);
             if self.log.len() > PEER_LOG_SIZE {
                 self.log.remove(&min).unwrap();
             }
         }
     }
 
-    pub fn get(&self, version: Version) -> Option<&Vec<u8>> {
+    pub fn get(&self, version: Version) -> Option<&Bytes> {
         self.log.get(&version)
     }
 
@@ -393,7 +393,7 @@ impl VNode {
 
     // OTHER
     fn process_get(&mut self, db: &Database, cookie: Cookie,
-                   container_opt: Option<DottedCausalContainer<Vec<u8>>>) {
+                   container_opt: Option<DottedCausalContainer<Bytes>>) {
         if let HMEntry::Occupied(mut o) = self.inflight.entry(cookie) {
             let done = {
                 let state = o.get_mut();
@@ -772,7 +772,7 @@ impl VNodeState {
             let mut iter = storage.iterator();
             let mut count = 0;
             for (k, v) in iter.iter() {
-                let dcc: DottedCausalContainer<Vec<u8>> = bincode::deserialize(v).unwrap();
+                let dcc: DottedCausalContainer<Bytes> = bincode::deserialize(v).unwrap();
                 dcc.add_to_bvv(&mut clocks);
                 for (&(node, version), _) in dcc.iter() {
                     logs.entry(node).or_insert_with(Default::default).log(version, k.into());
@@ -824,7 +824,7 @@ impl VNodeState {
     }
 
     // STORAGE
-    pub fn storage_get(&self, key: &[u8]) -> DottedCausalContainer<Vec<u8>> {
+    pub fn storage_get(&self, key: &[u8]) -> DottedCausalContainer<Bytes> {
         let mut dcc = if let Some(bytes) = self.storage.get_vec(key) {
             bincode::deserialize(&bytes).unwrap()
         } else {
@@ -836,7 +836,7 @@ impl VNodeState {
 
     pub fn storage_set_local(&mut self, db: &Database, key: &[u8], value_opt: Option<&[u8]>,
                              vv: &VersionVector)
-                             -> DottedCausalContainer<Vec<u8>> {
+                             -> DottedCausalContainer<Bytes> {
         let mut dcc = self.storage_get(key);
         dcc.discard(vv);
         let dot = self.clocks.event(db.dht.node());
@@ -866,7 +866,7 @@ impl VNodeState {
     }
 
     pub fn storage_set_remote(&mut self, _db: &Database, key: &[u8],
-                              mut new_dcc: DottedCausalContainer<Vec<u8>>) {
+                              mut new_dcc: DottedCausalContainer<Bytes>) {
         let old_dcc = self.storage_get(key);
         new_dcc.add_to_bvv(&mut self.clocks);
         new_dcc.sync(old_dcc);

@@ -1,12 +1,13 @@
+use std::num::ParseIntError;
+use std::{str, net};
+use std::convert::TryInto;
 use resp::RespValue;
 use database::Database;
 use types::*;
 use version_vector::*;
-use std::num::ParseIntError;
-use std::{str, net};
-use std::convert::TryInto;
 use bincode;
 use metrics::{self, Meter};
+use bytes::Bytes;
 
 #[derive(Debug)]
 pub enum CommandError {
@@ -182,7 +183,7 @@ impl Database {
         self.respond(token, RespValue::Error(format!("{:?}", error).into()));
     }
 
-    pub fn respond_dcc(&self, token: Token, dcc: DottedCausalContainer<Vec<u8>>) {
+    pub fn respond_dcc(&self, token: Token, dcc: DottedCausalContainer<Bytes>) {
         self.respond(token, dcc_to_resp(dcc));
     }
 
@@ -195,8 +196,8 @@ impl Database {
     }
 }
 
-fn dcc_to_resp(dcc: DottedCausalContainer<Vec<u8>>) -> RespValue {
-    let mut values: Vec<_> = dcc.values().map(|v| RespValue::Data(v.as_slice().into())).collect();
+fn dcc_to_resp(dcc: DottedCausalContainer<Bytes>) -> RespValue {
+    let mut values: Vec<_> = dcc.values().map(|v| RespValue::Data(v.clone())).collect();
     let buffer = bincode::serialize(dcc.version_vector(), bincode::Infinite).unwrap();
     values.push(RespValue::Data(buffer.as_slice().into()));
     RespValue::Array(values)

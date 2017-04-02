@@ -1,5 +1,6 @@
 use version_vector::*;
 use database::*;
+use bytes::Bytes;
 
 #[derive(Debug, Copy, Clone)]
 pub enum FabricMsgType {
@@ -58,22 +59,22 @@ impl FabricMsg {
 pub struct MsgRemoteGet {
     pub vnode: VNodeId,
     pub cookie: Cookie,
-    pub key: Vec<u8>,
+    pub key: Bytes,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgRemoteGetAck {
     pub vnode: VNodeId,
     pub cookie: Cookie,
-    pub result: Result<DottedCausalContainer<Vec<u8>>, FabricMsgError>,
+    pub result: Result<DottedCausalContainer<Bytes>, FabricMsgError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgRemoteSet {
     pub vnode: VNodeId,
     pub cookie: Cookie,
-    pub key: Vec<u8>,
-    pub container: DottedCausalContainer<Vec<u8>>,
+    pub key: Bytes,
+    pub container: DottedCausalContainer<Bytes>,
     pub reply: bool,
 }
 
@@ -88,8 +89,8 @@ pub struct MsgRemoteSetAck {
 pub struct MsgSet {
     pub vnode: VNodeId,
     pub cookie: Cookie,
-    pub key: Vec<u8>,
-    pub value: Option<Vec<u8>>,
+    pub key: Bytes,
+    pub value: Option<Bytes>,
     pub version_vector: VersionVector,
 }
 
@@ -120,8 +121,8 @@ pub struct MsgSyncSend {
     pub vnode: VNodeId,
     pub cookie: Cookie,
     pub seq: u64,
-    pub key: Vec<u8>,
-    pub container: DottedCausalContainer<Vec<u8>>,
+    pub key: Bytes,
+    pub container: DottedCausalContainer<Bytes>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
