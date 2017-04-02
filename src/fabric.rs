@@ -9,10 +9,11 @@ use rand::{thread_rng, Rng};
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
 use bincode;
 
-use futures::{self, Future, IntoFuture};
+use futures;
+use futures::future::{self, Future, IntoFuture, Either};
 use futures::stream::{self, Stream};
 use futures::sync::mpsc as fmpsc;
-use extra_futures::{read_at, SignaledChan, ShortCircuit};
+use extra_futures::{read_at, SignaledChan};
 use tokio_core as tokio;
 use tokio_io::{io as tokio_io, AsyncRead};
 
@@ -24,7 +25,7 @@ const RECONNECT_INTERVAL_MS: u64 = 1000;
 
 pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
 type SenderChan = fmpsc::UnboundedSender<FabricMsg>;
-type InitType = Result<(Arc<GlobalContext>, futures::Complete<()>), io::Error>;
+type InitType = Result<(Arc<GlobalContext>, futures::sync::oneshot::Sender<()>), io::Error>;
 
 /// The messasing network that encompasses all nodes of the cluster
 /// using the fabric you can send messages (best-effort delivery)
@@ -34,7 +35,7 @@ type InitType = Result<(Arc<GlobalContext>, futures::Complete<()>), io::Error>;
 /// used to make better use of the socket buffers (is this a good idea though?).
 pub struct Fabric {
     context: Arc<GlobalContext>,
-    loop_thread: Option<(futures::Complete<()>, thread::JoinHandle<()>)>,
+    loop_thread: Option<(futures::sync::oneshot::Sender<()>, thread::JoinHandle<()>)>,
 }
 
 #[derive(Debug)]
@@ -283,12 +284,12 @@ impl Fabric {
                 };
                 if flush {
                     trace!("flushing msgs to node {:?}", ctx.peer);
-                    ShortCircuit::from_future(tokio_io::write_all(s, b).map(|(s, mut b)| {
+                    Either::A(tokio_io::write_all(s, b).map(|(s, mut b)| {
                         b.clear();
                         (ctx, s, b)
                     }))
                 } else {
-                    ShortCircuit::from_item((ctx, s, b))
+                    Either::B(future::ok((ctx, s, b)))
                 }
             })
             .map(|_| ());
@@ -315,7 +316,7 @@ impl Fabric {
 
         match init_result {
             Ok(_) => {
-                let (completer_tx, completer_rx) = futures::oneshot();
+                let (completer_tx, completer_rx) = futures::sync::oneshot::channel();
                 let _ = init_tx.send(Ok((context, completer_tx)));
                 core.run(completer_rx).unwrap();
             }

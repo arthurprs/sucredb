@@ -44,30 +44,6 @@ impl<T: Stream> Stream for SignaledChan<T> {
     }
 }
 
-pub struct ShortCircuit<T: Future>(Result<T, Option<T::Item>>);
-
-impl<T: Future> ShortCircuit<T> {
-    pub fn from_future(future: T) -> Self {
-        ShortCircuit(Ok(future))
-    }
-
-    pub fn from_item(item: T::Item) -> Self {
-        ShortCircuit(Err(Some(item)))
-    }
-}
-
-impl<T: Future> Future for ShortCircuit<T> {
-    type Item = T::Item;
-    type Error = T::Error;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match self.0.as_mut() {
-            Ok(inner) => inner.poll(),
-            Err(alt) => Ok(Async::Ready(alt.take().unwrap())),
-        }
-    }
-}
-
 /// Tries to read some bytes directly into the given `buf` at offset `at`
 //// in asynchronous manner, returning a future type.
 ///

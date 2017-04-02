@@ -479,7 +479,6 @@ impl Synchronization {
                 if msg.result.is_ok() {
                     state.clocks.join(msg.result.as_ref().unwrap());
                     state.save(db, false);
-                    state.storage.sync();
                     // send it back as a form of ack-ack
                     let _ = db.fabric.send_msg(peer, msg);
                     SyncResult::Done
@@ -493,7 +492,6 @@ impl Synchronization {
                 if msg.result.is_ok() {
                     state.clocks.merge(msg.result.as_ref().unwrap());
                     state.save(db, false);
-                    state.storage.sync();
                     // send it back as a form of ack-ack
                     let _ = db.fabric.send_msg(peer, msg);
                     SyncResult::Done
