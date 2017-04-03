@@ -98,7 +98,7 @@ impl Database {
                            },
                            old_node);
         let workers = WorkerManager::new(node,
-                                         config.workers as _,
+                                         config.worker_count as _,
                                          time::Duration::from_millis(config.worker_timer as _));
         let db = Arc::new(Database {
                               fabric: fabric,
@@ -212,12 +212,12 @@ impl Database {
             incomming_syncs += vn.syncs_inflight().0;
         }
         // auto start sync in random vnodes
-        if self.config.auto_sync && incomming_syncs < self.config.max_incomming_syncs as usize {
+        if self.config.sync_auto && incomming_syncs < self.config.sync_incomming_max as usize {
             let vnodes_len = vnodes.len() as u16;
             let rnd = thread_rng().gen::<u16>() % vnodes_len;
             for vnode in (0..vnodes_len).map(|i| vnodes.get(&((i + rnd) % vnodes_len))) {
                 incomming_syncs += vnode.unwrap().lock().unwrap().maybe_start_sync(self) as _;
-                if incomming_syncs >= self.config.max_incomming_syncs as usize {
+                if incomming_syncs >= self.config.sync_incomming_max as usize {
                     break;
                 }
             }
@@ -277,7 +277,7 @@ impl Database {
         let mut stats = self.stats.lock().unwrap();
         match direction {
             SyncDirection::Incomming => {
-                if stats.incomming_syncs < self.config.max_incomming_syncs {
+                if stats.incomming_syncs < self.config.sync_incomming_max {
                     stats.incomming_syncs += 1;
                     metrics::SYNC_INCOMING.inc();
                     true
@@ -286,7 +286,7 @@ impl Database {
                 }
             }
             SyncDirection::Outgoing => {
-                if stats.outgoing_syncs < self.config.max_outgoing_syncs {
+                if stats.outgoing_syncs < self.config.sync_outgoing_max {
                     stats.outgoing_syncs += 1;
                     metrics::SYNC_OUTGOING.inc();
                     true
@@ -364,9 +364,9 @@ mod tests {
                 data_dir: data_dir.into(),
                 fabric_addr: fabric_addr,
                 cluster_name: "test".into(),
-                max_incomming_syncs: 10,
-                max_outgoing_syncs: 10,
-                auto_sync: false,
+                sync_incomming_max: 10,
+                sync_outgoing_max: 10,
+                sync_auto: false,
                 cmd_init: if create {
                     Some(config::InitCommand {
                              replication_factor: 3,

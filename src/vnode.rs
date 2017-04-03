@@ -368,10 +368,14 @@ impl VNode {
 
         let nodes = db.dht.nodes_for_vnode(self.state.num, true, true);
         let cookie = self.gen_cookie();
-        let expire = Instant::now() + Duration::from_millis(1000);
+        let expire = Instant::now() + Duration::from_millis(db.config.request_timeout as _);
+
+        let dcc = match self.state.storage_set_local(db, key, value_opt, &vv) {
+            Ok(dcc) => dcc,
+            Err(_) => return db.respond_error(token, CommandError::TooManyVersions),
+        };
 
         let mut req = ReqState::new(token, nodes.len(), consistency, reply_result);
-        let dcc = self.state.storage_set_local(db, key, value_opt, &vv);
         req.container = dcc.clone();
         assert!(self.inflight.insert(cookie, req, expire).is_none());
 
@@ -836,9 +840,14 @@ impl VNodeState {
 
     pub fn storage_set_local(&mut self, db: &Database, key: &[u8], value_opt: Option<&[u8]>,
                              vv: &VersionVector)
-                             -> DottedCausalContainer<Bytes> {
+                             -> Result<DottedCausalContainer<Bytes>, ()> {
         let mut dcc = self.storage_get(key);
         dcc.discard(vv);
+
+        if dcc.values().len() >= db.config.value_version_max as usize {
+            return Err(());
+        }
+
         let dot = self.clocks.event(db.dht.node());
         if let Some(value) = value_opt {
             dcc.add(db.dht.node(), dot, value.into());
@@ -862,7 +871,7 @@ impl VNodeState {
 
         // FIXME: we striped above so we have to fill again :(
         dcc.fill(&self.clocks);
-        dcc
+        Ok(dcc)
     }
 
     pub fn storage_set_remote(&mut self, _db: &Database, key: &[u8],

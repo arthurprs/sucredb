@@ -14,6 +14,7 @@ pub enum CommandError {
     Timeout,
     ProtocolError,
     UnknownCommand,
+    TooManyVersions,
     InvalidArgCount,
     InvalidConsistencyValue,
     InvalidIntValue,
@@ -106,7 +107,7 @@ impl Database {
         let consistency: ConsistencyLevel = if args.len() >= 2 {
             args[1].try_into()?
         } else {
-            self.config.read_consistency
+            self.config.consistency_read
         };
         metrics::REQUEST_READ.mark(1);
         Ok(self.get(token, args[0], consistency))
@@ -122,7 +123,7 @@ impl Database {
         let consistency: ConsistencyLevel = if args.len() >= 4 {
             args[3].try_into()?
         } else {
-            self.config.write_consistency
+            self.config.consistency_write
         };
         metrics::REQUEST_WRITE.mark(1);
         Ok(self.set(token, args[0], Some(args[1]), vv, consistency, reply_result))
@@ -138,7 +139,7 @@ impl Database {
         let consistency: ConsistencyLevel = if args.len() >= 3 {
             args[2].try_into()?
         } else {
-            self.config.write_consistency
+            self.config.consistency_write
         };
         metrics::REQUEST_DELETE.mark(1);
         Ok(self.set(token, args[0], None, vv, consistency, false))

@@ -43,5 +43,6 @@ features = ["nightly"]
 [profile.dev]
 codegen-units = 4
 
-[profile.release]
-debug=true
+# for profiling
+# [profile.release]
+# debug=true
