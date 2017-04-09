@@ -13,7 +13,6 @@ env_logger = "*"
 lmdb-rs = "*"
 byteorder="*"
 nodrop="*"
-ramp="*"
 tokio-core = "*"
 tokio-io = "*"
 futures = "*"
@@ -34,6 +33,9 @@ commit="c971c4956d3719c62fa07e385b349428b94dddf7"
 git = "https://github.com/arthurprs/bytes"
 branch = "serde"
 features = ["serde_impl"]
+
+[dependencies.roaring]
+git = "https://github.com/arthurprs/roaring-rs"
 
 [dependencies.etcd]
 version="*"

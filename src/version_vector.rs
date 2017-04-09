@@ -1,7 +1,6 @@
 use std::{str, cmp};
 use linear_map::{self, LinearMap, Entry};
-use utils::assume_str;
-use ramp;
+use roaring::{RoaringTreemap, RoaringBitmap};
 use byteorder::{WriteBytesExt, ReadBytesExt, LittleEndian};
 use serde;
 
@@ -14,8 +13,8 @@ pub struct VersionVector(LinearMap<Id, Version>);
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BitmappedVersion {
     base: Version,
-    #[serde(serialize_with="serialize_ramp", deserialize_with="deserialize_ramp")]
-    bitmap: ramp::Int,
+    #[serde(serialize_with="serialize_bitmap", deserialize_with="deserialize_bitmap")]
+    bitmap: RoaringTreemap,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -31,19 +30,28 @@ pub struct DottedCausalContainer<T> {
 }
 
 impl BitmappedVersion {
+    fn int_to_bitmap(base: Version, bitmap: u32) -> RoaringTreemap {
+        let mut result = RoaringTreemap::new();
+        if bitmap != 0 {
+            for i in 0..32 {
+                if bitmap & (1 << i) != 0 {
+                    result.insert(base + 1 + i as Version);
+                }
+            }
+        }
+        result
+    }
+
     pub fn new(base: Version, bitmap: u32) -> BitmappedVersion {
         BitmappedVersion {
             base: base,
-            bitmap: bitmap.into(),
+            bitmap: Self::int_to_bitmap(base, bitmap),
         }
     }
 
     pub fn join(&mut self, other: &Self) {
-        if self.base >= other.base {
-            self.bitmap |= other.bitmap.clone() >> (self.base - other.base) as usize;
-        } else {
-            self.bitmap >>= (other.base - self.base) as usize;
-            self.bitmap |= &other.bitmap;
+        self.bitmap |= &other.bitmap;
+        if self.base < other.base {
             self.base = other.base;
         }
         self.norm();
@@ -51,100 +59,72 @@ impl BitmappedVersion {
 
     fn add(&mut self, version: Version) {
         if version > self.base {
-            self.bitmap.set_bit((version - self.base - 1) as u32, true);
+            self.bitmap.insert(version);
             self.norm();
         }
     }
 
     fn norm(&mut self) {
-        let mut trailing_ones = 0;
-        for i in 0..self.bitmap.bit_length() {
-            if self.bitmap.bit(i) {
-                trailing_ones += 1;
-            } else {
-                break;
-            }
+        // TODO: amortize the cost of this
+        while self.bitmap.contains(self.base + 1) {
+            self.base += 1;
         }
-        if trailing_ones > 0 {
-            self.base += trailing_ones as Version;
-            self.bitmap >>= trailing_ones as usize;
-        }
+        self.bitmap.remove_range(0..self.base + 1);
     }
 
     pub fn fill_holes(&mut self) {
-        if self.bitmap == 0 {
-            return;
-        }
-        let high_bitmap_dot = self.bitmap.bit_length();
-        self.base += high_bitmap_dot as Version;
-        self.bitmap = 0.into();
+        self.base = self.bitmap.max().unwrap_or(0);
+        self.bitmap.clear();
     }
 
     pub fn base(&self) -> Version {
         self.base
     }
 
-    pub fn contains(&self, v: Version) -> bool {
-        self.base >= v || self.bitmap.bit((v - self.base - 1) as u32)
+    pub fn contains(&self, version: Version) -> bool {
+        self.base >= version || self.bitmap.contains(version)
     }
 
     /// self - other
     pub fn delta(&self, other: &Self) -> BitmappedVersionDelta {
-        if other.base > self.base {
-            return BitmappedVersionDelta {
-                       base: 0,
-                       ones: 0,
-                       bself: ramp::Int::zero(),
-                       other: ramp::Int::zero(),
-                       pos: 0,
-                       len: 0,
-                   };
+        if self.base < other.base {
+            return Default::default();
         }
-        let ones = (self.base - other.base) as usize;
-        let len = if self.bitmap == 0 {
-            ones
-        } else {
-            ones + self.bitmap.bit_length() as usize
-        };
+        let last_version = cmp::max(self.bitmap.max().unwrap_or(0), self.base);
         BitmappedVersionDelta {
-            base: other.base,
-            ones: ones,
-            bself: self.bitmap.clone(),
-            other: other.bitmap.clone(),
+            from: other.clone(),
+            to: self.clone(),
             pos: 0,
-            len: len,
+            len: last_version - other.base,
         }
     }
 }
 
+#[derive(Default)]
 pub struct BitmappedVersionDelta {
-    base: Version,
-    ones: usize,
-    bself: ramp::Int,
-    other: ramp::Int,
-    pos: usize,
-    len: usize,
+    from: BitmappedVersion,
+    to: BitmappedVersion,
+    pos: Version,
+    len: Version,
 }
-
-impl ExactSizeIterator for BitmappedVersionDelta {}
 
 impl Iterator for BitmappedVersionDelta {
     type Item = Version;
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.pos < self.len {
-            if (self.pos < self.ones || self.bself.bit((self.pos - self.ones) as u32)) &&
-               (!self.other.bit(self.pos as u32)) {
-                self.pos += 1;
-                return Some(self.base + self.pos as Version);
-            }
             self.pos += 1;
+            let version = self.from.base + self.pos;
+            if !self.from.bitmap.contains(version) && self.to.contains(version) {
+                return Some(version);
+            }
         }
         None
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.len - self.pos, Some(self.len - self.pos))
+        let hint = (self.len - self.pos) as usize;
+        (hint, Some(hint))
     }
 }
 
@@ -171,31 +151,42 @@ impl BitmappedVersionVectorDelta {
     }
 }
 
-pub fn serialize_ramp<S>(value: &ramp::Int, serializer: S) -> Result<S::Ok, S::Error>
+pub fn serialize_bitmap<S>(value: &RoaringTreemap, serializer: S) -> Result<S::Ok, S::Error>
     where S: serde::Serializer
 {
-    let bit_length = value.bit_length();
-    let trailing_zeros = value.trailing_zeros();
-    // every base32 char encodes 4 bits
-    let mut buffer = Vec::with_capacity(4 + ((bit_length - trailing_zeros) / 4) as usize + 1);
-    buffer.write_u32::<LittleEndian>(trailing_zeros).unwrap();
-    (value >> trailing_zeros as usize).write_radix(&mut buffer, 32, true).unwrap();
+    use serde::ser::Error;
+
+    let mut bitmap_count = 0;
+    let mut buffer_len = 4;
+    for (_, b) in value.bitmaps() {
+        bitmap_count += 1;
+        buffer_len += 4 + b.serialized_size();
+    }
+    let mut buffer = Vec::with_capacity(buffer_len);
+    buffer.write_u32::<LittleEndian>(bitmap_count).map_err(Error::custom)?;
+    for (p, b) in value.bitmaps() {
+        buffer.write_u32::<LittleEndian>(p).map_err(Error::custom)?;
+        b.serialize_into(&mut buffer).map_err(Error::custom)?;
+    }
     serializer.serialize_bytes(&buffer)
 }
 
-pub fn deserialize_ramp<D>(deserializer: D) -> Result<ramp::Int, D::Error>
+pub fn deserialize_bitmap<D>(deserializer: D) -> Result<RoaringTreemap, D::Error>
     where D: serde::Deserializer
 {
     use serde::de::Error;
     use serde::bytes::ByteBufVisitor;
 
-    deserializer.deserialize_bytes(ByteBufVisitor).and_then(|b| {
-        let mut b = &b[..];
-        let trailing_zeros =
-            b.read_u32::<LittleEndian>().map_err(|e| Error::custom(e.to_string()))?;
-        let value =
-            ramp::Int::from_str_radix(assume_str(b), 32).map_err(|e| Error::custom(e.to_string()))?;
-        Ok(value << trailing_zeros as usize)
+    deserializer.deserialize_bytes(ByteBufVisitor).and_then(|buffer| {
+        let mut buffer = &buffer[..];
+        let bitmap_count = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
+        let mut bitmaps = Vec::with_capacity(bitmap_count as usize);
+        for _ in 0..bitmap_count {
+            let p = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
+            let b = RoaringBitmap::deserialize_from(&mut buffer).map_err(Error::custom)?;
+            bitmaps.push((p, b));
+        }
+        Ok(RoaringTreemap::from_bitmaps(bitmaps))
     })
 }
 
@@ -263,7 +254,7 @@ impl BitmappedVersionVector {
             }
             Entry::Occupied(mut ocu) => {
                 let bv = ocu.get_mut();
-                debug_assert_eq!(bv.bitmap, 0);
+                debug_assert_eq!(bv.bitmap.len(), 0);
                 bv.base += 1;
                 bv.base
             }
@@ -500,30 +491,28 @@ mod test_bv {
 
     #[test]
     fn delta() {
-        let a = BitmappedVersion::new(5, 3);
-        let b = BitmappedVersion::new(2, 4);
-        assert_eq!(vec![3, 4, 6, 7], a.delta(&b).collect::<Vec<Version>>());
+        let a = BitmappedVersion::new(5, 0b10);
+        let b = BitmappedVersion::new(2, 0b100);
+        assert_eq!(vec![3, 4, 7], a.delta(&b).collect::<Vec<Version>>());
         let a = BitmappedVersion::new(7, 0);
-        let b = BitmappedVersion::new(2, 4);
+        let b = BitmappedVersion::new(2, 0b100);
         assert_eq!(vec![3, 4, 6, 7], a.delta(&b).collect::<Vec<Version>>());
         let a = BitmappedVersion::new(7, 0);
         let b = BitmappedVersion::new(7, 0);
+        assert!(a.delta(&b).collect::<Vec<Version>>().is_empty());
+        let a = BitmappedVersion::new(7, 0);
+        let b = BitmappedVersion::new(8, 0);
         assert!(a.delta(&b).collect::<Vec<Version>>().is_empty());
     }
 
     #[test]
     fn norm() {
-        let mut a = BitmappedVersion {
-            base: 1,
-            bitmap: 0b10.into(), // second bit set
-        };
+        let mut a = BitmappedVersion::new(1, 0b10);
         a.norm();
-        assert_eq!(a.base, 1);
-        assert_eq!(a.bitmap, 0b10);
+        assert_eq!(a, BitmappedVersion::new(1, 0b10));
         a.add(2);
         a.norm();
-        assert_eq!(a.base, 3);
-        assert_eq!(a.bitmap, 0);
+        assert_eq!(a, BitmappedVersion::new(3, 0));
     }
 }
 
@@ -577,16 +566,16 @@ mod test_bvv {
     fn delta() {
         let mut bvv1 = BitmappedVersionVector::new();
         let mut bvv2 = BitmappedVersionVector::new();
-        bvv1.0.insert(1, BitmappedVersion::new(5, 3));
-        bvv2.0.insert(1, BitmappedVersion::new(2, 4));
+        bvv1.0.insert(1, BitmappedVersion::new(5, 0b10));
+        bvv2.0.insert(1, BitmappedVersion::new(2, 0b100));
         bvv1.0.insert(2, BitmappedVersion::new(7, 0));
-        bvv2.0.insert(2, BitmappedVersion::new(2, 4));
+        bvv2.0.insert(2, BitmappedVersion::new(2, 0b100));
         bvv1.0.insert(3, BitmappedVersion::new(7, 0));
         bvv2.0.insert(3, BitmappedVersion::new(7, 0));
         bvv1.0.insert(4, BitmappedVersion::new(7, 0));
-        bvv2.0.insert(4, BitmappedVersion::new(6, 1));
+        bvv2.0.insert(4, BitmappedVersion::new(6, 0b1));
         let delta_dots: Vec<_> = bvv1.delta(&bvv2).collect();
-        assert_eq!(vec![(1, 3), (1, 4), (1, 6), (1, 7), (2, 3), (2, 4), (2, 6), (2, 7)],
+        assert_eq!(vec![(1, 3), (1, 4), (1, 7), (2, 3), (2, 4), (2, 6), (2, 7)],
                    delta_dots);
         let min_versions: Vec<_> = bvv1.delta(&bvv2).min_versions().to_owned();
         assert_eq!(vec![(1, 3), (2, 3)], min_versions);

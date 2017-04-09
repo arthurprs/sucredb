@@ -9,7 +9,7 @@
 extern crate log;
 extern crate env_logger;
 extern crate rand;
-extern crate ramp;
+extern crate roaring;
 extern crate linear_map;
 extern crate serde;
 extern crate serde_json;
