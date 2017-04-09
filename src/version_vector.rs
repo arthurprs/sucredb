@@ -294,7 +294,11 @@ impl BitmappedVersionVector {
         let min_versions: Vec<_> = self.0
             .iter()
             .filter_map(|(&id, bv)| {
-                other.get(id).and_then(|other_bv| bv.delta(other_bv).map(move |v| (id, v)).next())
+                if let Some(other_bv) = other.get(id) {
+                    bv.delta(other_bv).map(move |v| (id, v)).next()
+                } else {
+                    Some((id, 1)) // start from 1 if the other bv don't have this node
+                }
             })
             .collect();
         let empty_bv = BitmappedVersion::new(0, 0);
@@ -574,11 +578,12 @@ mod test_bvv {
         bvv2.0.insert(3, BitmappedVersion::new(7, 0));
         bvv1.0.insert(4, BitmappedVersion::new(7, 0));
         bvv2.0.insert(4, BitmappedVersion::new(6, 0b1));
+        bvv1.0.insert(5, BitmappedVersion::new(2, 0));
         let delta_dots: Vec<_> = bvv1.delta(&bvv2).collect();
-        assert_eq!(vec![(1, 3), (1, 4), (1, 7), (2, 3), (2, 4), (2, 6), (2, 7)],
+        assert_eq!(vec![(1, 3), (1, 4), (1, 7), (2, 3), (2, 4), (2, 6), (2, 7), (5, 1), (5, 2)],
                    delta_dots);
         let min_versions: Vec<_> = bvv1.delta(&bvv2).min_versions().to_owned();
-        assert_eq!(vec![(1, 3), (2, 3)], min_versions);
+        assert_eq!(vec![(1, 3), (2, 3), (5, 1)], min_versions);
     }
 
     #[test]
