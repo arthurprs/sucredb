@@ -34,7 +34,7 @@ Code quality and commit messages could be of subpar quality, I'll try to improve
 * [ ] pruning old nodes from node clocks (is it possible?)
 * [ ] persisted log (is this a good idea?)
 * [x] prevent log overflow from crashing ongoing syncs
-* [ ] track deleted keys pending physical deletion
+* [ ] track deleted keys pending physical deletion (is this a good idea?)
 * [ ] gc dot->key log
 * [x] limit # of syncs on both directions by config
 * [x] cluster name
@@ -43,6 +43,7 @@ Code quality and commit messages could be of subpar quality, I'll try to improve
 * [x] cluster tests
 * [ ] more cluster tests
 * [ ] configurations everywhere
+* [ ] proper storage module
 * [x] metrics
 * [ ] expose metrics
 * [ ] config file
