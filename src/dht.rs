@@ -127,9 +127,9 @@ impl<T: Metadata> Ring<T> {
     fn replace(&mut self, old: NodeId, node: NodeId, addr: net::SocketAddr, meta: T)
                -> Result<(), GenericError> {
         let (_, leaving, _) = if let Some(removed) = self.nodes.remove(&old) {
-            let iter =
-                self.vnodes.iter_mut().chain(self.pending.iter_mut().chain(self.retiring
-                                                                               .iter_mut()));
+            let iter = self.vnodes
+                .iter_mut()
+                .chain(self.pending.iter_mut().chain(self.retiring.iter_mut()));
             for v in iter {
                 if v.remove(&old) {
                     assert!(v.insert(node));
@@ -186,12 +186,14 @@ impl<T: Metadata> Ring<T> {
             let vnodes = &mut self.vnodes[vn];
             let pending = &mut self.pending[vn];
             let retiring = &mut self.retiring[vn];
-            let doing_much: HashSet<_> = vnodes.iter()
+            let doing_much: HashSet<_> = vnodes
+                .iter()
                 .chain(pending.iter())
                 .filter(|n| node_map.get(n).unwrap().len() > vnpn)
                 .cloned()
                 .collect();
-            let candidates: HashSet<_> = node_map.keys()
+            let candidates: HashSet<_> = node_map
+                .keys()
                 .filter(|n| {
                     node_map.get(n).unwrap().len() < vnpn && !vnodes.contains(n) &&
                     !pending.contains(n) && !retiring.contains(n)
@@ -502,7 +504,8 @@ impl<T: Metadata> DHT<T> {
         let mut result = BTreeMap::new();
         let inner = self.inner.lock().unwrap();
         for (hi, ((v, p), r)) in
-            inner.ring
+            inner
+                .ring
                 .vnodes
                 .iter()
                 .zip(inner.ring.pending.iter())

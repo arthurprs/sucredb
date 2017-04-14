@@ -47,7 +47,10 @@ impl LocalContext {
             self.requests.push_back(req);
         } else {
             debug!("Dispatched request ({}) {:?}", self.token, req);
-            self.context.db_sender.borrow_mut().send(WorkerMsg::Command(self.token, req));
+            self.context
+                .db_sender
+                .borrow_mut()
+                .send(WorkerMsg::Command(self.token, req));
             self.inflight = true;
         }
     }
@@ -56,7 +59,10 @@ impl LocalContext {
         assert!(self.inflight, "can't cycle if there's nothing inflight");
         if let Some(req) = self.requests.pop_front() {
             debug!("Dispatched request ({}) {:?}", self.token, req);
-            self.context.db_sender.borrow_mut().send(WorkerMsg::Command(self.token, req));
+            self.context
+                .db_sender
+                .borrow_mut()
+                .send(WorkerMsg::Command(self.token, req));
         } else {
             self.inflight = false;
         }
@@ -131,7 +137,8 @@ impl RespConnection {
             })
             .map(|_| ());
 
-        let write_fut = pipe_rx.map_err(|_| io::ErrorKind::Other.into())
+        let write_fut = pipe_rx
+            .map_err(|_| io::ErrorKind::Other.into())
             .fold((ctx_tx, sock_tx, Vec::new()), |(ctx, s, mut b), resp| {
                 ctx.borrow_mut().dispatch_next();
                 b.clear();
@@ -140,7 +147,9 @@ impl RespConnection {
             })
             .map(|_| ());
 
-        Box::new(read_fut.select(write_fut).then(move |_| {
+        Box::new(read_fut
+                     .select(write_fut)
+                     .then(move |_| {
             debug!("finished token {}", self.token);
             futures::finished::<(), ()>(())
         }))
@@ -166,8 +175,10 @@ impl Server {
         let token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<_>>>> =
             Default::default();
         let token_chans_cloned = token_chans.clone();
-        let response_fn = Box::new(move |token, resp| if let Some(chan) =
-            token_chans_cloned.lock().unwrap().get_mut(&token) {
+        let response_fn = Box::new(move |token, resp| if let Some(chan) = token_chans_cloned
+                                          .lock()
+                                          .unwrap()
+                                          .get_mut(&token) {
                                        let _ = chan.send(resp);
                                    } else {
                                        debug!("Can't find response channel for token {:?}", token);
@@ -183,7 +194,8 @@ impl Server {
 
         let mut next_token = 0;
         let handle = core.handle();
-        let listener_fut = listener.incoming()
+        let listener_fut = listener
+            .incoming()
             .and_then(|(socket, addr)| {
                 let conn = RespConnection::new(addr, next_token);
                 let conn_handle = handle.clone();

@@ -206,12 +206,14 @@ impl VNode {
 
     pub fn syncs_inflight(&self) -> (usize, usize) {
         let pend = if self.state.pending_bootstrap { 1 } else { 0 };
-        self.syncs.values().fold((0 + pend, 0), |(inc, out), s| match *s {
-            Synchronization::BootstrapReceiver { .. } |
-            Synchronization::SyncReceiver { .. } => (inc + 1, out),
-            Synchronization::BootstrapSender { .. } |
-            Synchronization::SyncSender { .. } => (inc, out + 1),
-        })
+        self.syncs
+            .values()
+            .fold((0 + pend, 0), |(inc, out), s| match *s {
+                Synchronization::BootstrapReceiver { .. } |
+                Synchronization::SyncReceiver { .. } => (inc + 1, out),
+                Synchronization::BootstrapSender { .. } |
+                Synchronization::SyncSender { .. } => (inc, out + 1),
+            })
     }
 
     fn gen_cookie(&self) -> Cookie {
@@ -326,12 +328,13 @@ impl VNode {
                 let container = self.state.storage_get(key);
                 self.process_get(db, cookie, Some(container));
             } else {
-                let _ = db.fabric.send_msg(node,
-                                           MsgRemoteGet {
-                                               cookie: cookie,
-                                               vnode: self.state.num,
-                                               key: key.into(),
-                                           });
+                let _ = db.fabric
+                    .send_msg(node,
+                              MsgRemoteGet {
+                                  cookie: cookie,
+                                  vnode: self.state.num,
+                                  key: key.into(),
+                              });
             }
         }
     }
@@ -383,14 +386,15 @@ impl VNode {
         let reply = consistency != ConsistencyLevel::One;
         for node in nodes {
             if node != db.dht.node() {
-                let _ = db.fabric.send_msg(node,
-                                           MsgRemoteSet {
-                                               cookie: cookie,
-                                               vnode: self.state.num,
-                                               key: key.into(),
-                                               container: dcc.clone(),
-                                               reply: reply,
-                                           });
+                let _ = db.fabric
+                    .send_msg(node,
+                              MsgRemoteSet {
+                                  cookie: cookie,
+                                  vnode: self.state.num,
+                                  key: key.into(),
+                                  container: dcc.clone(),
+                                  reply: reply,
+                              });
             }
         }
     }
@@ -454,12 +458,13 @@ impl VNode {
     pub fn handler_get_remote(&mut self, db: &Database, from: NodeId, msg: MsgRemoteGet) {
         check_status!(self, VNodeStatus::Ready, db, from, msg, MsgRemoteGetAck, inflight_get);
         let dcc = self.state.storage_get(&msg.key);
-        let _ = db.fabric.send_msg(from,
-                                   MsgRemoteGetAck {
-                                       cookie: msg.cookie,
-                                       vnode: msg.vnode,
-                                       result: Ok(dcc),
-                                   });
+        let _ = db.fabric
+            .send_msg(from,
+                      MsgRemoteGetAck {
+                          cookie: msg.cookie,
+                          vnode: msg.vnode,
+                          result: Ok(dcc),
+                      });
     }
 
     pub fn handler_set_remote(&mut self, db: &Database, from: NodeId, msg: MsgRemoteSet) {
@@ -470,15 +475,22 @@ impl VNode {
                       msg,
                       MsgRemoteSetAck,
                       inflight_set);
-        let MsgRemoteSet { key, container, vnode, cookie, reply } = msg;
+        let MsgRemoteSet {
+            key,
+            container,
+            vnode,
+            cookie,
+            reply,
+        } = msg;
         let result = self.state.storage_set_remote(db, &key, container);
         if reply {
-            let _ = db.fabric.send_msg(from,
-                                       MsgRemoteSetAck {
-                                           vnode: vnode,
-                                           cookie: cookie,
-                                           result: Ok(result),
-                                       });
+            let _ = db.fabric
+                .send_msg(from,
+                          MsgRemoteSetAck {
+                              vnode: vnode,
+                              cookie: cookie,
+                              result: Ok(result),
+                          });
         }
     }
 
@@ -734,7 +746,7 @@ impl VNodeState {
 
     fn new_empty(num: u16, db: &Database, status: VNodeStatus) -> Self {
         db.meta_storage.del(num.to_string().as_bytes());
-        let storage = db.storage_manager.open(num as i32, true).unwrap();
+        let storage = db.storage_manager.open(num as u32, true).unwrap();
         storage.clear();
 
         VNodeState {
@@ -753,18 +765,22 @@ impl VNodeState {
     fn load(num: u16, db: &Database, status: VNodeStatus) -> Self {
         info!("Loading vnode {} state", num);
         let saved_state_opt =
-            db.meta_storage.get(num.to_string().as_bytes(),
-                                |bytes| bincode::deserialize(bytes).unwrap());
+            db.meta_storage
+                .get(num.to_string().as_bytes(), |bytes| bincode::deserialize(bytes).unwrap());
         if saved_state_opt.is_none() {
             info!("No saved state");
             return Self::new_empty(num, db, status);
         };
-        let SavedVNodeState { mut clocks, mut logs, clean_shutdown } = saved_state_opt.unwrap();
+        let SavedVNodeState {
+            mut clocks,
+            mut logs,
+            clean_shutdown,
+        } = saved_state_opt.unwrap();
 
         let storage = match status {
-            VNodeStatus::Ready => db.storage_manager.open(num as i32, true).unwrap(),
+            VNodeStatus::Ready => db.storage_manager.open(num as u32, true).unwrap(),
             VNodeStatus::Absent | VNodeStatus::Bootstrap => {
-                let storage = db.storage_manager.open(num as i32, true).unwrap();
+                let storage = db.storage_manager.open(num as u32, true).unwrap();
                 storage.clear();
                 storage
             }
@@ -861,7 +877,10 @@ impl VNodeState {
             self.storage.set(key, &bytes);
         }
 
-        self.logs.entry(db.dht.node()).or_insert_with(Default::default).log(dot, key.into());
+        self.logs
+            .entry(db.dht.node())
+            .or_insert_with(Default::default)
+            .log(dot, key.into());
 
         self.unflushed_coord_writes += 1;
         if self.unflushed_coord_writes >= PEER_LOG_SIZE / 2 {
@@ -889,7 +908,10 @@ impl VNodeState {
         }
 
         for (&(node, version), _) in new_dcc.iter() {
-            self.logs.entry(node).or_insert_with(Default::default).log(version, key.into());
+            self.logs
+                .entry(node)
+                .or_insert_with(Default::default)
+                .log(version, key.into());
         }
     }
 }

@@ -16,7 +16,7 @@ extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
 extern crate bincode;
-extern crate lmdb_rs;
+extern crate rocksdb;
 extern crate byteorder;
 extern crate etcd;
 extern crate nodrop;
@@ -110,15 +110,18 @@ fn configure() -> config::Config {
         listen_addr: matches.value_of("listen_addr").unwrap().parse().unwrap(),
         fabric_addr: matches.value_of("fabric_addr").unwrap().parse().unwrap(),
         etcd_addr: matches.value_of("etcd_addr").unwrap().into(),
-        cmd_init: matches.subcommand_matches("init").map(|matches| {
-            InitCommand {
-                partitions: matches.value_of("partitions").unwrap().parse().unwrap(),
-                replication_factor: matches.value_of("replication_factor")
-                    .unwrap()
-                    .parse()
-                    .unwrap(),
-            }
-        }),
+        cmd_init: matches
+            .subcommand_matches("init")
+            .map(|matches| {
+                InitCommand {
+                    partitions: matches.value_of("partitions").unwrap().parse().unwrap(),
+                    replication_factor: matches
+                        .value_of("replication_factor")
+                        .unwrap()
+                        .parse()
+                        .unwrap(),
+                }
+            }),
         ..Default::default()
     }
 }

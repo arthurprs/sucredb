@@ -169,7 +169,8 @@ impl Synchronization {
                                 -> Self {
         let mut storage_iterator = state.storage.iterator();
         let iterator: IteratorFn = Box::new(move |_| {
-            storage_iterator.iter()
+            storage_iterator
+                .iter()
                 .map(|(k, v)| {
                          (k.into(), bincode::deserialize::<DottedCausalContainer<_>>(&v).unwrap())
                      })
@@ -203,7 +204,12 @@ impl Synchronization {
 
     pub fn new_sync_sender(db: &Database, state: &mut VNodeState, peer: NodeId, msg: MsgSyncStart)
                            -> Self {
-        let MsgSyncStart { target, cookie, clocks_in_peer, .. } = msg;
+        let MsgSyncStart {
+            target,
+            cookie,
+            clocks_in_peer,
+            ..
+        } = msg;
         assert_eq!(target, Some(db.dht.node()));
 
         debug!("Creating SyncSender {:?} from {:?} to {:?}",
@@ -218,9 +224,12 @@ impl Synchronization {
         let dots_delta = state.clocks.delta(&clocks_in_peer);
         debug!("Delta from {:?} to {:?}", state.clocks, clocks_in_peer);
         let log_uptodate =
-            dots_delta.min_versions().iter().all(|&(n, v)| {
-                state.logs.get(&n).and_then(|log| log.min_version()).unwrap_or(0) <= v
-            });
+            dots_delta
+                .min_versions()
+                .iter()
+                .all(|&(n, v)| {
+                         state.logs.get(&n).and_then(|log| log.min_version()).unwrap_or(0) <= v
+                     });
 
         let iterator: IteratorFn = if log_uptodate {
             let mut sync_keys = SyncKeysIterator::new(dots_delta);
@@ -244,7 +253,8 @@ impl Synchronization {
             warn!("SyncSender {:?} using a scan", cookie);
             let mut storage_iterator = state.storage.iterator();
             Box::new(move |_| {
-                storage_iterator.iter()
+                storage_iterator
+                    .iter()
                     .filter_map(|(k, v)| {
                         let mut dcc = bincode::deserialize::<DottedCausalContainer<_>>(&v).unwrap();
                         if !dcc.contained(&clocks_in_peer) {
@@ -276,11 +286,22 @@ impl Synchronization {
     // send SyncStart message, only valid for Receivers
     fn send_start(&mut self, db: &Database, state: &mut VNodeState) -> SyncResult {
         let (peer, cookie, target, clocks_in_peer) = match *self {
-            SyncReceiver { cookie, peer, ref mut last_send, ref clocks_in_peer, .. } => {
+            SyncReceiver {
+                cookie,
+                peer,
+                ref mut last_send,
+                ref clocks_in_peer,
+                ..
+            } => {
                 *last_send = Instant::now();
                 (peer, cookie, Some(peer), clocks_in_peer.clone())
             }
-            BootstrapReceiver { peer, cookie, ref mut last_send, .. } => {
+            BootstrapReceiver {
+                peer,
+                cookie,
+                ref mut last_send,
+                ..
+            } => {
                 *last_send = Instant::now();
                 (peer, cookie, None, BitmappedVersionVector::new())
             }
@@ -303,17 +324,38 @@ impl Synchronization {
     fn send_error_fin(&mut self, db: &Database, state: &mut VNodeState, e: FabricMsgError)
                       -> SyncResult {
         match *self {
-            SyncReceiver { peer, cookie, ref mut last_send, .. } |
-            BootstrapReceiver { peer, cookie, ref mut last_send, .. } |
-            SyncSender { peer, cookie, ref mut last_send, .. } |
-            BootstrapSender { peer, cookie, ref mut last_send, .. } => {
+            SyncReceiver {
+                peer,
+                cookie,
+                ref mut last_send,
+                ..
+            } |
+            BootstrapReceiver {
+                peer,
+                cookie,
+                ref mut last_send,
+                ..
+            } |
+            SyncSender {
+                peer,
+                cookie,
+                ref mut last_send,
+                ..
+            } |
+            BootstrapSender {
+                peer,
+                cookie,
+                ref mut last_send,
+                ..
+            } => {
                 *last_send = Instant::now();
-                let _ = db.fabric.send_msg(peer,
-                                           MsgSyncFin {
-                                               cookie: cookie,
-                                               vnode: state.num(),
-                                               result: Err(e),
-                                           });
+                let _ = db.fabric
+                    .send_msg(peer,
+                              MsgSyncFin {
+                                  cookie: cookie,
+                                  vnode: state.num(),
+                                  result: Err(e),
+                              });
                 SyncResult::Error
             }
         }
@@ -323,8 +365,20 @@ impl Synchronization {
     // unless there's no route the peer => Error
     fn send_sender_success_fin(&mut self, db: &Database, state: &mut VNodeState) -> SyncResult {
         match *self {
-            SyncSender { peer, cookie, ref clocks_snapshot, ref mut last_send, .. } |
-            BootstrapSender { peer, cookie, ref clocks_snapshot, ref mut last_send, .. } => {
+            SyncSender {
+                peer,
+                cookie,
+                ref clocks_snapshot,
+                ref mut last_send,
+                ..
+            } |
+            BootstrapSender {
+                peer,
+                cookie,
+                ref clocks_snapshot,
+                ref mut last_send,
+                ..
+            } => {
                 *last_send = Instant::now();
                 db.fabric
                     .send_msg(peer,
@@ -345,44 +399,50 @@ impl Synchronization {
         let now = Instant::now();
         let timeout = now + Duration::from_millis(db.config.sync_msg_timeout as _);
         let (error, inflight_empty) = match *self {
-            SyncSender { peer,
-                         cookie,
-                         ref mut iterator,
-                         ref mut count,
-                         ref mut inflight,
-                         ref mut last_send,
-                         .. } |
-            BootstrapSender { peer,
-                              cookie,
-                              ref mut iterator,
-                              ref mut count,
-                              ref mut inflight,
-                              ref mut last_send,
-                              .. } => {
+            SyncSender {
+                peer,
+                cookie,
+                ref mut iterator,
+                ref mut count,
+                ref mut inflight,
+                ref mut last_send,
+                ..
+            } |
+            BootstrapSender {
+                peer,
+                cookie,
+                ref mut iterator,
+                ref mut count,
+                ref mut inflight,
+                ref mut last_send,
+                ..
+            } => {
                 while let Some((seq, &(ref k, ref dcc))) = inflight.touch_expired(now, timeout) {
                     debug!("resending seq {} for sync/bootstrap {:?}", seq, cookie);
-                    let _ = stry!(db.fabric.send_msg(peer,
-                                                     MsgSyncSend {
-                                                         cookie: cookie,
-                                                         vnode: state.num(),
-                                                         seq: seq,
-                                                         key: k.clone(),
-                                                         container: dcc.clone(),
-                                                     }));
+                    let _ = stry!(db.fabric
+                                      .send_msg(peer,
+                                                MsgSyncSend {
+                                                    cookie: cookie,
+                                                    vnode: state.num(),
+                                                    seq: seq,
+                                                    key: k.clone(),
+                                                    container: dcc.clone(),
+                                                }));
                     metrics::SYNC_RESEND.mark(1);
                 }
                 let mut error = false;
                 while inflight.len() < db.config.sync_msg_inflight as usize {
                     match iterator(&state) {
                         Ok((k, dcc)) => {
-                            let _ = stry!(db.fabric.send_msg(peer,
-                                                             MsgSyncSend {
-                                                                 cookie: cookie,
-                                                                 vnode: state.num(),
-                                                                 seq: *count,
-                                                                 key: k.clone(),
-                                                                 container: dcc.clone(),
-                                                             }));
+                            let _ = stry!(db.fabric
+                                              .send_msg(peer,
+                                                        MsgSyncSend {
+                                                            cookie: cookie,
+                                                            vnode: state.num(),
+                                                            seq: *count,
+                                                            key: k.clone(),
+                                                            container: dcc.clone(),
+                                                        }));
                             inflight.insert(*count, (k, dcc), timeout);
                             *count += 1;
                             *last_send = now;
@@ -446,8 +506,20 @@ impl Synchronization {
                     self.send_next(db, state)
                 }
             }
-            SyncReceiver { last_recv, recv_count, last_send, cookie, .. } |
-            BootstrapReceiver { last_recv, recv_count, last_send, cookie, .. } => {
+            SyncReceiver {
+                last_recv,
+                recv_count,
+                last_send,
+                cookie,
+                ..
+            } |
+            BootstrapReceiver {
+                last_recv,
+                recv_count,
+                last_send,
+                cookie,
+                ..
+            } => {
                 if last_recv.elapsed() > Duration::from_millis(db.config.sync_timeout as _) {
                     warn!("sync/boostrap receiver timed out {:?}", cookie);
                     SyncResult::Error
@@ -509,22 +581,31 @@ impl Synchronization {
 
     pub fn on_msg_send(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncSend) {
         match *self {
-            SyncReceiver { peer, ref mut recv_count, ref mut last_recv, ref mut last_send, .. } |
-            BootstrapReceiver { peer,
-                                ref mut recv_count,
-                                ref mut last_recv,
-                                ref mut last_send,
-                                .. } => {
+            SyncReceiver {
+                peer,
+                ref mut recv_count,
+                ref mut last_recv,
+                ref mut last_send,
+                ..
+            } |
+            BootstrapReceiver {
+                peer,
+                ref mut recv_count,
+                ref mut last_recv,
+                ref mut last_send,
+                ..
+            } => {
                 // FIXME: these can create a big region of 0s in the start of bitmap
                 //        until the bvv join on Fin
                 state.storage_set_remote(db, &msg.key, msg.container);
 
-                let _ = db.fabric.send_msg(peer,
-                                           MsgSyncAck {
-                                               cookie: msg.cookie,
-                                               vnode: state.num(),
-                                               seq: msg.seq,
-                                           });
+                let _ = db.fabric
+                    .send_msg(peer,
+                              MsgSyncAck {
+                                  cookie: msg.cookie,
+                                  vnode: state.num(),
+                                  seq: msg.seq,
+                              });
 
                 *recv_count += 1;
                 let now = Instant::now();
@@ -538,8 +619,16 @@ impl Synchronization {
 
     pub fn on_msg_ack(&mut self, db: &Database, state: &mut VNodeState, msg: MsgSyncAck) {
         match *self {
-            SyncSender { ref mut inflight, ref mut last_recv, .. } |
-            BootstrapSender { ref mut inflight, ref mut last_recv, .. } => {
+            SyncSender {
+                ref mut inflight,
+                ref mut last_recv,
+                ..
+            } |
+            BootstrapSender {
+                ref mut inflight,
+                ref mut last_recv,
+                ..
+            } => {
                 inflight.remove(&msg.seq);
                 *last_recv = Instant::now();
             }

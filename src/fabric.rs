@@ -72,7 +72,10 @@ impl GlobalContext {
     fn add_writer_chan(&self, peer: NodeId, sender: SenderChan) -> usize {
         let chan_id = self.chan_id_gen.fetch_add(1, Ordering::Relaxed);
         let mut locked = self.writer_chans.lock().unwrap();
-        locked.entry(peer).or_insert(Default::default()).push((chan_id, sender.clone()));
+        locked
+            .entry(peer)
+            .or_insert(Default::default())
+            .push((chan_id, sender.clone()));
         chan_id
     }
 
@@ -135,7 +138,8 @@ impl Fabric {
               handle: tokio::reactor::Handle)
               -> Box<Future<Item = (), Error = ()>> {
         debug!("Starting fabric listener");
-        let fut = listener.incoming()
+        let fut = listener
+            .incoming()
             .and_then(move |(socket, addr)| {
                 debug!("Accepting fabric connection from {:?}", addr);
                 let handle_cloned = handle.clone();
@@ -379,7 +383,9 @@ impl Fabric {
             writers.entry(node).or_insert(Default::default());
         }
         let context_cloned = context.clone();
-        context.loop_remote.spawn(move |h| Self::connect(node, addr, context_cloned, h.clone()));
+        context
+            .loop_remote
+            .spawn(move |h| Self::connect(node, addr, context_cloned, h.clone()));
     }
 
     // TODO: take msgs as references and buffer serialized bytes instead
@@ -457,12 +463,13 @@ mod tests {
                                                   counter_.fetch_add(1, atomic::Ordering::Relaxed);
                                               }));
         for _ in 0..3 {
-            fabric1.send_msg(2,
-                             MsgRemoteSetAck {
-                                 cookie: Default::default(),
-                                 vnode: Default::default(),
-                                 result: Ok(()),
-                             })
+            fabric1
+                .send_msg(2,
+                          MsgRemoteSetAck {
+                              cookie: Default::default(),
+                              vnode: Default::default(),
+                              result: Ok(()),
+                          })
                 .unwrap();
         }
         thread::sleep(Duration::from_millis(10));

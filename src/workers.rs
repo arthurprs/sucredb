@@ -54,10 +54,11 @@ impl WorkerManager {
         for i in 0..self.thread_count {
             let worker_fn = worker_fn_gen();
             let (tx, rx) = mpsc::channel();
-            self.threads.push(thread::Builder::new()
-                                  .name(format!("Worker:{}:{}", self.node, i))
-                                  .spawn(move || worker_fn(rx))
-                                  .unwrap());
+            self.threads
+                .push(thread::Builder::new()
+                          .name(format!("Worker:{}:{}", self.node, i))
+                          .spawn(move || worker_fn(rx))
+                          .unwrap());
             self.channels.push(tx);
         }
 

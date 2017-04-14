@@ -1,146 +1,107 @@
+use std::{mem, str};
 use std::path::{Path, PathBuf};
-use lmdb_rs;
+use std::ops::Deref;
+use std::io::Write;
+use std::sync::Arc;
+use rocksdb::{self, Writable};
+use byteorder::{BigEndian, WriteBytesExt};
 use utils::*;
-use std::str;
-use std::sync::{Mutex, Arc};
 use nodrop::NoDrop;
-use std::collections::HashMap;
-use linear_map::LinearMap;
 
-// FIXME: this is ridicullous, but so is lmdb write performance
-// FIXME: this module needs to be rewriten to use something like rocksdb
-// or at least employ a better buffering technique
-// FIXME: if lmdb is still to be used, the iterators should probably refresh
-// themselves to avoid bloating the database due to the lmdb read transaction
-// (as strict snapshots are not required)
+struct U32BeSuffixTransform;
 
-const BUFFER_SOFT_LIM: usize = 32;
-const BUFFER_HARD_LIM: usize = 36;
+impl rocksdb::SliceTransform for U32BeSuffixTransform {
+    fn transform<'a>(&mut self, key: &'a [u8]) -> &'a [u8] {
+        &key[..4]
+    }
 
-struct Buffer {
-    map: HashMap<Vec<u8>, Option<Vec<u8>>>,
-    db_h: lmdb_rs::DbHandle,
+    fn in_domain(&mut self, key: &[u8]) -> bool {
+        key.len() >= 4
+    }
 }
 
 pub struct StorageManager {
     path: PathBuf,
-    env: lmdb_rs::Environment,
-    storages_handle: Arc<Mutex<LinearMap<i32, Arc<Mutex<Buffer>>>>>,
+    db: Arc<rocksdb::DB>,
 }
 
 // This implementation goes to a lot of trouble to allow
 // safe-ish iterators that don't require a lifetime attached to them.
 pub struct Storage {
-    env: lmdb_rs::Environment,
-    db_h: lmdb_rs::DbHandle,
-    storages_handle: Arc<Mutex<LinearMap<i32, Arc<Mutex<Buffer>>>>>,
-    buffer: Arc<Mutex<Buffer>>,
-    num: i32,
+    db: Arc<rocksdb::DB>,
+    num: u32,
     iterators_handle: Arc<()>,
 }
 
 pub struct StorageIterator {
-    env: NoDrop<Box<lmdb_rs::Environment>>,
-    db_h: NoDrop<Box<lmdb_rs::DbHandle>>,
-    tx: NoDrop<Box<lmdb_rs::ReadonlyTransaction<'static>>>,
-    db: NoDrop<Box<lmdb_rs::Database<'static>>>,
-    cursor: NoDrop<lmdb_rs::core::CursorIterator<'static, lmdb_rs::CursorIter>>,
+    db: Arc<rocksdb::DB>,
+    snapshot: NoDrop<Box<rocksdb::rocksdb::Snapshot<'static>>>,
+    iterator: NoDrop<Box<rocksdb::rocksdb::DBIterator<'static>>>,
     iterators_handle: Arc<()>,
+    key_prefix: [u8; 4],
+    first: bool,
 }
 
 unsafe impl Send for StorageIterator {}
-unsafe impl Sync for StorageIterator {}
 
 impl StorageManager {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<StorageManager, GenericError> {
-        let mut env = lmdb_rs::Environment::new().map_size(10 * 1024 * 1024)
-            .flags(lmdb_rs::core::EnvCreateNoTls | lmdb_rs::core::EnvCreateNoMemInit |
-                   lmdb_rs::core::EnvCreateWriteMap)
-            .autocreate_dir(true)
-            .max_dbs(1025)
-            .open(path.as_ref(), 0o666)?;
-        env.set_flags(lmdb_rs::core::EnvNoMetaSync | lmdb_rs::core::EnvNoMemInit, true)?;
+        let mut opts = rocksdb::Options::new();
+        opts.create_if_missing(true);
+        opts.set_prefix_extractor("U32BeSuffixTransform", Box::new(U32BeSuffixTransform))
+            .unwrap();
+        // TODO: Rocksdb is complicated, we might want to tune some more options
+        let db = rocksdb::DB::open(opts, path.as_ref().to_str().unwrap()).unwrap();
         Ok(StorageManager {
                path: path.as_ref().into(),
-               env: env,
-               storages_handle: Default::default(),
+               db: Arc::new(db),
            })
     }
 
-    #[cfg(test)]
-    pub fn drop_buffer(&self) -> usize {
-        let mut result = 0;
-        let mut wlock = self.storages_handle.lock().unwrap();
-        for s in wlock.values() {
-            let mut locked = s.lock().unwrap();
-            result += locked.map.len();
-            locked.map.clear();
-        }
-        warn!("dropped {} buffered updates", result);
-        result
-    }
-
-    pub fn open(&self, db_num: i32, create: bool) -> Result<Storage, GenericError> {
-        let mut wlock = self.storages_handle.lock().unwrap();
-        let db_name = db_num.to_string();
-        let db_h = if create {
-            self.env.create_db(&db_name, lmdb_rs::DbFlags::empty())
-        } else {
-            self.env.get_db(&db_name, lmdb_rs::DbFlags::empty())
-        }?;
-        let buffer = Arc::new(Mutex::new(Buffer {
-                                             map: Default::default(),
-                                             db_h: db_h.clone(),
-                                         }));
-        wlock.insert(db_num, buffer.clone());
-
+    pub fn open(&self, db_num: u32, _create: bool) -> Result<Storage, GenericError> {
         Ok(Storage {
+               db: self.db.clone(),
                num: db_num,
-               env: self.env.clone(),
-               db_h: db_h,
-               storages_handle: self.storages_handle.clone(),
                iterators_handle: Arc::new(()),
-               buffer: buffer,
            })
+    }
+}
+
+impl Drop for StorageManager {
+    fn drop(&mut self) {
+        let sc = Arc::strong_count(&self.db);
+        let wc = Arc::weak_count(&self.db);
+        assert!(wc == 0);
+        assert!(sc == 1, "{} pending databases", sc - 1);
     }
 }
 
 impl Storage {
     pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
-        let buffer = self.buffer.lock().unwrap();
-        let r: Option<&[u8]> = match buffer.map.get(key) {
-            Some(&Some(ref v)) => Some(v.as_slice()),
-            Some(&None) => None,
-            None => {
-                self.env
-                    .get_reader()
-                    .unwrap()
-                    .bind(&self.db_h)
-                    .get(&key)
-                    .ok()
-            }
-        };
-        trace!("get {:?} ({:?} bytes)", str::from_utf8(key), r.map(|x| x.len()));
-        r.map(|r| callback(r))
+        let mut buffer = [0u8; 512];
+        (&mut buffer[..4]).write_u32::<BigEndian>(self.num).unwrap();
+        (&mut buffer[4..]).write_all(key).unwrap();
+        let r = self.db.get(&buffer[..4 + key.len()]).unwrap();
+        trace!("get {:?} ({:?} bytes)", str::from_utf8(key), r.as_ref().map(|x| x.len()));
+        r.map(|r| callback(r.deref()))
     }
 
     pub fn iterator(&self) -> StorageIterator {
-        self.flush_buffer(true);
-        let env = NoDrop::new(Box::new(self.env.clone()));
-        let db_h = NoDrop::new(Box::new(self.db_h.clone()));
-        let tx = NoDrop::new(Box::new(env.get_reader().unwrap()));
-        let db = NoDrop::new(Box::new(tx.bind(&self.db_h)));
-        let cursor = NoDrop::new(db.iter().unwrap());
+        let mut key_prefix = [0u8; 4];
+        (&mut key_prefix[..]).write_u32::<BigEndian>(self.num).unwrap();
         unsafe {
-            use std::mem::transmute_copy;
-            StorageIterator {
-                db_h: transmute_copy(&db_h),
-                env: transmute_copy(&env),
+            let snapshot = NoDrop::new(Box::new(self.db.snapshot()));
+            let mut iterator = NoDrop::new(Box::new(snapshot.iter()));
+            iterator.seek(rocksdb::SeekKey::Key(&key_prefix[..]));
+            let result = StorageIterator {
+                db: self.db.clone(),
+                snapshot: mem::transmute_copy(&snapshot),
+                iterator: mem::transmute_copy(&iterator),
                 iterators_handle: self.iterators_handle.clone(),
-                db: transmute_copy(&db),
-                tx: transmute_copy(&tx),
-                cursor: transmute_copy(&cursor),
-            }
+                key_prefix: key_prefix,
+                first: true,
+            };
+            result
         }
     }
 
@@ -150,81 +111,38 @@ impl Storage {
 
     pub fn set(&self, key: &[u8], value: &[u8]) {
         trace!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
-        let buffer_len = {
-            let mut buffer = self.buffer.lock().unwrap();
-            buffer.map.insert(key.into(), Some(value.into()));
-            buffer.map.len()
-        };
-        if buffer_len >= BUFFER_SOFT_LIM {
-            self.flush_buffer(buffer_len >= BUFFER_HARD_LIM);
-        }
+        let mut buffer = [0u8; 512];
+        (&mut buffer[..4]).write_u32::<BigEndian>(self.num).unwrap();
+        (&mut buffer[4..]).write_all(key).unwrap();
+        self.db.put(&buffer[..4 + key.len()], value).unwrap();
     }
 
     pub fn del(&self, key: &[u8]) {
         trace!("del {:?}", str::from_utf8(key));
-        let buffer_len = {
-            let mut buffer = self.buffer.lock().unwrap();
-            buffer.map.insert(key.into(), None);
-            buffer.map.len()
-        };
-        if buffer_len >= BUFFER_SOFT_LIM {
-            self.flush_buffer(buffer_len >= BUFFER_HARD_LIM);
-        }
+        let mut buffer = [0u8; 512];
+        (&mut buffer[..4]).write_u32::<BigEndian>(self.num).unwrap();
+        (&mut buffer[4..]).write_all(key).unwrap();
+        self.db.delete(&buffer[..4 + key.len()]).unwrap()
     }
 
     pub fn clear(&self) {
         trace!("clear");
-        self.buffer.lock().unwrap().map.clear();
-        let _wlock = self.storages_handle.lock().unwrap();
-        let txn = self.env.new_transaction().unwrap();
-        txn.bind(&self.db_h).clear().unwrap();
-        txn.commit().unwrap();
-    }
-
-    fn flush_buffer(&self, force: bool) {
-        let wlock = if force {
-            self.storages_handle.lock().unwrap()
-        } else if let Ok(wlock) = self.storages_handle.try_lock() {
-            wlock
-        } else {
-            return;
-        };
-        debug!("Flushing buffer");
-        let txn = self.env.new_transaction().unwrap();
-        // hold the buffer locks until they're commited to disk
-        let mut locks = Vec::with_capacity(wlock.len());
-        for s in wlock.values() {
-            let mut locked = s.lock().unwrap();
-            let db = txn.bind(&locked.db_h);
-            for (k, v_opt) in locked.map.drain() {
-                if let Some(v) = v_opt {
-                    db.set(&k, &v).unwrap();
-                } else {
-                    match db.del(&k) {
-                        Ok(_) => (),
-                        Err(lmdb_rs::MdbError::NotFound) => (),
-                        Err(e) => panic!("del error {:?}", e),
-                    }
-                }
-            }
-            locks.push(locked);
-        }
-        txn.commit().unwrap();
-        drop(locks);
+        self.check_pending_iters();
+        let mut from = [0u8; 4];
+        let mut to = [0u8; 4];
+        (&mut from[..]).write_u32::<BigEndian>(self.num).unwrap();
+        (&mut to[..]).write_u32::<BigEndian>(self.num + 1).unwrap();
+        self.db.delete_file_in_range(&from[..], &to[..]).unwrap();
+        self.db.delete_range(&from[..], &to[..]).unwrap();
     }
 
     pub fn sync(&self) {
         debug!("sync");
-        self.flush_buffer(true);
-        let _wlock = self.storages_handle.lock().unwrap();
-        self.env.sync(true).unwrap();
     }
-}
 
-impl Drop for StorageManager {
-    fn drop(&mut self) {
-        let sc = Arc::strong_count(&self.storages_handle);
-        let wc = Arc::weak_count(&self.storages_handle);
+    fn check_pending_iters(&self) {
+        let sc = Arc::strong_count(&self.iterators_handle);
+        let wc = Arc::weak_count(&self.iterators_handle);
         assert!(wc == 0);
         assert!(sc == 1, "{} pending databases", sc - 1);
     }
@@ -232,12 +150,7 @@ impl Drop for StorageManager {
 
 impl Drop for Storage {
     fn drop(&mut self) {
-        let mut wlock = self.storages_handle.lock().unwrap();
-        wlock.remove(&self.num);
-        let sc = Arc::strong_count(&self.iterators_handle);
-        let wc = Arc::weak_count(&self.iterators_handle);
-        assert!(wc == 0);
-        assert!(sc == 1, "{} pending iterators", wc - 1);
+        self.check_pending_iters();
     }
 }
 
@@ -254,22 +167,32 @@ pub struct StorageIter<'a> {
 impl<'a> Iterator for StorageIter<'a> {
     type Item = (&'a [u8], &'a [u8]);
     fn next(&mut self) -> Option<Self::Item> {
-        self.it.cursor.next().map(|cv| (cv.get_key(), cv.get_value()))
+        if self.it.first {
+            self.it.first = false;
+        } else {
+            self.it.iterator.next();
+        }
+        if self.it.iterator.valid() && self.it.iterator.key()[..4] == self.it.key_prefix[..] {
+            unsafe {
+                // safe as slices are valid until the next call to next
+                Some((mem::transmute(&self.it.iterator.key()[4..]),
+                      mem::transmute(self.it.iterator.value())))
+            }
+        } else {
+            None
+        }
     }
 }
 
 impl Drop for StorageIterator {
     fn drop(&mut self) {
-        // FIXME: super hack to make sure drops are done in the correct order
         unsafe {
-            use std::mem::transmute_copy;
-            transmute_copy::<_, NoDrop<lmdb_rs::core::CursorIterator<'static, lmdb_rs::CursorIter>>>(&self.cursor)
-                .into_inner();
-            transmute_copy::<_, NoDrop<Box<lmdb_rs::Database<'static>>>>(&self.db).into_inner();
-            transmute_copy::<_, NoDrop<Box<lmdb_rs::ReadonlyTransaction<'static>>>>(&self.tx)
-                .into_inner();
-            transmute_copy::<_, NoDrop<Box<lmdb_rs::DbHandle>>>(&self.db_h).into_inner();
-            transmute_copy::<_, NoDrop<Box<lmdb_rs::Environment>>>(&self.env).into_inner();
+            let snapshot: NoDrop<Box<rocksdb::rocksdb::Snapshot>> =
+                mem::transmute_copy(&self.snapshot);
+            let iterator: NoDrop<Box<rocksdb::rocksdb::DBIterator>> =
+                mem::transmute_copy(&self.iterator);
+            drop(iterator.into_inner());
+            drop(snapshot.into_inner());
         }
     }
 }
@@ -295,15 +218,22 @@ mod tests {
 
     #[test]
     fn test_iter2() {
-        let _ = fs::remove_dir_all("t/test_simple");
-        let sm = StorageManager::new("t/test_simple").unwrap();
-        let storage = sm.open(1, true).unwrap();
-        storage.set(b"1", b"1");
-        storage.set(b"2", b"2");
-        storage.set(b"3", b"3");
-        let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
-        assert_eq!(results, &[b"1", b"2", b"3"]);
-        drop(storage);
+        let _ = fs::remove_dir_all("t/test_iter2");
+        let sm = StorageManager::new("t/test_iter2").unwrap();
+        for &i in &[0, 1, 2] {
+            let storage = sm.open(i, true).unwrap();
+            storage.set(b"1", i.to_string().as_bytes());
+            storage.set(b"2", i.to_string().as_bytes());
+            storage.set(b"3", i.to_string().as_bytes());
+        }
+        for &i in &[0, 1, 2] {
+            let storage = sm.open(i, true).unwrap();
+            let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
+            assert_eq!(results,
+                       &[i.to_string().as_bytes(),
+                         i.to_string().as_bytes(),
+                         i.to_string().as_bytes()]);
+        }
     }
 
     #[test]

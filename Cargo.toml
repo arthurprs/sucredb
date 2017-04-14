@@ -10,7 +10,6 @@ serde_derive = "*"
 serde_json = "*"
 log = "*"
 env_logger = "*"
-lmdb-rs = "*"
 byteorder="*"
 nodrop="*"
 tokio-core = "*"
@@ -20,6 +19,10 @@ clap="*"
 crc16="*"
 metrics="*"
 lazy_static = "*"
+
+[dependencies.rocksdb]
+git = "https://github.com/pingcap/rust-rocksdb.git"
+features = ["static-link", "portable"]
 
 [dependencies.linear-map]
 git = "https://github.com/arthurprs/linear-map.git"

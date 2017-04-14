@@ -61,7 +61,7 @@ macro_rules! vnode {
 impl Database {
     pub fn new(config: &Config, response_fn: DatabaseResponseFn) -> Arc<Database> {
         let storage_manager = StorageManager::new(&config.data_dir).unwrap();
-        let meta_storage = storage_manager.open(-1, true).unwrap();
+        let meta_storage = storage_manager.open(u32::max_value(), true).unwrap();
 
         let (old_node, node) = if let Some(s_node) = meta_storage.get_vec(b"node") {
             let prev_node = String::from_utf8(s_node).unwrap().parse::<NodeId>().unwrap();
@@ -112,30 +112,36 @@ impl Database {
                               stats: Default::default(),
                           });
 
-        db.workers.lock().unwrap().start(|| {
-            let cdb = Arc::downgrade(&db);
-            Box::new(move |chan| {
-                for wm in chan {
-                    let db = if let Some(db) = cdb.upgrade() {
-                        db
-                    } else {
-                        break;
-                    };
-                    trace!("worker {} got msg {:?}", ::std::thread::current().name().unwrap(), wm);
-                    match wm {
-                        WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
-                        WorkerMsg::Tick(time) => db.handler_tick(time),
-                        WorkerMsg::Command(token, cmd) => db.handler_cmd(token, cmd),
-                        WorkerMsg::DHTChange => db.handler_dht_change(),
-                        WorkerMsg::Exit => break,
+        db.workers
+            .lock()
+            .unwrap()
+            .start(|| {
+                let cdb = Arc::downgrade(&db);
+                Box::new(move |chan| {
+                    for wm in chan {
+                        let db = if let Some(db) = cdb.upgrade() {
+                            db
+                        } else {
+                            break;
+                        };
+                        trace!("worker {} got msg {:?}",
+                               ::std::thread::current().name().unwrap(),
+                               wm);
+                        match wm {
+                            WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
+                            WorkerMsg::Tick(time) => db.handler_tick(time),
+                            WorkerMsg::Command(token, cmd) => db.handler_cmd(token, cmd),
+                            WorkerMsg::DHTChange => db.handler_dht_change(),
+                            WorkerMsg::Exit => break,
+                        }
                     }
-                }
-                info!("Exiting worker")
-            })
-        });
+                    info!("Exiting worker")
+                })
+            });
 
         let mut dht_change_sender = db.sender();
-        db.dht.set_callback(Box::new(move || { dht_change_sender.send(WorkerMsg::DHTChange); }));
+        db.dht
+            .set_callback(Box::new(move || { dht_change_sender.send(WorkerMsg::DHTChange); }));
 
         // register nodes into fabric
         db.fabric.set_nodes(db.dht.members().into_iter());
@@ -641,7 +647,6 @@ mod tests {
 
         // sim unclean shutdown
         warn!("killing db1");
-        assert_ne!(db1.storage_manager.drop_buffer(), 0);
         drop(db1);
         db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", false);
 

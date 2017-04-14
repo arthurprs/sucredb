@@ -155,8 +155,11 @@ impl Database {
                 let mut slots = Vec::new();
                 for (&(start, end), members) in self.dht.slots().iter() {
                     let mut slot = vec![RespValue::Int(start as _), RespValue::Int(end as _)];
-                    slot.extend(members.iter().map(|&(node, (_, ext_addr))| {
-                        RespValue::Array(vec![RespValue::Data(ext_addr.ip()
+                    slot.extend(members
+                                    .iter()
+                                    .map(|&(node, (_, ext_addr))| {
+                        RespValue::Array(vec![RespValue::Data(ext_addr
+                                                                  .ip()
                                                                   .to_string()
                                                                   .as_bytes()
                                                                   .into()),

@@ -177,17 +177,19 @@ pub fn deserialize_bitmap<D>(deserializer: D) -> Result<RoaringTreemap, D::Error
     use serde::de::Error;
     use serde::bytes::ByteBufVisitor;
 
-    deserializer.deserialize_bytes(ByteBufVisitor).and_then(|buffer| {
-        let mut buffer = &buffer[..];
-        let bitmap_count = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
-        let mut bitmaps = Vec::with_capacity(bitmap_count as usize);
-        for _ in 0..bitmap_count {
-            let p = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
-            let b = RoaringBitmap::deserialize_from(&mut buffer).map_err(Error::custom)?;
-            bitmaps.push((p, b));
-        }
-        Ok(RoaringTreemap::from_bitmaps(bitmaps))
-    })
+    deserializer
+        .deserialize_bytes(ByteBufVisitor)
+        .and_then(|buffer| {
+            let mut buffer = &buffer[..];
+            let bitmap_count = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
+            let mut bitmaps = Vec::with_capacity(bitmap_count as usize);
+            for _ in 0..bitmap_count {
+                let p = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
+                let b = RoaringBitmap::deserialize_from(&mut buffer).map_err(Error::custom)?;
+                bitmaps.push((p, b));
+            }
+            Ok(RoaringTreemap::from_bitmaps(bitmaps))
+        })
 }
 
 impl BitmappedVersionVector {
@@ -303,10 +305,13 @@ impl BitmappedVersionVector {
             .collect();
         let empty_bv = BitmappedVersion::new(0, 0);
         let other = other.clone();
-        let iter = self.0.clone().into_iter().flat_map(move |(id, bv)| {
-            let other_bv = other.get(id).unwrap_or(&empty_bv);
-            bv.delta(other_bv).map(move |v| (id, v))
-        });
+        let iter = self.0
+            .clone()
+            .into_iter()
+            .flat_map(move |(id, bv)| {
+                let other_bv = other.get(id).unwrap_or(&empty_bv);
+                bv.delta(other_bv).map(move |v| (id, v))
+            });
         BitmappedVersionVectorDelta {
             iter: Box::new(iter),
             min_versions: min_versions,
