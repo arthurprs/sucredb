@@ -310,6 +310,7 @@ impl<T: Metadata> DHT<T> {
             etcd_client: etcd_client1,
         };
         if let Some(description) = initial {
+            assert!(description.partitions <= 4 * 1024);
             dht.reset(meta, description.replication_factor, description.partitions);
         } else if let Some(old) = old_node {
             dht.replace(old, meta);

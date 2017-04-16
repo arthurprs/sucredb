@@ -746,7 +746,7 @@ impl VNodeState {
 
     fn new_empty(num: u16, db: &Database, status: VNodeStatus) -> Self {
         db.meta_storage.del(num.to_string().as_bytes());
-        let storage = db.storage_manager.open(num as u32, true).unwrap();
+        let storage = db.storage_manager.open(num, true).unwrap();
         storage.clear();
 
         VNodeState {
@@ -778,9 +778,9 @@ impl VNodeState {
         } = saved_state_opt.unwrap();
 
         let storage = match status {
-            VNodeStatus::Ready => db.storage_manager.open(num as u32, true).unwrap(),
+            VNodeStatus::Ready => db.storage_manager.open(num, true).unwrap(),
             VNodeStatus::Absent | VNodeStatus::Bootstrap => {
-                let storage = db.storage_manager.open(num as u32, true).unwrap();
+                let storage = db.storage_manager.open(num, true).unwrap();
                 storage.clear();
                 storage
             }

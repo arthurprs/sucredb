@@ -61,7 +61,7 @@ macro_rules! vnode {
 impl Database {
     pub fn new(config: &Config, response_fn: DatabaseResponseFn) -> Arc<Database> {
         let storage_manager = StorageManager::new(&config.data_dir).unwrap();
-        let meta_storage = storage_manager.open(u32::max_value(), true).unwrap();
+        let meta_storage = storage_manager.open(u16::max_value(), true).unwrap();
 
         let (old_node, node) = if let Some(s_node) = meta_storage.get_vec(b"node") {
             let prev_node = String::from_utf8(s_node).unwrap().parse::<NodeId>().unwrap();

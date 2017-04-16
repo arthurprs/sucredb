@@ -8,15 +8,15 @@ use byteorder::{BigEndian, WriteBytesExt};
 use utils::*;
 use nodrop::NoDrop;
 
-struct U32BeSuffixTransform;
+struct U16BeSuffixTransform;
 
-impl rocksdb::SliceTransform for U32BeSuffixTransform {
+impl rocksdb::SliceTransform for U16BeSuffixTransform {
     fn transform<'a>(&mut self, key: &'a [u8]) -> &'a [u8] {
-        &key[..4]
+        &key[..2]
     }
 
     fn in_domain(&mut self, key: &[u8]) -> bool {
-        key.len() >= 4
+        key.len() >= 2
     }
 }
 
@@ -29,8 +29,8 @@ pub struct StorageManager {
 // safe-ish iterators that don't require a lifetime attached to them.
 pub struct Storage {
     db: Arc<rocksdb::DB>,
-    num: u32,
     iterators_handle: Arc<()>,
+    num: u16,
 }
 
 pub struct StorageIterator {
@@ -38,7 +38,7 @@ pub struct StorageIterator {
     snapshot: NoDrop<Box<rocksdb::rocksdb::Snapshot<'static>>>,
     iterator: NoDrop<Box<rocksdb::rocksdb::DBIterator<'static>>>,
     iterators_handle: Arc<()>,
-    key_prefix: [u8; 4],
+    key_prefix: [u8; 2],
     first: bool,
 }
 
@@ -48,8 +48,13 @@ impl StorageManager {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<StorageManager, GenericError> {
         let mut opts = rocksdb::Options::new();
         opts.create_if_missing(true);
-        opts.set_prefix_extractor("U32BeSuffixTransform", Box::new(U32BeSuffixTransform))
+        opts.compression(rocksdb::DBCompressionType::DBLz4);
+        opts.set_prefix_extractor("U16BeSuffixTransform", Box::new(U16BeSuffixTransform))
             .unwrap();
+        let mut block_opts = rocksdb::BlockBasedOptions::new();
+        block_opts.set_bloom_filter(10, false);
+        block_opts.set_lru_cache(128 * 1024 * 1024);
+        opts.set_block_based_table_factory(&block_opts);
         // TODO: Rocksdb is complicated, we might want to tune some more options
         let db = rocksdb::DB::open(opts, path.as_ref().to_str().unwrap()).unwrap();
         Ok(StorageManager {
@@ -58,7 +63,7 @@ impl StorageManager {
            })
     }
 
-    pub fn open(&self, db_num: u32, _create: bool) -> Result<Storage, GenericError> {
+    pub fn open(&self, db_num: u16, _create: bool) -> Result<Storage, GenericError> {
         Ok(Storage {
                db: self.db.clone(),
                num: db_num,
@@ -79,16 +84,16 @@ impl Drop for StorageManager {
 impl Storage {
     pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
         let mut buffer = [0u8; 512];
-        (&mut buffer[..4]).write_u32::<BigEndian>(self.num).unwrap();
-        (&mut buffer[4..]).write_all(key).unwrap();
-        let r = self.db.get(&buffer[..4 + key.len()]).unwrap();
+        (&mut buffer[..2]).write_u16::<BigEndian>(self.num).unwrap();
+        (&mut buffer[2..]).write_all(key).unwrap();
+        let r = self.db.get(&buffer[..2 + key.len()]).unwrap();
         trace!("get {:?} ({:?} bytes)", str::from_utf8(key), r.as_ref().map(|x| x.len()));
         r.map(|r| callback(r.deref()))
     }
 
     pub fn iterator(&self) -> StorageIterator {
-        let mut key_prefix = [0u8; 4];
-        (&mut key_prefix[..]).write_u32::<BigEndian>(self.num).unwrap();
+        let mut key_prefix = [0u8; 2];
+        (&mut key_prefix[..]).write_u16::<BigEndian>(self.num).unwrap();
         unsafe {
             let snapshot = NoDrop::new(Box::new(self.db.snapshot()));
             let mut iterator = NoDrop::new(Box::new(snapshot.iter()));
@@ -112,26 +117,26 @@ impl Storage {
     pub fn set(&self, key: &[u8], value: &[u8]) {
         trace!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
         let mut buffer = [0u8; 512];
-        (&mut buffer[..4]).write_u32::<BigEndian>(self.num).unwrap();
-        (&mut buffer[4..]).write_all(key).unwrap();
-        self.db.put(&buffer[..4 + key.len()], value).unwrap();
+        (&mut buffer[..2]).write_u16::<BigEndian>(self.num).unwrap();
+        (&mut buffer[2..]).write_all(key).unwrap();
+        self.db.put(&buffer[..2 + key.len()], value).unwrap();
     }
 
     pub fn del(&self, key: &[u8]) {
         trace!("del {:?}", str::from_utf8(key));
         let mut buffer = [0u8; 512];
-        (&mut buffer[..4]).write_u32::<BigEndian>(self.num).unwrap();
-        (&mut buffer[4..]).write_all(key).unwrap();
-        self.db.delete(&buffer[..4 + key.len()]).unwrap()
+        (&mut buffer[..2]).write_u16::<BigEndian>(self.num).unwrap();
+        (&mut buffer[2..]).write_all(key).unwrap();
+        self.db.delete(&buffer[..2 + key.len()]).unwrap()
     }
 
     pub fn clear(&self) {
         trace!("clear");
         self.check_pending_iters();
-        let mut from = [0u8; 4];
-        let mut to = [0u8; 4];
-        (&mut from[..]).write_u32::<BigEndian>(self.num).unwrap();
-        (&mut to[..]).write_u32::<BigEndian>(self.num + 1).unwrap();
+        let mut from = [0u8; 2];
+        let mut to = [0u8; 2];
+        (&mut from[..]).write_u16::<BigEndian>(self.num).unwrap();
+        (&mut to[..]).write_u16::<BigEndian>(self.num + 1).unwrap();
         self.db.delete_file_in_range(&from[..], &to[..]).unwrap();
         self.db.delete_range(&from[..], &to[..]).unwrap();
     }
@@ -172,10 +177,10 @@ impl<'a> Iterator for StorageIter<'a> {
         } else {
             self.it.iterator.next();
         }
-        if self.it.iterator.valid() && self.it.iterator.key()[..4] == self.it.key_prefix[..] {
+        if self.it.iterator.valid() && self.it.iterator.key()[..2] == self.it.key_prefix[..] {
             unsafe {
                 // safe as slices are valid until the next call to next
-                Some((mem::transmute(&self.it.iterator.key()[4..]),
+                Some((mem::transmute(&self.it.iterator.key()[2..]),
                       mem::transmute(self.it.iterator.value())))
             }
         } else {
@@ -233,6 +238,29 @@ mod tests {
                        &[i.to_string().as_bytes(),
                          i.to_string().as_bytes(),
                          i.to_string().as_bytes()]);
+        }
+    }
+
+    #[test]
+    fn test_clear() {
+        let _ = fs::remove_dir_all("t/test_clear");
+        let sm = StorageManager::new("t/test_clear").unwrap();
+        for &i in &[0, 1, 2] {
+            let storage = sm.open(i, true).unwrap();
+            storage.set(b"1", i.to_string().as_bytes());
+            storage.set(b"2", i.to_string().as_bytes());
+            storage.set(b"3", i.to_string().as_bytes());
+        }
+        for &i in &[0, 1, 2] {
+            let storage = sm.open(i, true).unwrap();
+            let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
+            assert_eq!(results,
+                       &[i.to_string().as_bytes(),
+                         i.to_string().as_bytes(),
+                         i.to_string().as_bytes()]);
+            storage.clear();
+            let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
+            assert_eq!(results.len(), 0);
         }
     }
 
