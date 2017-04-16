@@ -48,9 +48,19 @@ impl StorageManager {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<StorageManager, GenericError> {
         let mut opts = rocksdb::Options::new();
         opts.create_if_missing(true);
-        opts.compression(rocksdb::DBCompressionType::DBLz4);
         opts.set_prefix_extractor("U16BeSuffixTransform", Box::new(U16BeSuffixTransform))
             .unwrap();
+        opts.compression_per_level(&[rocksdb::DBCompressionType::DBNo,
+                                     rocksdb::DBCompressionType::DBNo,
+                                     rocksdb::DBCompressionType::DBLz4,
+                                     rocksdb::DBCompressionType::DBLz4,
+                                     rocksdb::DBCompressionType::DBLz4,
+                                     rocksdb::DBCompressionType::DBLz4,
+                                     rocksdb::DBCompressionType::DBLz4]);
+        opts.set_write_buffer_size(32 * 4 * 1024);
+        opts.set_max_bytes_for_level_base(128 * 1024 * 1024);
+        opts.set_max_write_buffer_number(3);
+        opts.set_max_background_flushes(3);
         let mut block_opts = rocksdb::BlockBasedOptions::new();
         block_opts.set_bloom_filter(10, false);
         block_opts.set_lru_cache(128 * 1024 * 1024);

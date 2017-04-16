@@ -43,7 +43,7 @@ Code quality and commit messages could be of subpar quality, I'll try to improve
 * [x] cluster tests
 * [ ] more cluster tests
 * [ ] configurations everywhere
-* [ ] proper storage module
+* [x] proper storage module
 * [x] metrics
 * [ ] expose metrics
 * [ ] config file
