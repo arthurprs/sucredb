@@ -43,7 +43,6 @@ pub struct VNodeState {
     num: u16,
     status: VNodeStatus,
     last_status_change: Instant,
-    unflushed_coord_writes: usize,
     pub clocks: BitmappedVersionVector,
     pub logs: IdHashMap<NodeId, VNodeLog>,
     pub storage: Storage,
@@ -59,9 +58,10 @@ struct SavedVNodeState {
     clean_shutdown: bool,
 }
 
+// TODO: we never shrink the log
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct VNodeLog {
-    knowledge: Version,
+    knowledge: IdHashMap<NodeId, Version>,
     log: BTreeMap<Version, Bytes>,
 }
 
@@ -78,16 +78,21 @@ struct ReqState {
 impl VNodeLog {
     fn new() -> VNodeLog {
         VNodeLog {
-            knowledge: 0,
+            knowledge: Default::default(),
             log: Default::default(),
         }
     }
 
-    // TODO: gc log
-    // fn advance_knowledge(&mut self, until: Version) {
-    //     debug_assert!(until >= self.knowledge);
-    //     self.knowledge = until;
-    // }
+    fn advance_knowledge(&mut self, peer: NodeId, until: Version) {
+        match self.knowledge.entry(peer) {
+            HMEntry::Vacant(v) => {v.insert(until);},
+            HMEntry::Occupied(mut o) => {
+                if *o.get() < until {
+                    *o.get_mut() = until;
+                }
+            }
+        }
+    }
 
     pub fn log(&mut self, version: Version, key: Bytes) {
         let min = self.min_version().unwrap_or(0);
@@ -110,6 +115,10 @@ impl VNodeLog {
 
     pub fn clear(&mut self) {
         *self = Self::new();
+    }
+
+    pub fn gc(&mut self) {
+        unimplemented!()
     }
 }
 
@@ -520,6 +529,12 @@ impl VNode {
                 }
                 Some(target) => {
                     assert_eq!(target, db.dht.node());
+                    // track what our peer knows
+                    for (&node, bvv) in msg.clocks_in_peer.iter() {
+                        self.state.logs.entry(node).
+                            or_insert_with(Default::default).
+                            advance_knowledge(from, bvv.base());
+                    }
                     info!("starting sync sender {:?} peer:{}", cookie, from);
                     Synchronization::new_sync_sender(db, &mut self.state, from, msg)
                 }
@@ -756,7 +771,6 @@ impl VNodeState {
             clocks: BitmappedVersionVector::new(),
             logs: Default::default(),
             storage: storage,
-            unflushed_coord_writes: 0,
             pending_bootstrap: false,
             sync_nodes: Default::default(),
         }
@@ -820,7 +834,6 @@ impl VNodeState {
             clocks: clocks,
             storage: storage,
             logs: logs,
-            unflushed_coord_writes: 0,
             sync_nodes: Default::default(),
             pending_bootstrap: false,
         }
@@ -881,12 +894,6 @@ impl VNodeState {
             .entry(db.dht.node())
             .or_insert_with(Default::default)
             .log(dot, key.into());
-
-        self.unflushed_coord_writes += 1;
-        if self.unflushed_coord_writes >= PEER_LOG_SIZE / 2 {
-            self.save(db, false);
-            self.unflushed_coord_writes = 0;
-        }
 
         // FIXME: we striped above so we have to fill again :(
         dcc.fill(&self.clocks);

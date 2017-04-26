@@ -33,6 +33,7 @@ pub struct Config {
     pub value_version_max: u16,
     pub consistency_read: ConsistencyLevel,
     pub consistency_write: ConsistencyLevel,
+    // TODO: add config for socket buffers
 }
 
 impl Default for Config {
@@ -50,7 +51,7 @@ impl Default for Config {
             sync_outgoing_max: 1,
             sync_timeout: 10_000,
             sync_msg_timeout: 1000,
-            sync_msg_inflight: 5,
+            sync_msg_inflight: 10,
             sync_auto: true,
             fabric_reconnect_interval: 1000,
             fabric_keepalive: 1000,

@@ -31,22 +31,24 @@ Code quality and commit messages could be of subpar quality, I'll try to improve
 * [x] when log isn't enough to satisfy sync, iter the database sending necessary dots
 * [x] propagate dht notifications to vnodes and take actions
 * [ ] dead node handling (either with gossip or smarter fabric)
-* [ ] pruning old nodes from node clocks (is it possible?)
-* [ ] persisted log (is this a good idea?)
 * [x] prevent log overflow from crashing ongoing syncs
-* [ ] track deleted keys pending physical deletion (is this a good idea?)
-* [ ] gc dot->key log
 * [x] limit # of syncs on both directions by config
 * [x] cluster name
 * [ ] cluster handling api (join/leave/rebalance)
-* [ ] smarter rebalance
 * [x] cluster tests
 * [ ] more cluster tests
-* [ ] configurations everywhere
 * [x] proper storage module
 * [x] metrics
 * [ ] expose metrics
 * [ ] config file
 * [ ] better logging
-* [ ] modernize tokio servers (client and fabric)
 * [ ] CI like Travis
+
+* [ ] modernize tokio servers (client and fabric)
+* [ ] configurations everywhere
+* [ ] smarter rebalance
+* [ ] track deleted keys pending physical deletion (is this a good idea?)
+* [ ] gc dot->key log
+* [ ] better dot->key log
+* [ ] persisted dot->key (is this a good idea?)
+* [ ] pruning old nodes from node clocks (is it possible?)
