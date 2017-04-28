@@ -21,8 +21,9 @@ metrics="*"
 lazy_static = "*"
 
 [dependencies.rocksdb]
-git = "https://github.com/pingcap/rust-rocksdb.git"
+git = "https://github.com/arthurprs/rust-rocksdb.git"
 features = ["static-link", "portable"]
+branch = "sync_wal"
 
 [dependencies.linear-map]
 git = "https://github.com/arthurprs/linear-map.git"
@@ -43,9 +44,6 @@ git = "https://github.com/arthurprs/roaring-rs"
 version="*"
 default-features = false
 features = ["nightly"]
-
-[profile.dev]
-codegen-units = 4
 
 # for profiling
 # [profile.release]
