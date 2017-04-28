@@ -74,7 +74,7 @@ pub fn write_json_to_file<T: serde::Serialize, P: AsRef<path::Path>>
     Ok(())
 }
 
-pub fn read_json_from_file<T: serde::Deserialize, P: AsRef<path::Path>>
+pub fn read_json_from_file<T: serde::de::DeserializeOwned, P: AsRef<path::Path>>
     (path: P)
      -> Result<T, GenericError> {
     let file = fs::File::open(path)?;

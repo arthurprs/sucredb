@@ -36,8 +36,8 @@ pub enum ConsistencyLevel {
 pub struct ConsistencyLevelParseError;
 
 impl<'a> TryFrom<&'a [u8]> for ConsistencyLevel {
-    type Err = ConsistencyLevelParseError;
-    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Err> {
+    type Error = ConsistencyLevelParseError;
+    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
         if bytes.len() > 0 {
             match bytes[0] {
                 b'1' | b'o' | b'O' => return Ok(ConsistencyLevel::One),

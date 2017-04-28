@@ -806,7 +806,7 @@ impl VNodeState {
             let mut iter = storage.iterator();
             let mut count = 0;
             for (k, v) in iter.iter() {
-                let dcc: DottedCausalContainer<Bytes> = bincode::deserialize(v).unwrap();
+                let dcc: DottedCausalContainer<&[u8]> = bincode::deserialize(v).unwrap();
                 dcc.add_to_bvv(&mut clocks);
                 for (&(node, version), _) in dcc.iter() {
                     logs.entry(node).or_insert_with(Default::default).log(version, k.into());

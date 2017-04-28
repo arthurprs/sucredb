@@ -4,7 +4,8 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet, BTreeMap};
 use linear_map::set::LinearSet;
-use serde::{Serialize, Deserialize};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json;
 use hash::{hash_slot, HASH_SLOTS};
 use database::{NodeId, VNodeId};
@@ -13,10 +14,10 @@ use utils::{IdHashMap, GenericError};
 
 pub type DHTChangeFn = Box<FnMut() + Send>;
 pub trait Metadata
-    : Clone + Serialize + Deserialize + Send + fmt::Debug + 'static {
+    : Clone + Serialize + DeserializeOwned + Send + fmt::Debug + 'static {
 }
 
-impl<T: Clone + Serialize + Deserialize + Send + fmt::Debug + 'static> Metadata for T {}
+impl<T: Clone + Serialize + DeserializeOwned + Send + fmt::Debug + 'static> Metadata for T {}
 
 /// The Cluster controller, it knows how to map keys to their vnodes and
 //// whose nodes hold data for each vnodes.
@@ -47,6 +48,7 @@ struct Inner<T: Metadata> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(bound="T: DeserializeOwned")]
 pub struct Ring<T: Metadata> {
     replication_factor: usize,
     vnodes: Vec<LinearSet<NodeId>>,

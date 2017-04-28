@@ -171,14 +171,38 @@ pub fn serialize_bitmap<S>(value: &RoaringTreemap, serializer: S) -> Result<S::O
     serializer.serialize_bytes(&buffer)
 }
 
-pub fn deserialize_bitmap<D>(deserializer: D) -> Result<RoaringTreemap, D::Error>
-    where D: serde::Deserializer
+pub fn deserialize_bitmap<'de, D>(deserializer: D) -> Result<RoaringTreemap, D::Error>
+    where D: serde::Deserializer<'de>
 {
-    use serde::de::Error;
-    use serde::bytes::ByteBufVisitor;
+    use serde::de::{Error, Visitor};
+    use std::fmt;
+
+    struct ByteBufVisitor;
+
+    impl<'de> Visitor<'de> for ByteBufVisitor {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("byte array")
+        }
+
+        #[inline]
+        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where E: Error
+        {
+            Ok(Self::Value::from(v))
+        }
+
+        #[inline]
+        fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
+            where E: Error
+        {
+            Ok(Self::Value::from(v))
+        }
+    }
 
     deserializer
-        .deserialize_bytes(ByteBufVisitor)
+        .deserialize_byte_buf(ByteBufVisitor)
         .and_then(|buffer| {
             let mut buffer = &buffer[..];
             let bitmap_count = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
@@ -469,6 +493,10 @@ impl<T> DottedCausalContainer<T> {
 
     pub fn iter(&self) -> linear_map::Iter<(Id, Version), T> {
         self.dots.0.iter()
+    }
+
+    pub fn into_iter(self) -> linear_map::IntoIter<(Id, Version), T> {
+        self.dots.0.into_iter()
     }
 
     pub fn values(&self) -> linear_map::Values<(Id, Version), T> {

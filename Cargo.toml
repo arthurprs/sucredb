@@ -30,12 +30,11 @@ features = ["serde_impl"]
 
 [dependencies.bincode]
 git = "https://github.com/TyOverby/bincode.git"
-commit="c971c4956d3719c62fa07e385b349428b94dddf7"
 
 [dependencies.bytes]
 git = "https://github.com/arthurprs/bytes"
 branch = "serde"
-features = ["serde_impl"]
+features = ["serde"]
 
 [dependencies.roaring]
 git = "https://github.com/arthurprs/roaring-rs"

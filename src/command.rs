@@ -82,7 +82,9 @@ impl Database {
                 self.respond(token, cmd.clone());
                 Ok(())
             }
-            b"ASKING" | b"asking" => {
+            b"ASKING" | b"asking" |
+            b"READONLY" | b"readonly" |
+            b"READWRITE" | b"readwrite" => {
                 self.respond_ok(token);
                 Ok(())
             }
@@ -201,8 +203,8 @@ impl Database {
 }
 
 fn dcc_to_resp(dcc: DottedCausalContainer<Bytes>) -> RespValue {
-    let mut values: Vec<_> = dcc.values().map(|v| RespValue::Data(v.clone())).collect();
-    let buffer = bincode::serialize(dcc.version_vector(), bincode::Infinite).unwrap();
-    values.push(RespValue::Data(buffer.as_slice().into()));
+    let serialized_vv = bincode::serialize(dcc.version_vector(), bincode::Infinite).unwrap();
+    let mut values: Vec<_> = dcc.into_iter().map(|(_, v)| RespValue::Data(v)).collect();
+    values.push(RespValue::Data(serialized_vv.into()));
     RespValue::Array(values)
 }
