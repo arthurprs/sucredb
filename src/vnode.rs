@@ -697,8 +697,8 @@ impl VNode {
             let cookie = self.gen_cookie();
             self.state.sync_nodes.insert(node);
             info!("starting sync receiver {:?} peer:{}", cookie, node);
-            // TODO: sync storage here
-            // so we ensure that we really have what we tell the peers
+            // sync storage so we ensure that we really have what we tell the peers
+            self.state.storage.sync();
             let sync = Synchronization::new_sync_receiver(db, &mut self.state, node, cookie);
             match self.syncs.entry(cookie) {
                 HMEntry::Vacant(v) => {

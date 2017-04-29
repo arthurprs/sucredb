@@ -153,8 +153,7 @@ impl Storage {
 
     pub fn sync(&self) {
         debug!("sync");
-        // not really a sync but should be good enough for now
-        self.db.flush(true).unwrap();
+        self.db.sync_wal().unwrap();
     }
 
     fn check_pending_iters(&self) {

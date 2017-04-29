@@ -311,7 +311,7 @@ impl Fabric {
                                    nodes_addr: Default::default(),
                                    msg_handlers: Default::default(),
                                    writer_chans: Default::default(),
-                                   chan_id_gen: AtomicUsize::new(0),
+                                   chan_id_gen: Default::default(),
                                });
         let init_result = tokio::net::TcpListener::bind(&context.addr, &handle)
             .map(|listener| {
