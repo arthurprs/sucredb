@@ -152,7 +152,8 @@ impl BitmappedVersionVectorDelta {
 }
 
 pub fn serialize_bitmap<S>(value: &RoaringTreemap, serializer: S) -> Result<S::Ok, S::Error>
-    where S: serde::Serializer
+where
+    S: serde::Serializer,
 {
     use serde::ser::Error;
 
@@ -172,7 +173,8 @@ pub fn serialize_bitmap<S>(value: &RoaringTreemap, serializer: S) -> Result<S::O
 }
 
 pub fn deserialize_bitmap<'de, D>(deserializer: D) -> Result<RoaringTreemap, D::Error>
-    where D: serde::Deserializer<'de>
+where
+    D: serde::Deserializer<'de>,
 {
     use serde::de::{Error, Visitor};
     use std::fmt;
@@ -187,29 +189,37 @@ pub fn deserialize_bitmap<'de, D>(deserializer: D) -> Result<RoaringTreemap, D::
         }
 
         #[inline]
-        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E> where E: Error {
+        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
             Ok(Self::Value::from(v))
         }
 
         #[inline]
-        fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E> where E: Error {
+        fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
             Ok(Self::Value::from(v))
         }
     }
 
     deserializer
         .deserialize_byte_buf(ByteBufVisitor)
-        .and_then(|buffer| {
-            let mut buffer = &buffer[..];
-            let bitmap_count = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
-            let mut bitmaps = Vec::with_capacity(bitmap_count as usize);
-            for _ in 0..bitmap_count {
-                let p = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
-                let b = RoaringBitmap::deserialize_from(&mut buffer).map_err(Error::custom)?;
-                bitmaps.push((p, b));
-            }
-            Ok(RoaringTreemap::from_bitmaps(bitmaps))
-        })
+        .and_then(
+            |buffer| {
+                let mut buffer = &buffer[..];
+                let bitmap_count = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
+                let mut bitmaps = Vec::with_capacity(bitmap_count as usize);
+                for _ in 0..bitmap_count {
+                    let p = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
+                    let b = RoaringBitmap::deserialize_from(&mut buffer).map_err(Error::custom)?;
+                    bitmaps.push((p, b));
+                }
+                Ok(RoaringTreemap::from_bitmaps(bitmaps))
+            },
+        )
 }
 
 impl BitmappedVersionVector {
@@ -315,23 +325,27 @@ impl BitmappedVersionVector {
     pub fn delta(&self, other: &Self) -> BitmappedVersionVectorDelta {
         let min_versions: Vec<_> = self.0
             .iter()
-            .filter_map(|(&id, bv)| {
-                if let Some(other_bv) = other.get(id) {
-                    bv.delta(other_bv).map(move |v| (id, v)).next()
-                } else {
-                    Some((id, 1)) // start from 1 if the other bv don't have this node
-                }
-            })
+            .filter_map(
+                |(&id, bv)| {
+                    if let Some(other_bv) = other.get(id) {
+                        bv.delta(other_bv).map(move |v| (id, v)).next()
+                    } else {
+                        Some((id, 1)) // start from 1 if the other bv don't have this node
+                    }
+                },
+            )
             .collect();
         let empty_bv = BitmappedVersion::new(0, 0);
         let other = other.clone();
         let iter = self.0
             .clone()
             .into_iter()
-            .flat_map(move |(id, bv)| {
-                let other_bv = other.get(id).unwrap_or(&empty_bv);
-                bv.delta(other_bv).map(move |v| (id, v))
-            });
+            .flat_map(
+                move |(id, bv)| {
+                    let other_bv = other.get(id).unwrap_or(&empty_bv);
+                    bv.delta(other_bv).map(move |v| (id, v))
+                },
+            );
         BitmappedVersionVectorDelta {
             iter: Box::new(iter),
             min_versions: min_versions,
@@ -609,8 +623,10 @@ mod test_bvv {
         bvv2.0.insert(4, BitmappedVersion::new(6, 0b1));
         bvv1.0.insert(5, BitmappedVersion::new(2, 0));
         let delta_dots: Vec<_> = bvv1.delta(&bvv2).collect();
-        assert_eq!(vec![(1, 3), (1, 4), (1, 7), (2, 3), (2, 4), (2, 6), (2, 7), (5, 1), (5, 2)],
-                   delta_dots);
+        assert_eq!(
+            vec![(1, 3), (1, 4), (1, 7), (2, 3), (2, 4), (2, 6), (2, 7), (5, 1), (5, 2)],
+            delta_dots
+        );
         let min_versions: Vec<_> = bvv1.delta(&bvv2).min_versions().to_owned();
         assert_eq!(vec![(1, 3), (2, 3), (5, 1)], min_versions);
     }

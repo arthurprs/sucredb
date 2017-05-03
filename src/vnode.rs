@@ -234,12 +234,14 @@ impl VNode {
         let pend = if self.state.pending_bootstrap { 1 } else { 0 };
         self.syncs
             .values()
-            .fold((0 + pend, 0), |(inc, out), s| match *s {
-                Synchronization::BootstrapReceiver { .. } |
-                Synchronization::SyncReceiver { .. } => (inc + 1, out),
-                Synchronization::BootstrapSender { .. } |
-                Synchronization::SyncSender { .. } => (inc, out + 1),
-            })
+            .fold(
+                (0 + pend, 0), |(inc, out), s| match *s {
+                    Synchronization::BootstrapReceiver { .. } |
+                    Synchronization::SyncReceiver { .. } => (inc + 1, out),
+                    Synchronization::BootstrapSender { .. } |
+                    Synchronization::SyncSender { .. } => (inc, out + 1),
+                }
+            )
     }
 
     fn gen_cookie(&self) -> Cookie {
@@ -262,13 +264,14 @@ impl VNode {
                     let state = &mut self.state;
                     let canceled = self.syncs
                         .iter_mut()
-                        .filter_map(|(&cookie, m)| if let SyncDirection::Incomming =
-                            m.direction() {
-                                        m.on_cancel(db, state);
-                                        Some(cookie)
-                                    } else {
-                                        None
-                                    })
+                        .filter_map(
+                            |(&cookie, m)| if let SyncDirection::Incomming = m.direction() {
+                                m.on_cancel(db, state);
+                                Some(cookie)
+                            } else {
+                                None
+                            },
+                        )
                         .collect::<Vec<_>>();
                     for cookie in canceled {
                         self.syncs.remove(&cookie).unwrap().on_remove(db, state);
@@ -317,10 +320,12 @@ impl VNode {
             let state = &mut self.state;
             self.syncs
                 .iter_mut()
-                .filter_map(|(&cookie, s)| match s.on_tick(db, state) {
-                                SyncResult::Continue => None,
-                                result => Some((cookie, result)),
-                            })
+                .filter_map(
+                    |(&cookie, s)| match s.on_tick(db, state) {
+                        SyncResult::Continue => None,
+                        result => Some((cookie, result)),
+                    },
+                )
                 .collect::<Vec<_>>()
         };
         for (cookie, result) in terminated_syncs {
@@ -343,8 +348,7 @@ impl VNode {
     }
 
     // CLIENT CRUD
-    pub fn do_get(&mut self, db: &Database, token: Token, key: &[u8],
-                  consistency: ConsistencyLevel) {
+    pub fn do_get(&mut self, db: &Database, token: Token, key: &[u8], consistency: ConsistencyLevel) {
         debug!("vnode:{:?} do_get ({:?}) {:?}", self.state.num(), token, consistency);
         // TODO: lots of optimizations to be done here
         let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
@@ -359,18 +363,19 @@ impl VNode {
                 self.process_get(db, cookie, Some(container));
             } else {
                 let _ = db.fabric
-                    .send_msg(node,
-                              MsgRemoteGet {
-                                  cookie: cookie,
-                                  vnode: self.state.num,
-                                  key: key.into(),
-                              });
+                    .send_msg(
+                        node,
+                        MsgRemoteGet {
+                            cookie: cookie,
+                            vnode: self.state.num,
+                            key: key.into(),
+                        },
+                    );
             }
         }
     }
 
-    fn respond_cant_coordinate(&mut self, db: &Database, token: Token, status: VNodeStatus,
-                               key: &[u8]) {
+    fn respond_cant_coordinate(&mut self, db: &Database, token: Token, status: VNodeStatus, key: &[u8]) {
         let mut nodes = db.dht.write_members_for_vnode(self.state.num());
         thread_rng().shuffle(&mut nodes);
         for (node, (_, addr)) in nodes {
@@ -392,8 +397,10 @@ impl VNode {
         db.respond_error(token, CommandError::Unavailable);
     }
 
-    pub fn do_set(&mut self, db: &Database, token: Token, key: &[u8], value_opt: Option<&[u8]>,
-                  vv: VersionVector, consistency: ConsistencyLevel, reply_result: bool) {
+    pub fn do_set(
+        &mut self, db: &Database, token: Token, key: &[u8], value_opt: Option<&[u8]>,
+        vv: VersionVector, consistency: ConsistencyLevel, reply_result: bool
+    ) {
         match self.status() {
             VNodeStatus::Ready => (),
             status => return self.respond_cant_coordinate(db, token, status, key),
@@ -417,21 +424,25 @@ impl VNode {
         for node in nodes {
             if node != db.dht.node() {
                 let _ = db.fabric
-                    .send_msg(node,
-                              MsgRemoteSet {
-                                  cookie: cookie,
-                                  vnode: self.state.num,
-                                  key: key.into(),
-                                  container: dcc.clone(),
-                                  reply: reply,
-                              });
+                    .send_msg(
+                        node,
+                        MsgRemoteSet {
+                            cookie: cookie,
+                            vnode: self.state.num,
+                            key: key.into(),
+                            container: dcc.clone(),
+                            reply: reply,
+                        },
+                    );
             }
         }
     }
 
     // OTHER
-    fn process_get(&mut self, db: &Database, cookie: Cookie,
-                   container_opt: Option<DottedCausalContainer<Bytes>>) {
+    fn process_get(
+        &mut self, db: &Database, cookie: Cookie,
+        container_opt: Option<DottedCausalContainer<Bytes>>
+    ) {
         if let HMEntry::Occupied(mut o) = self.inflight.entry(cookie) {
             let done = {
                 let state = o.get_mut();
@@ -489,22 +500,26 @@ impl VNode {
         check_status!(self, VNodeStatus::Ready, db, from, msg, MsgRemoteGetAck, inflight_get);
         let dcc = self.state.storage_get(&msg.key);
         let _ = db.fabric
-            .send_msg(from,
-                      MsgRemoteGetAck {
-                          cookie: msg.cookie,
-                          vnode: msg.vnode,
-                          result: Ok(dcc),
-                      });
+            .send_msg(
+                from,
+                MsgRemoteGetAck {
+                    cookie: msg.cookie,
+                    vnode: msg.vnode,
+                    result: Ok(dcc),
+                },
+            );
     }
 
     pub fn handler_set_remote(&mut self, db: &Database, from: NodeId, msg: MsgRemoteSet) {
-        check_status!(self,
-                      VNodeStatus::Ready | VNodeStatus::Bootstrap,
-                      db,
-                      from,
-                      msg,
-                      MsgRemoteSetAck,
-                      inflight_set);
+        check_status!(
+            self,
+            VNodeStatus::Ready | VNodeStatus::Bootstrap,
+            db,
+            from,
+            msg,
+            MsgRemoteSetAck,
+            inflight_set
+        );
         let MsgRemoteSet {
             key,
             container,
@@ -515,12 +530,14 @@ impl VNode {
         let result = self.state.storage_set_remote(db, &key, container);
         if reply {
             let _ = db.fabric
-                .send_msg(from,
-                          MsgRemoteSetAck {
-                              vnode: vnode,
-                              cookie: cookie,
-                              result: Ok(result),
-                          });
+                .send_msg(
+                    from,
+                    MsgRemoteSetAck {
+                        vnode: vnode,
+                        cookie: cookie,
+                        result: Ok(result),
+                    },
+                );
         }
     }
 
@@ -565,35 +582,41 @@ impl VNode {
     }
 
     pub fn handler_sync_send(&mut self, db: &Database, from: NodeId, msg: MsgSyncSend) {
-        forward!(self,
-                 VNodeStatus::Ready | VNodeStatus::Bootstrap,
-                 db,
-                 from,
-                 msg,
-                 MsgSyncFin,
-                 syncs,
-                 on_msg_send);
+        forward!(
+            self,
+            VNodeStatus::Ready | VNodeStatus::Bootstrap,
+            db,
+            from,
+            msg,
+            MsgSyncFin,
+            syncs,
+            on_msg_send
+        );
     }
 
     pub fn handler_sync_ack(&mut self, db: &Database, from: NodeId, msg: MsgSyncAck) {
-        forward!(self,
-                 VNodeStatus::Ready | VNodeStatus::Zombie,
-                 db,
-                 from,
-                 msg,
-                 MsgSyncFin,
-                 syncs,
-                 on_msg_ack);
+        forward!(
+            self,
+            VNodeStatus::Ready | VNodeStatus::Zombie,
+            db,
+            from,
+            msg,
+            MsgSyncFin,
+            syncs,
+            on_msg_ack
+        );
     }
 
     pub fn handler_sync_fin(&mut self, db: &Database, from: NodeId, msg: MsgSyncFin) {
-        check_status!(self,
-                      VNodeStatus::Ready | VNodeStatus::Zombie | VNodeStatus::Bootstrap,
-                      db,
-                      from,
-                      msg,
-                      MsgSyncFin,
-                      syncs);
+        check_status!(
+            self,
+            VNodeStatus::Ready | VNodeStatus::Zombie | VNodeStatus::Bootstrap,
+            db,
+            from,
+            msg,
+            MsgSyncFin,
+            syncs
+        );
         let cookie = msg.cookie;
         let result = if let HMEntry::Occupied(mut o) = self.syncs.entry(cookie) {
             let result = o.get_mut().on_msg_fin(db, &mut self.state, msg);
@@ -637,10 +660,12 @@ impl VNode {
                         // it's not clear what happened
                         // go absent and wait for a dht callback to fix it
                         self.state.set_status(db, VNodeStatus::Absent);
-                        warn!("Can't retire node {} vnode {}: {}",
-                              db.dht.node(),
-                              self.state.num(),
-                              e);
+                        warn!(
+                            "Can't retire node {} vnode {}: {}",
+                            db.dht.node(),
+                            self.state.num(),
+                            e
+                        );
                     }
                 }
             }
@@ -752,10 +777,7 @@ impl VNodeState {
     /// Updates knowledge of a peer based on it's clocks vector
     pub fn update_peer_knowledge(&mut self, peer: NodeId, bvv: &BitmappedVersionVector) {
         for (&node, bv) in bvv.iter() {
-            let log = self
-                .logs
-                .entry(node)
-                .or_insert_with(Default::default);
+            let log = self.logs.entry(node).or_insert_with(Default::default);
             log.advance_knowledge(peer, bv.base());
         }
     }
@@ -918,9 +940,8 @@ impl VNodeState {
         dcc
     }
 
-    pub fn storage_set_local(&mut self, db: &Database, key: &[u8], value_opt: Option<&[u8]>,
-                             vv: &VersionVector)
-                             -> Result<DottedCausalContainer<Bytes>, ()> {
+    pub fn storage_set_local(&mut self, db: &Database, key: &[u8], value_opt: Option<&[u8]>, vv: &VersionVector)
+        -> Result<DottedCausalContainer<Bytes>, ()> {
         let mut dcc = self.storage_get(key);
         dcc.discard(vv);
 
@@ -951,8 +972,7 @@ impl VNodeState {
         Ok(dcc)
     }
 
-    pub fn storage_set_remote(&mut self, _db: &Database, key: &[u8],
-                              mut new_dcc: DottedCausalContainer<Bytes>) {
+    pub fn storage_set_remote(&mut self, _db: &Database, key: &[u8], mut new_dcc: DottedCausalContainer<Bytes>) {
         let old_dcc = self.storage_get(key);
         new_dcc.add_to_bvv(&mut self.clocks);
         new_dcc.sync(old_dcc);

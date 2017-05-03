@@ -62,46 +62,62 @@ fn configure() -> config::Config {
         .version("0.0")
         .author("Noone")
         .about("Does a few things with keys and values")
-        .arg(Arg::with_name("data_dir")
-                 .short("d")
-                 .long("data")
-                 .takes_value(true)
-                 .help("Data directory")
-                 .required(true))
-        .arg(Arg::with_name("etcd_addr")
-                 .short("e")
-                 .long("etcd")
-                 .help("etcd addres")
-                 .default_value(DEFAULT_ETCD_ADDR)
-                 .takes_value(true))
-        .arg(Arg::with_name("cluster_name")
-                 .short("c")
-                 .long("cluster")
-                 .help("The cluster name")
-                 .default_value(DEFAULT_CLUSTER)
-                 .takes_value(true))
-        .arg(Arg::with_name("listen_addr")
-                 .short("l")
-                 .long("listen")
-                 .help("Listen addr")
-                 .default_value(DEFAULT_LISTEN_ADDR)
-                 .takes_value(true))
-        .arg(Arg::with_name("fabric_addr")
-                 .short("f")
-                 .long("fabric")
-                 .help("Fabric listen addr")
-                 .default_value(DEFAULT_FABRIC_ADDR)
-                 .takes_value(true))
-        .subcommand(SubCommand::with_name("init")
-                        .about("Init and configure the cluster")
-                        .arg(Arg::with_name("replication_factor")
-                                 .short("r")
-                                 .help("Number of replicas")
-                                 .default_value(DEFAULT_REPLICATION_FACTOR))
-                        .arg(Arg::with_name("partitions")
-                                 .short("p")
-                                 .help("Number of partitions")
-                                 .default_value(DEFAULT_PARTITIONS)))
+        .arg(
+            Arg::with_name("data_dir")
+                .short("d")
+                .long("data")
+                .takes_value(true)
+                .help("Data directory")
+                .required(true),
+        )
+        .arg(
+            Arg::with_name("etcd_addr")
+                .short("e")
+                .long("etcd")
+                .help("etcd addres")
+                .default_value(DEFAULT_ETCD_ADDR)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("cluster_name")
+                .short("c")
+                .long("cluster")
+                .help("The cluster name")
+                .default_value(DEFAULT_CLUSTER)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("listen_addr")
+                .short("l")
+                .long("listen")
+                .help("Listen addr")
+                .default_value(DEFAULT_LISTEN_ADDR)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("fabric_addr")
+                .short("f")
+                .long("fabric")
+                .help("Fabric listen addr")
+                .default_value(DEFAULT_FABRIC_ADDR)
+                .takes_value(true),
+        )
+        .subcommand(
+            SubCommand::with_name("init")
+                .about("Init and configure the cluster")
+                .arg(
+                    Arg::with_name("replication_factor")
+                        .short("r")
+                        .help("Number of replicas")
+                        .default_value(DEFAULT_REPLICATION_FACTOR),
+                )
+                .arg(
+                    Arg::with_name("partitions")
+                        .short("p")
+                        .help("Number of partitions")
+                        .default_value(DEFAULT_PARTITIONS),
+                ),
+        )
         .get_matches();
 
     Config {
@@ -112,16 +128,18 @@ fn configure() -> config::Config {
         etcd_addr: matches.value_of("etcd_addr").unwrap().into(),
         cmd_init: matches
             .subcommand_matches("init")
-            .map(|matches| {
-                InitCommand {
-                    partitions: matches.value_of("partitions").unwrap().parse().unwrap(),
-                    replication_factor: matches
-                        .value_of("replication_factor")
-                        .unwrap()
-                        .parse()
-                        .unwrap(),
-                }
-            }),
+            .map(
+                |matches| {
+                    InitCommand {
+                        partitions: matches.value_of("partitions").unwrap().parse().unwrap(),
+                        replication_factor: matches
+                            .value_of("replication_factor")
+                            .unwrap()
+                            .parse()
+                            .unwrap(),
+                    }
+                },
+            ),
         ..Default::default()
     }
 }

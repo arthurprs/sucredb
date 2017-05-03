@@ -50,8 +50,9 @@ impl<T: Stream> Stream for SignaledChan<T> {
 /// The returned future will resolve to both the I/O stream as well as the
 /// buffer, `at` and amount of bytes read, once the read operation is completed.
 pub fn read_at<R, T>(rd: R, buf: T, at: usize) -> ReadAt<R, T>
-    where R: ::std::io::Read,
-          T: AsMut<[u8]>
+where
+    R: ::std::io::Read,
+    T: AsMut<[u8]>,
 {
     ReadAt {
         state: ReadAtState::Pending {
@@ -74,8 +75,9 @@ pub struct ReadAt<R, T> {
 }
 
 impl<R, T> Future for ReadAt<R, T>
-    where R: ::std::io::Read,
-          T: AsMut<[u8]>
+where
+    R: ::std::io::Read,
+    T: AsMut<[u8]>,
 {
     type Item = (R, T, usize, usize);
     type Error = ::std::io::Error;

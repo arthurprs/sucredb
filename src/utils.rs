@@ -41,9 +41,11 @@ impl Hasher for IdHasher {
         debug_assert!(bytes.len() <= 8);
         unsafe {
             let mut temp = 0u64;
-            ::std::ptr::copy_nonoverlapping(bytes.as_ptr(),
-                                            &mut temp as *mut _ as *mut u8,
-                                            bytes.len());
+            ::std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                &mut temp as *mut _ as *mut u8,
+                bytes.len(),
+            );
             self.0 ^= mix(temp);
         }
     }

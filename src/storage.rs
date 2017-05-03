@@ -50,13 +50,17 @@ impl StorageManager {
         opts.create_if_missing(true);
         opts.set_prefix_extractor("U16BeSuffixTransform", Box::new(U16BeSuffixTransform))
             .unwrap();
-        opts.compression_per_level(&[rocksdb::DBCompressionType::DBNo,
-                                     rocksdb::DBCompressionType::DBNo,
-                                     rocksdb::DBCompressionType::DBLz4,
-                                     rocksdb::DBCompressionType::DBLz4,
-                                     rocksdb::DBCompressionType::DBLz4,
-                                     rocksdb::DBCompressionType::DBLz4,
-                                     rocksdb::DBCompressionType::DBLz4]);
+        opts.compression_per_level(
+            &[
+                rocksdb::DBCompressionType::DBNo,
+                rocksdb::DBCompressionType::DBNo,
+                rocksdb::DBCompressionType::DBLz4,
+                rocksdb::DBCompressionType::DBLz4,
+                rocksdb::DBCompressionType::DBLz4,
+                rocksdb::DBCompressionType::DBLz4,
+                rocksdb::DBCompressionType::DBLz4,
+            ],
+        );
         opts.set_write_buffer_size(32 * 4 * 1024);
         opts.set_max_bytes_for_level_base(128 * 1024 * 1024);
         opts.set_max_write_buffer_number(3);
@@ -67,18 +71,22 @@ impl StorageManager {
         opts.set_block_based_table_factory(&block_opts);
         // TODO: Rocksdb is complicated, we might want to tune some more options
         let db = rocksdb::DB::open(opts, path.as_ref().to_str().unwrap()).unwrap();
-        Ok(StorageManager {
-               path: path.as_ref().into(),
-               db: Arc::new(db),
-           })
+        Ok(
+            StorageManager {
+                path: path.as_ref().into(),
+                db: Arc::new(db),
+            },
+        )
     }
 
     pub fn open(&self, db_num: u16, _create: bool) -> Result<Storage, GenericError> {
-        Ok(Storage {
-               db: self.db.clone(),
-               num: db_num,
-               iterators_handle: Arc::new(()),
-           })
+        Ok(
+            Storage {
+                db: self.db.clone(),
+                num: db_num,
+                iterators_handle: Arc::new(()),
+            },
+        )
     }
 }
 
@@ -191,8 +199,10 @@ impl<'a> Iterator for StorageIter<'a> {
         if self.it.iterator.valid() && self.it.iterator.key()[..2] == self.it.key_prefix[..] {
             unsafe {
                 // safe as slices are valid until the next call to next
-                Some((mem::transmute(&self.it.iterator.key()[2..]),
-                      mem::transmute(self.it.iterator.value())))
+                Some(
+                    (mem::transmute(&self.it.iterator.key()[2..]),
+                     mem::transmute(self.it.iterator.value())),
+                )
             }
         } else {
             None
@@ -203,10 +213,8 @@ impl<'a> Iterator for StorageIter<'a> {
 impl Drop for StorageIterator {
     fn drop(&mut self) {
         unsafe {
-            let iterator: NoDrop<Box<rocksdb::rocksdb::DBIterator>> =
-                mem::transmute_copy(&self.iterator);
-            let snapshot: NoDrop<Box<rocksdb::rocksdb::Snapshot>> =
-                mem::transmute_copy(&self.snapshot);
+            let iterator: NoDrop<Box<rocksdb::rocksdb::DBIterator>> = mem::transmute_copy(&self.iterator,);
+            let snapshot: NoDrop<Box<rocksdb::rocksdb::Snapshot>> = mem::transmute_copy(&self.snapshot,);
             drop(iterator.into_inner());
             drop(snapshot.into_inner());
         }
@@ -245,10 +253,10 @@ mod tests {
         for &i in &[0, 1, 2] {
             let storage = sm.open(i, true).unwrap();
             let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
-            assert_eq!(results,
-                       &[i.to_string().as_bytes(),
-                         i.to_string().as_bytes(),
-                         i.to_string().as_bytes()]);
+            assert_eq!(
+                results,
+                &[i.to_string().as_bytes(), i.to_string().as_bytes(), i.to_string().as_bytes()]
+            );
         }
     }
 
@@ -265,10 +273,10 @@ mod tests {
         for &i in &[0, 1, 2] {
             let storage = sm.open(i, true).unwrap();
             let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
-            assert_eq!(results,
-                       &[i.to_string().as_bytes(),
-                         i.to_string().as_bytes(),
-                         i.to_string().as_bytes()]);
+            assert_eq!(
+                results,
+                &[i.to_string().as_bytes(), i.to_string().as_bytes(), i.to_string().as_bytes()]
+            );
             storage.clear();
             let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
             assert_eq!(results.len(), 0);

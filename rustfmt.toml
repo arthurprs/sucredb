@@ -8,6 +8,5 @@ where_density="compressed"
 fn_call_width=80
 array_width=80
 chain_one_line_max=80
-closure_block_indent_threshold=2
 use_try_shorthand=true
 error_on_line_overflow=false

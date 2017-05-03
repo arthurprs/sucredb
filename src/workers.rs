@@ -48,17 +48,20 @@ impl WorkerManager {
     }
 
     pub fn start<F>(&mut self, mut worker_fn_gen: F)
-        where F: FnMut() -> Box<FnBox(mpsc::Receiver<WorkerMsg>) + Send>
+    where
+        F: FnMut() -> Box<FnBox(mpsc::Receiver<WorkerMsg>) + Send>,
     {
         assert!(self.channels.is_empty());
         for i in 0..self.thread_count {
             let worker_fn = worker_fn_gen();
             let (tx, rx) = mpsc::channel();
             self.threads
-                .push(thread::Builder::new()
-                          .name(format!("Worker:{}:{}", self.node, i))
-                          .spawn(move || worker_fn(rx))
-                          .unwrap());
+                .push(
+                    thread::Builder::new()
+                        .name(format!("Worker:{}:{}", self.node, i))
+                        .spawn(move || worker_fn(rx))
+                        .unwrap(),
+                );
             self.channels.push(tx);
         }
 
@@ -66,18 +69,21 @@ impl WorkerManager {
         self.ticker_chan = Some(ticker_tx);
         let ticker_interval = self.ticker_interval;
         let mut sender = self.sender();
-        self.ticker_thread =
-            Some(thread::Builder::new()
-                     .name(format!("WorkerTicker:{}", self.node))
-                     .spawn(move || loop {
-                                thread::sleep(ticker_interval);
-                                match ticker_rx.try_recv() {
-                                    Err(mpsc::TryRecvError::Empty) => (),
-                                    _ => break,
-                                }
-                                let _ = sender.try_send(WorkerMsg::Tick(time::Instant::now()));
-                            })
-                     .unwrap());
+        self.ticker_thread = Some(
+            thread::Builder::new()
+                .name(format!("WorkerTicker:{}", self.node))
+                .spawn(
+                    move || loop {
+                        thread::sleep(ticker_interval);
+                        match ticker_rx.try_recv() {
+                            Err(mpsc::TryRecvError::Empty) => (),
+                            _ => break,
+                        }
+                        let _ = sender.try_send(WorkerMsg::Tick(time::Instant::now()));
+                    },
+                )
+                .unwrap(),
+        );
     }
 
     pub fn sender(&self) -> WorkerSender {

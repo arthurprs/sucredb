@@ -85,59 +85,70 @@ impl Database {
         info!("Metadata loaded! node:{:?} old_node:{:?}", node, old_node);
 
         let fabric = Fabric::new(node, config.fabric_addr).unwrap();
-        let dht = DHT::new(node,
-                           config.fabric_addr,
-                           &config.cluster_name,
-                           &config.etcd_addr,
-                           config.listen_addr,
-                           if let Some(init) = config.cmd_init.as_ref() {
-                               Some(dht::RingDescription::new(init.replication_factor,
-                                                              init.partitions))
-                           } else {
-                               None
-                           },
-                           old_node);
-        let workers = WorkerManager::new(node,
-                                         config.worker_count as _,
-                                         time::Duration::from_millis(config.worker_timer as _));
-        let db = Arc::new(Database {
-                              fabric: fabric,
-                              dht: dht,
-                              storage_manager: storage_manager,
-                              meta_storage: meta_storage,
-                              response_fn: response_fn,
-                              vnodes: Default::default(),
-                              workers: Mutex::new(workers),
-                              config: config.clone(),
-                              stats: Default::default(),
-                          });
+        let dht = DHT::new(
+            node,
+            config.fabric_addr,
+            &config.cluster_name,
+            &config.etcd_addr,
+            config.listen_addr,
+            if let Some(init) = config.cmd_init.as_ref() {
+                Some(dht::RingDescription::new(init.replication_factor, init.partitions))
+            } else {
+                None
+            },
+            old_node,
+        );
+        let workers = WorkerManager::new(
+            node,
+            config.worker_count as _,
+            time::Duration::from_millis(config.worker_timer as _),
+        );
+        let db = Arc::new(
+            Database {
+                fabric: fabric,
+                dht: dht,
+                storage_manager: storage_manager,
+                meta_storage: meta_storage,
+                response_fn: response_fn,
+                vnodes: Default::default(),
+                workers: Mutex::new(workers),
+                config: config.clone(),
+                stats: Default::default(),
+            },
+        );
 
         db.workers
             .lock()
             .unwrap()
-            .start(|| {
-                let cdb = Arc::downgrade(&db);
-                Box::new(move |chan| {
-                    for wm in chan {
-                        let db = if let Some(db) = cdb.upgrade() {
-                            db
-                        } else {
-                            break;
-                        };
-                        trace!("worker {} got msg {:?}",
-                               ::std::thread::current().name().unwrap(),
-                               wm);
-                        match wm {
-                            WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
-                            WorkerMsg::Tick(time) => db.handler_tick(time),
-                            WorkerMsg::Command(token, cmd) => db.handler_cmd(token, cmd),
-                            WorkerMsg::DHTChange => db.handler_dht_change(),
-                            WorkerMsg::Exit => break,
-                        }
-                    }
-                    info!("Exiting worker")
-                })
-            });
+            .start(
+                || {
+                    let cdb = Arc::downgrade(&db);
+                    Box::new(
+                        move |chan| {
+                            for wm in chan {
+                                let db = if let Some(db) = cdb.upgrade() {
+                                    db
+                                } else {
+                                    break;
+                                };
+                                trace!(
+                                    "worker {} got msg {:?}",
+                                    ::std::thread::current().name().unwrap(),
+                                    wm
+                                );
+                                match wm {
+                                    WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
+                                    WorkerMsg::Tick(time) => db.handler_tick(time),
+                                    WorkerMsg::Command(token, cmd) => db.handler_cmd(token, cmd),
+                                    WorkerMsg::DHTChange => db.handler_dht_change(),
+                                    WorkerMsg::Exit => break,
+                                }
+                            }
+                            info!("Exiting worker")
+                        },
+                    )
+                },
+            );
 
         let mut dht_change_sender = db.sender();
         db.dht
@@ -149,10 +160,12 @@ impl Database {
         // set fabric callbacks
         for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch] {
             let mut sender = db.sender();
-            let callback = Box::new(move |f, m| {
-                // trace!("fabric callback {:?} {:?}", msg_type, m);
-                sender.send(WorkerMsg::Fabric(f, m));
-            });
+            let callback = Box::new(
+                move |f, m| {
+                    // trace!("fabric callback {:?} {:?}", msg_type, m);
+                    sender.send(WorkerMsg::Fabric(f, m));
+                },
+            );
             db.fabric.register_msg_handler(msg_type, callback);
         }
 
@@ -163,16 +176,18 @@ impl Database {
             // create vnodes
             // TODO: this can be done in parallel
             *vnodes = (0..db.dht.partitions() as VNodeId)
-                .map(|i| {
-                    let vn = if ready_vnodes.contains(&i) {
-                        VNode::new(&db, i, VNodeStatus::Ready)
-                    } else if pending_vnodes.contains(&i) {
-                        VNode::new(&db, i, VNodeStatus::Bootstrap)
-                    } else {
-                        VNode::new(&db, i, VNodeStatus::Absent)
-                    };
-                    (i, Mutex::new(vn))
-                })
+                .map(
+                    |i| {
+                        let vn = if ready_vnodes.contains(&i) {
+                            VNode::new(&db, i, VNodeStatus::Ready)
+                        } else if pending_vnodes.contains(&i) {
+                            VNode::new(&db, i, VNodeStatus::Bootstrap)
+                        } else {
+                            VNode::new(&db, i, VNodeStatus::Absent)
+                        };
+                        (i, Mutex::new(vn))
+                    },
+                )
                 .collect();
         }
 
@@ -200,12 +215,12 @@ impl Database {
         self.fabric.set_nodes(self.dht.members().into_iter());
 
         for (&i, vn) in self.vnodes.read().unwrap().iter() {
-            let final_status =
-                if self.dht.nodes_for_vnode(i, true, true).contains(&self.dht.node()) {
-                    VNodeStatus::Ready
-                } else {
-                    VNodeStatus::Absent
-                };
+            let final_status = if
+                self.dht.nodes_for_vnode(i, true, true).contains(&self.dht.node()) {
+                VNodeStatus::Ready
+            } else {
+                VNodeStatus::Absent
+            };
             vn.lock().unwrap().handler_dht_change(self, final_status);
         }
     }
@@ -266,10 +281,12 @@ impl Database {
             .read()
             .unwrap()
             .values()
-            .map(|vn| {
-                let inf = vn.lock().unwrap().syncs_inflight();
-                inf.0 + inf.1
-            })
+            .map(
+                |vn| {
+                    let inf = vn.lock().unwrap().syncs_inflight();
+                    inf.0 + inf.1
+                },
+            )
             .sum()
     }
 
@@ -319,12 +336,16 @@ impl Database {
     }
 
     // CLIENT CRUD
-    pub fn set(&self, token: Token, key: &[u8], value: Option<&[u8]>, vv: VersionVector,
-               consistency: ConsistencyLevel, reply_result: bool) {
+    pub fn set(
+        &self, token: Token, key: &[u8], value: Option<&[u8]>, vv: VersionVector,
+        consistency: ConsistencyLevel, reply_result: bool
+    ) {
         let vnode = self.dht.key_vnode(key);
-        vnode!(self,
-               vnode,
-               |mut vn| { vn.do_set(self, token, key, value, vv, consistency, reply_result); });
+        vnode!(
+            self,
+            vnode,
+            |mut vn| { vn.do_set(self, token, key, value, vv, consistency, reply_result); }
+        );
     }
 
     pub fn get(&self, token: Token, key: &[u8], consistency: ConsistencyLevel) {
@@ -375,21 +396,27 @@ mod tests {
                 sync_outgoing_max: 10,
                 sync_auto: false,
                 cmd_init: if create {
-                    Some(config::InitCommand {
-                             replication_factor: 3,
-                             partitions: 64,
-                         })
+                    Some(
+                        config::InitCommand {
+                            replication_factor: 3,
+                            partitions: 64,
+                        },
+                    )
                 } else {
                     None
                 },
                 ..Default::default()
             };
-            let db = Database::new(&config,
-                                   Box::new(move |t, v| {
-                info!("response for {}", t);
-                let r = responses1.lock().unwrap().insert(t, v);
-                assert!(r.is_none(), "replaced a result");
-            }));
+            let db = Database::new(
+                &config,
+                Box::new(
+                    move |t, v| {
+                        info!("response for {}", t);
+                        let r = responses1.lock().unwrap().insert(t, v);
+                        assert!(r.is_none(), "replaced a result");
+                    },
+                ),
+            );
             TestDatabase {
                 db: db,
                 responses: responses2,
@@ -415,10 +442,12 @@ mod tests {
 
         fn resp_response(&self, token: Token) -> RespValue {
             (0..1000)
-                .filter_map(|_| {
-                    sleep_ms(10);
-                    self.responses.lock().unwrap().remove(&token)
-                })
+                .filter_map(
+                    |_| {
+                        sleep_ms(10);
+                        self.responses.lock().unwrap().remove(&token)
+                    },
+                )
                 .next()
                 .unwrap()
         }
@@ -443,11 +472,13 @@ mod tests {
         if let RespValue::Array(ref arr) = value {
             let values: Vec<_> = arr[0..arr.len() - 1]
                 .iter()
-                .map(|d| if let RespValue::Data(ref d) = *d {
-                         d[..].to_owned()
-                     } else {
-                         panic!();
-                     })
+                .map(
+                    |d| if let RespValue::Data(ref d) = *d {
+                        d[..].to_owned()
+                    } else {
+                        panic!();
+                    },
+                )
                 .collect();
             let vv = if let RespValue::Data(ref d) = arr[arr.len() - 1] {
                 bincode::deserialize(&d[..]).unwrap()
@@ -486,13 +517,15 @@ mod tests {
             assert_ne!(db.dht.node(), prev_node);
         }
 
-        assert_eq!(1,
-                   db.vnodes
-                       .read()
-                       .unwrap()
-                       .values()
-                       .map(|vn| vn.lock().unwrap()._log_len(prev_node))
-                       .sum::<usize>());
+        assert_eq!(
+            1,
+            db.vnodes
+                .read()
+                .unwrap()
+                .values()
+                .map(|vn| vn.lock().unwrap()._log_len(prev_node))
+                .sum::<usize>()
+        );
     }
 
     #[test]
@@ -574,12 +607,14 @@ mod tests {
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         for i in 0..TEST_JOIN_SIZE {
-            db1.set(i,
-                    i.to_string().as_bytes(),
-                    Some(i.to_string().as_bytes()),
-                    VersionVector::new(),
-                    One,
-                    true);
+            db1.set(
+                i,
+                i.to_string().as_bytes(),
+                Some(i.to_string().as_bytes()),
+                VersionVector::new(),
+                One,
+                true,
+            );
             db1.values_response(i);
         }
 
@@ -628,12 +663,14 @@ mod tests {
 
         warn!("inserting test data");
         for i in 0..TEST_JOIN_SIZE {
-            db1.set(i,
-                    i.to_string().as_bytes(),
-                    Some(i.to_string().as_bytes()),
-                    VersionVector::new(),
-                    One,
-                    true);
+            db1.set(
+                i,
+                i.to_string().as_bytes(),
+                Some(i.to_string().as_bytes()),
+                VersionVector::new(),
+                One,
+                true,
+            );
             db1.values_response(i);
         }
         // wait for all writes to be replicated
@@ -690,12 +727,14 @@ mod tests {
         drop(db2);
 
         for i in 0..TEST_JOIN_SIZE {
-            db1.set(i,
-                    i.to_string().as_bytes(),
-                    Some(i.to_string().as_bytes()),
-                    VersionVector::new(),
-                    One,
-                    true);
+            db1.set(
+                i,
+                i.to_string().as_bytes(),
+                Some(i.to_string().as_bytes()),
+                VersionVector::new(),
+                One,
+                true,
+            );
             db1.values_response(i);
         }
         for i in 0..TEST_JOIN_SIZE {
