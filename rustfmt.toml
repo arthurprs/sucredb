@@ -1,3 +1,8 @@
+fn_args_layout="block"
+array_layout="block"
+where_style="rfc"
+generics_indent="block"
+fn_call_style="block"
 fn_args_density="compressed"
 where_density="compressed"
 fn_call_width=80

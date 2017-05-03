@@ -7,6 +7,7 @@ use database::*;
 use command::CommandError;
 use bincode;
 use inflightmap::InFlightMap;
+use linear_map::set::LinearSet;
 use fabric::*;
 use vnode_sync::*;
 use hash::hash_slot;
@@ -58,10 +59,13 @@ struct SavedVNodeState {
     clean_shutdown: bool,
 }
 
-// TODO: we never shrink the log
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct VNodeLog {
-    knowledge: IdHashMap<NodeId, Version>,
+    // Track knowledge by physical node id instead of node id,
+    // this is what we actually want to track and it also greatly
+    // simplifies VNodeState::update_peers.
+    // Only track continuous dots (bv base) for simplicity.
+    knowledge: IdHashMap<PhysicalNodeId, Version>,
     log: BTreeMap<Version, Bytes>,
 }
 
@@ -84,14 +88,19 @@ impl VNodeLog {
     }
 
     fn advance_knowledge(&mut self, peer: NodeId, until: Version) {
-        match self.knowledge.entry(peer) {
-            HMEntry::Vacant(v) => {v.insert(until);},
+        match self.knowledge.entry(split_u64(peer).0) {
+            HMEntry::Vacant(v) => {
+                v.insert(until);
+            }
             HMEntry::Occupied(mut o) => {
                 if *o.get() < until {
                     *o.get_mut() = until;
+                } else {
+                    return; // don't bother to gc
                 }
             }
         }
+        self.gc();
     }
 
     pub fn log(&mut self, version: Version, key: Bytes) {
@@ -118,7 +127,12 @@ impl VNodeLog {
     }
 
     pub fn gc(&mut self) {
-        unimplemented!()
+        // get the highest dot that is known by all peers
+        // then only keep [highest + 1..]
+        let highest = self.knowledge.values().cloned().min().unwrap_or(0);
+        let new_log = self.log.split_off(&(highest + 1));
+        info!("gc cleaned {} log keys", self.log.len());
+        self.log = new_log;
     }
 }
 
@@ -187,6 +201,9 @@ impl VNode {
             inflight: InFlightMap::new(),
             syncs: Default::default(),
         };
+        if vnode.status() != VNodeStatus::Absent {
+            vnode.state.update_peers(db);
+        }
 
         match vnode.status() {
             VNodeStatus::Ready | VNodeStatus::Absent => (),
@@ -287,6 +304,10 @@ impl VNode {
             }
             (a, b) if a == b => (), // nothing to do
             (a, b) => panic!("Invalid status change from dht {:?} -> {:?}", a, b),
+        }
+
+        if self.status() != VNodeStatus::Absent {
+            self.state.update_peers(db);
         }
     }
 
@@ -529,12 +550,7 @@ impl VNode {
                 }
                 Some(target) => {
                     assert_eq!(target, db.dht.node());
-                    // track what our peer knows
-                    for (&node, bvv) in msg.clocks_in_peer.iter() {
-                        self.state.logs.entry(node).
-                            or_insert_with(Default::default).
-                            advance_knowledge(from, bvv.base());
-                    }
+                    self.state.update_peer_knowledge(from, &msg.clocks_in_peer);
                     info!("starting sync sender {:?} peer:{}", cookie, from);
                     Synchronization::new_sync_sender(db, &mut self.state, from, msg)
                 }
@@ -697,8 +713,6 @@ impl VNode {
             let cookie = self.gen_cookie();
             self.state.sync_nodes.insert(node);
             info!("starting sync receiver {:?} peer:{}", cookie, node);
-            // sync storage so we ensure that we really have what we tell the peers
-            self.state.storage.sync();
             let sync = Synchronization::new_sync_receiver(db, &mut self.state, node, cookie);
             match self.syncs.entry(cookie) {
                 HMEntry::Vacant(v) => {
@@ -733,6 +747,38 @@ impl VNodeState {
         self.clocks.clear();
         self.logs.clear();
         self.storage.clear();
+    }
+
+    /// Updates knowledge of a peer based on it's clocks vector
+    pub fn update_peer_knowledge(&mut self, peer: NodeId, bvv: &BitmappedVersionVector) {
+        for (&node, bv) in bvv.iter() {
+            let log = self
+                .logs
+                .entry(node)
+                .or_insert_with(Default::default);
+            log.advance_knowledge(peer, bv.base());
+        }
+    }
+
+    pub fn update_peers(&mut self, db: &Database) {
+        let peers = db.dht.nodes_for_vnode(self.num, true, true);
+        let physical_peers: LinearSet<_> = peers.iter().cloned().map(|n| split_u64(n).0).collect();
+        let mut to_remove = Vec::new();
+        for &peer in &peers {
+            let log = self.logs.entry(peer).or_insert_with(Default::default);
+            for &physical_peer in &physical_peers {
+                log.knowledge.entry(physical_peer).or_insert(0);
+            }
+            // we just added all known peers
+            // so we only need to remove if knowledge len is larger
+            if physical_peers.len() != log.knowledge.len() {
+                to_remove.extend(log.knowledge.keys().filter(|n| physical_peers.contains(n)).cloned());
+                for peer in to_remove.drain(..) {
+                    log.knowledge.remove(&peer);
+                }
+                log.gc();
+            }
+        }
     }
 
     pub fn set_status(&mut self, db: &Database, new: VNodeStatus) {
@@ -856,6 +902,9 @@ impl VNodeState {
         debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
         let serialized_saved_state = bincode::serialize(&saved_state, bincode::Infinite).unwrap();
         db.meta_storage.set(self.num.to_string().as_bytes(), &serialized_saved_state);
+        if shutdown {
+            db.meta_storage.sync();
+        }
     }
 
     // STORAGE

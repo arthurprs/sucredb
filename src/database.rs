@@ -161,6 +161,7 @@ impl Database {
             let mut vnodes = db.vnodes.write().unwrap();
             let (ready_vnodes, pending_vnodes) = db.dht.vnodes_for_node(db.dht.node());
             // create vnodes
+            // TODO: this can be done in parallel
             *vnodes = (0..db.dht.partitions() as VNodeId)
                 .map(|i| {
                     let vn = if ready_vnodes.contains(&i) {
@@ -183,7 +184,7 @@ impl Database {
             vn.lock().unwrap().save(self, shutdown);
         }
         if shutdown {
-            self.meta_storage.set(b"clean_shutdown", b"1");
+            self.meta_storage.set(b"clean_shutdown", b"");
         }
         self.meta_storage.sync();
     }

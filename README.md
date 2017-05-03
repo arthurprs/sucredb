@@ -33,6 +33,7 @@ Code quality and commit messages could be of subpar quality, I'll try to improve
 * [ ] dead node handling (either with gossip or smarter fabric)
 * [x] prevent log overflow from crashing ongoing syncs
 * [x] limit # of syncs on both directions by config
+* [x] gc dot->key log
 * [x] cluster name
 * [ ] cluster handling api (join/leave/rebalance)
 * [x] cluster tests
@@ -42,13 +43,9 @@ Code quality and commit messages could be of subpar quality, I'll try to improve
 * [ ] expose metrics
 * [ ] config file
 * [ ] better logging
-* [ ] CI like Travis
-
+* [x] CI like Travis
 * [ ] modernize tokio servers (client and fabric)
 * [ ] configurations everywhere
-* [ ] smarter rebalance
 * [ ] track deleted keys pending physical deletion (is this a good idea?)
-* [ ] gc dot->key log
-* [ ] better dot->key log
 * [ ] persisted dot->key (is this a good idea?)
 * [ ] pruning old nodes from node clocks (is it possible?)

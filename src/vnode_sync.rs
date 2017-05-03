@@ -573,9 +573,14 @@ impl Synchronization {
                     SyncResult::Error
                 }
             }
-            // Senders are always Done on SyncFin messages
-            SyncSender { .. } |
-            BootstrapSender { .. } => SyncResult::Done,
+            SyncSender { peer, ref clocks_snapshot,  .. } |
+            BootstrapSender { peer, ref clocks_snapshot, .. } => {
+                if msg.result.is_ok() {
+                    state.update_peer_knowledge(peer, clocks_snapshot);
+                }
+                // Senders are always Done on SyncFin messages
+                SyncResult::Done
+            }
         }
     }
 

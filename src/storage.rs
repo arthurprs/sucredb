@@ -203,10 +203,10 @@ impl<'a> Iterator for StorageIter<'a> {
 impl Drop for StorageIterator {
     fn drop(&mut self) {
         unsafe {
-            let snapshot: NoDrop<Box<rocksdb::rocksdb::Snapshot>> =
-                mem::transmute_copy(&self.snapshot);
             let iterator: NoDrop<Box<rocksdb::rocksdb::DBIterator>> =
                 mem::transmute_copy(&self.iterator);
+            let snapshot: NoDrop<Box<rocksdb::rocksdb::Snapshot>> =
+                mem::transmute_copy(&self.snapshot);
             drop(iterator.into_inner());
             drop(snapshot.into_inner());
         }

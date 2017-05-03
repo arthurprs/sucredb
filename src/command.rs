@@ -82,9 +82,7 @@ impl Database {
                 self.respond(token, cmd.clone());
                 Ok(())
             }
-            b"ASKING" | b"asking" |
-            b"READONLY" | b"readonly" |
-            b"READWRITE" | b"readwrite" => {
+            b"ASKING" | b"asking" | b"READONLY" | b"readonly" | b"READWRITE" | b"readwrite" => {
                 self.respond_ok(token);
                 Ok(())
             }

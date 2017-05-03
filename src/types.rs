@@ -3,7 +3,9 @@ use std::str::FromStr;
 
 /// Identifier for a Database instance
 pub type NodeId = u64;
-/// Identifier connection with client
+/// Identifier for physical node (high u32 of NodeId)
+pub type PhysicalNodeId = u32;
+/// Identifier for connection with client
 pub type Token = u64;
 /// Identifier for a vnode
 pub type VNodeId = u16;
