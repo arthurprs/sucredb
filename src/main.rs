@@ -30,6 +30,7 @@ extern crate futures;
 extern crate tokio_core;
 extern crate tokio_io;
 extern crate bytes;
+extern crate toml;
 
 #[macro_use]
 mod utils;

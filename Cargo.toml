@@ -19,6 +19,7 @@ clap="*"
 crc16="*"
 metrics="*"
 lazy_static = "*"
+toml="*"
 
 [dependencies.rocksdb]
 git = "https://github.com/pingcap/rust-rocksdb.git"

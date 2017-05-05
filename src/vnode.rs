@@ -709,7 +709,7 @@ impl VNode {
         unreachable!();
     }
 
-    pub fn maybe_start_sync(&mut self, db: &Database) -> bool {
+    pub fn start_sync_if_ready(&mut self, db: &Database) -> bool {
         match self.state.status {
             VNodeStatus::Ready => self.do_start_sync(db),
             _ => false,
