@@ -10,7 +10,8 @@ use toml;
 pub const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:6379";
 pub const DEFAULT_FABRIC_ADDR: &str = "127.0.0.1:16379";
 pub const DEFAULT_ETCD_ADDR: &str = "http://127.0.0.1:2379";
-pub const DEFAULT_CLUSTER: &str = "default";
+pub const DEFAULT_CLUSTER_NAME: &str = "default";
+pub const DEFAULT_DATA_DIR: &str = "./data";
 pub const DEFAULT_REPLICATION_FACTOR: &str = "3";
 pub const DEFAULT_PARTITIONS: &str = "64";
 
@@ -44,8 +45,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            data_dir: "/data".into(),
-            cluster_name: "default".into(),
+            data_dir: DEFAULT_DATA_DIR.into(),
+            cluster_name: DEFAULT_CLUSTER_NAME.into(),
             listen_addr: DEFAULT_LISTEN_ADDR.parse().unwrap(),
             fabric_addr: DEFAULT_FABRIC_ADDR.parse().unwrap(),
             etcd_addr: DEFAULT_ETCD_ADDR.into(),
@@ -133,7 +134,7 @@ macro_rules! cfg {
     );
 }
 
-fn read_config(path: &Path, config: &mut Config) {
+pub fn read_config_file(path: &Path, config: &mut Config) {
     debug!("reading config file");
     let toml = {
         let mut s = String::new();

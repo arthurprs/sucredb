@@ -58,33 +58,44 @@ mod metrics;
 fn configure() -> config::Config {
     use config::*;
     use clap::{Arg, App, SubCommand};
+    use std::path::Path;
 
     let matches = App::new("SucreDB")
         .version("0.0")
         .author("Noone")
         .about("Does a few things with keys and values")
         .arg(
+            Arg::with_name("config_file")
+                .short("c")
+                .long("config")
+                .takes_value(true)
+                .help(".toml config file")
+                .long_help(
+                    "Path to the .toml config file. Note that configuration \
+                    set through the command line will take precedence \
+                    over the config file.",
+                )
+                .display_order(0),
+        )
+        .arg(
             Arg::with_name("data_dir")
                 .short("d")
                 .long("data")
                 .takes_value(true)
-                .help("Data directory")
-                .required(true),
+                .help("Data directory"),
         )
         .arg(
             Arg::with_name("etcd_addr")
                 .short("e")
                 .long("etcd")
                 .help("etcd addres")
-                .default_value(DEFAULT_ETCD_ADDR)
                 .takes_value(true),
         )
         .arg(
             Arg::with_name("cluster_name")
-                .short("c")
+                .short("n")
                 .long("cluster")
                 .help("The cluster name")
-                .default_value(DEFAULT_CLUSTER)
                 .takes_value(true),
         )
         .arg(
@@ -92,7 +103,6 @@ fn configure() -> config::Config {
                 .short("l")
                 .long("listen")
                 .help("Listen addr")
-                .default_value(DEFAULT_LISTEN_ADDR)
                 .takes_value(true),
         )
         .arg(
@@ -100,7 +110,6 @@ fn configure() -> config::Config {
                 .short("f")
                 .long("fabric")
                 .help("Fabric listen addr")
-                .default_value(DEFAULT_FABRIC_ADDR)
                 .takes_value(true),
         )
         .subcommand(
@@ -117,32 +126,43 @@ fn configure() -> config::Config {
                         .short("p")
                         .help("Number of partitions")
                         .default_value(DEFAULT_PARTITIONS),
-                ),
+                )
+                .display_order(0),
         )
         .get_matches();
 
-    Config {
-        data_dir: matches.value_of("data_dir").unwrap().into(),
-        cluster_name: matches.value_of("cluster_name").unwrap().into(),
-        listen_addr: matches.value_of("listen_addr").unwrap().parse().unwrap(),
-        fabric_addr: matches.value_of("fabric_addr").unwrap().parse().unwrap(),
-        etcd_addr: matches.value_of("etcd_addr").unwrap().into(),
-        cmd_init: matches
-            .subcommand_matches("init")
-            .map(
-                |matches| {
-                    InitCommand {
-                        partitions: matches.value_of("partitions").unwrap().parse().unwrap(),
-                        replication_factor: matches
-                            .value_of("replication_factor")
-                            .unwrap()
-                            .parse()
-                            .unwrap(),
-                    }
-                },
-            ),
-        ..Default::default()
+    let mut config = Default::default();
+
+    if let Some(v) = matches.value_of("config_file") {
+        read_config_file(Path::new(v), &mut config);
     }
+
+    if let Some(v) = matches.value_of("cluster_name") {
+        config.cluster_name = v.into();
+    }
+
+    if let Some(v) = matches.value_of("listen_addr") {
+        config.listen_addr = v.parse().unwrap();
+    }
+
+    if let Some(v) = matches.value_of("fabric_addr") {
+        config.fabric_addr = v.parse().unwrap();
+    }
+
+    if let Some(v) = matches.value_of("etcd_addr") {
+        config.etcd_addr = v.parse().unwrap();
+    }
+
+    if let Some(sub) = matches.subcommand_matches("init") {
+        config.cmd_init = Some(
+            InitCommand {
+                partitions: sub.value_of("partitions").unwrap().parse().unwrap(),
+                replication_factor: sub.value_of("replication_factor").unwrap().parse().unwrap(),
+            },
+        );
+    }
+
+    config
 }
 
 #[cfg(not(test))]
