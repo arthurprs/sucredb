@@ -1,6 +1,6 @@
 use std::hash::{Hasher, BuildHasherDefault};
 use std::collections::{HashMap, HashSet};
-use std::{path, fs};
+use std::{io, path, fs};
 use std::error::Error;
 use serde;
 use serde_json;
@@ -49,6 +49,10 @@ impl Hasher for IdHasher {
             self.0 ^= mix(temp);
         }
     }
+}
+
+pub fn into_io_error<E: Error + Send + Sync + 'static>(e: E) -> io::Error {
+    io::Error::new(io::ErrorKind::Other, e)
 }
 
 pub fn split_u64(uint: u64) -> (u32, u32) {

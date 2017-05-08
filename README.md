@@ -41,7 +41,7 @@ Code quality and commit messages could be of subpar quality, I'll try to improve
 * [x] proper storage module
 * [x] metrics
 * [ ] expose metrics
-* [ ] config file
+* [x] config file
 * [ ] better logging
 * [x] CI like Travis
 * [ ] modernize tokio servers (client and fabric)

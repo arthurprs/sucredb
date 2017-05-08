@@ -340,7 +340,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     fn run(inner: Arc<Mutex<Inner<T>>>, etcd: etcd::Client) {
-        let cluster_key = format!("/{}/dht", inner.lock().unwrap().cluster);
+        let cluster_key = format!("/sucredb/{}/dht", inner.lock().unwrap().cluster);
         loop {
             let watch_version = {
                 let inner = inner.lock().unwrap();
@@ -389,7 +389,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     fn refresh_ring(&self) {
-        let cluster_key = format!("/{}/dht", self.cluster);
+        let cluster_key = format!("/sucredb/{}/dht", self.cluster);
         let r = self.etcd_client.get(&cluster_key, false, false, false).unwrap();
         let node = r.node.unwrap();
         let mut inner = self.inner.lock().unwrap();
@@ -426,7 +426,7 @@ impl<T: Metadata> DHT<T> {
     fn reset(&self, meta: T, replication_factor: u8, partitions: u16) {
         assert!(partitions.is_power_of_two());
         assert!(replication_factor > 0);
-        let cluster_key = format!("/{}/dht", self.cluster);
+        let cluster_key = format!("/sucredb/{}/dht", self.cluster);
         let mut inner = self.inner.lock().unwrap();
         inner.ring = Ring::new(self.node, self.addr, meta, partitions, replication_factor);
         let new = Self::serialize(&inner.ring).unwrap();
@@ -600,7 +600,7 @@ impl<T: Metadata> DHT<T> {
     fn propose(&self, old_version: u64, new_ring: Ring<T>, update: bool)
         -> Result<(), etcd::Error> {
         debug!("Proposing new ring against version {}", old_version);
-        let cluster_key = format!("/{}/dht", self.cluster);
+        let cluster_key = format!("/sucredb/{}/dht", self.cluster);
         let new = Self::serialize(&new_ring).unwrap();
         let r = self.etcd_client
             .compare_and_swap(&cluster_key, &new, None, None, Some(old_version))

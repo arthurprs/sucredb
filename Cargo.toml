@@ -33,7 +33,7 @@ features = ["serde_impl"]
 git = "https://github.com/TyOverby/bincode.git"
 
 [dependencies.bytes]
-git = "https://github.com/carllerche/bytes.git"
+path = "/home/arthurprs/dev/bytes"
 features = ["serde"]
 
 [dependencies.roaring]
@@ -43,6 +43,9 @@ git = "https://github.com/arthurprs/roaring-rs"
 version="*"
 default-features = false
 features = ["nightly"]
+
+[replace]
+"bytes:0.4.2" = { path = "/home/arthurprs/dev/bytes"}
 
 # for profiling
 # [profile.release]

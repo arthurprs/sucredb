@@ -84,7 +84,7 @@ impl Database {
 
         info!("Metadata loaded! node:{:?} old_node:{:?}", node, old_node);
 
-        let fabric = Fabric::new(node, config.fabric_addr).unwrap();
+        let fabric = Fabric::new(node, &config).unwrap();
         let dht = DHT::new(
             node,
             config.fabric_addr,

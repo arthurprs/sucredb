@@ -19,8 +19,9 @@ use metrics::{self, Gauge};
 use utils::IdHashMap;
 
 struct RespConnection {
-    addr: SocketAddr,
+    context: Rc<GlobalContext>,
     token: Token,
+    addr: SocketAddr,
 }
 
 struct LocalContext {
@@ -70,28 +71,27 @@ impl LocalContext {
 }
 
 impl RespConnection {
-    fn new(addr: SocketAddr, token: Token) -> Self {
+    fn new(context: Rc<GlobalContext>, addr: SocketAddr, token: Token) -> Self {
         metrics::CLIENT_CONNECTION.inc();
         RespConnection {
+            context: context,
             addr: addr,
             token: token,
         }
     }
 
-    fn run(
-        self, socket: tokio::net::TcpStream, context: Rc<GlobalContext>,
-        _handle: tokio::reactor::Handle
-    ) -> Box<Future<Item = (), Error = ()>> {
+    fn run(self, socket: tokio::net::TcpStream, _handle: tokio::reactor::Handle)
+        -> Box<Future<Item = (), Error = ()>> {
         debug!("run token {}", self.token);
-        let _ = socket.set_nodelay(true);
+        socket.set_nodelay(true).expect("Failed to set nodelay");
         let (sock_rx, sock_tx) = socket.split();
         let (pipe_tx, pipe_rx) = fmpsc::unbounded();
-        context.token_chans.lock().unwrap().insert(self.token, pipe_tx);
+        self.context.token_chans.lock().unwrap().insert(self.token, pipe_tx);
         let ctx_rx = Rc::new(
             RefCell::new(
                 LocalContext {
+                    context: self.context.clone(),
                     token: self.token,
-                    context: context,
                     inflight: false,
                     requests: VecDeque::new(),
                 },
@@ -175,6 +175,7 @@ impl RespConnection {
 
 impl Drop for RespConnection {
     fn drop(&mut self) {
+        self.context.token_chans.lock().unwrap().remove(&self.token);
         metrics::CLIENT_CONNECTION.dec();
     }
 }
@@ -217,17 +218,21 @@ impl Server {
         let handle = core.handle();
         let listener_fut = listener
             .incoming()
-            .and_then(
+            .for_each(
                 |(socket, addr)| {
-                    let conn = RespConnection::new(addr, next_token);
+                    if context.token_chans.lock().unwrap().len() >=
+                       context.database.config.connections_max as usize {
+                        info!("Refusing connection from {:?}, connection limit reached", addr);
+                        return Ok(());
+                    }
+                    info!("Accepting connection from {:?}", addr);
+                    let conn = RespConnection::new(context.clone(), addr, next_token);
                     let conn_handle = handle.clone();
-                    let conn_context = context.clone();
-                    handle.spawn_fn(move || conn.run(socket, conn_context, conn_handle));
+                    handle.spawn_fn(move || conn.run(socket, conn_handle));
                     next_token = next_token.wrapping_add(1);
                     Ok(())
                 },
-            )
-            .for_each(|_| Ok(()));
+            );
 
         core.run(listener_fut).unwrap();
     }

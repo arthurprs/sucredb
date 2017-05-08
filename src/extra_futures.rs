@@ -1,48 +1,5 @@
 use std::mem;
-use futures::{Future, Poll, Async};
-use futures::stream::Stream;
-
-/// Wraps a Stream<T> and emits Option<T>:
-/// Some(T) means a message from wraped stream,
-/// None signals steam was fully drained.
-/// The signal can be usefull to hinting the consumer to flush, for example.
-pub struct SignaledChan<T: Stream> {
-    inner: T,
-    delivered: bool,
-}
-
-impl<T: Stream> SignaledChan<T> {
-    pub fn new(inner: T) -> Self {
-        SignaledChan {
-            inner: inner,
-            delivered: false,
-        }
-    }
-}
-
-impl<T: Stream> Stream for SignaledChan<T> {
-    type Item = Option<T::Item>;
-    type Error = T::Error;
-
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        match self.inner.poll() {
-            Ok(Async::Ready(Some(t))) => {
-                self.delivered = true;
-                Ok(Async::Ready(Some(Some(t))))
-            }
-            Ok(Async::NotReady) => {
-                if self.delivered {
-                    self.delivered = false;
-                    Ok(Async::Ready(Some(None)))
-                } else {
-                    Ok(Async::NotReady)
-                }
-            }
-            Ok(Async::Ready(None)) => Ok(Async::Ready(None)),
-            Err(e) => Err(e),
-        }
-    }
-}
+use futures::{Future, Poll};
 
 /// Tries to read some bytes directly into the given `buf` at offset `at`
 //// in asynchronous manner, returning a future type.

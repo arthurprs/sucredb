@@ -31,8 +31,6 @@ pub struct Config {
     pub sync_timeout: u32,
     pub sync_msg_timeout: u32,
     pub sync_msg_inflight: u32,
-    pub fabric_reconnect_interval: u32,
-    pub fabric_keepalive: u32,
     pub fabric_timeout: u32,
     pub request_timeout: u32,
     pub connections_max: u32,
@@ -59,8 +57,6 @@ impl Default for Config {
             sync_msg_timeout: 1000,
             sync_msg_inflight: 10,
             sync_auto: true,
-            fabric_reconnect_interval: 1000,
-            fabric_keepalive: 1000,
             fabric_timeout: 1000,
             request_timeout: 1000,
             connections_max: 100,
@@ -156,12 +152,10 @@ pub fn read_config_file(path: &Path, config: &mut Config) {
     cfg!(toml, config, worker_count, as_integer, try_into);
     cfg!(toml, config, sync_incomming_max, as_integer, try_into);
     cfg!(toml, config, sync_outgoing_max, as_integer, try_into);
-    cfg!(toml, config, sync_auto, as_bool);
+    // cfg!(toml, config, sync_auto, as_bool);
     cfg!(toml, config, sync_timeout, as_str, parse_duration, try_into);
     cfg!(toml, config, sync_msg_timeout, as_str, parse_duration, try_into);
     cfg!(toml, config, sync_msg_inflight, as_integer, try_into);
-    cfg!(toml, config, fabric_reconnect_interval, as_str, parse_duration, try_into);
-    cfg!(toml, config, fabric_keepalive, as_str, parse_duration, try_into);
     cfg!(toml, config, fabric_timeout, as_str, parse_duration, try_into);
     cfg!(toml, config, request_timeout, as_str, parse_duration, try_into);
     cfg!(toml, config, connections_max, as_integer, try_into);

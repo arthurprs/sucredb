@@ -4,7 +4,7 @@ version = "0.1.0"
 dependencies = [
  "bincode 0.7.0 (git+https://github.com/TyOverby/bincode.git)",
  "byteorder 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "bytes 0.4.3 (git+https://github.com/carllerche/bytes.git)",
+ "bytes 0.4.2",
  "clap 2.23.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "crc16 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "env_logger 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -82,21 +82,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "bytes"
 version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "byteorder 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "iovec 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "bytes"
-version = "0.4.3"
-source = "git+https://github.com/carllerche/bytes.git#6af66c4f214259906c1f80788e1ecfcaf0dfcfd1"
 dependencies = [
  "byteorder 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "iovec 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
+
+[[package]]
+name = "bytes"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+replace = "bytes 0.4.2"
 
 [[package]]
 name = "cfg-if"
@@ -901,7 +897,6 @@ dependencies = [
 "checksum byteorder 0.5.3 (registry+https://github.com/rust-lang/crates.io-index)" = "0fc10e8cc6b2580fda3f36eb6dc5316657f812a3df879a44a66fc9f0fdbc4855"
 "checksum byteorder 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)" = "c40977b0ee6b9885c9013cd41d9feffdd22deb3bb4dc3a71d901cc7a77de18c8"
 "checksum bytes 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)" = "3941933da81d8717b427c2ddc2d73567cd15adb6c57514a2726d9ee598a5439a"
-"checksum bytes 0.4.3 (git+https://github.com/carllerche/bytes.git)" = "<none>"
 "checksum cfg-if 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "de1e760d7b6535af4241fca8bd8adf68e2e7edacc6b29f5d399050c5e48cf88c"
 "checksum clap 2.23.3 (registry+https://github.com/rust-lang/crates.io-index)" = "f57e9b63057a545ad2ecd773ea61e49422ed1b1d63d74d5da5ecaee55b3396cd"
 "checksum cookie 0.2.5 (registry+https://github.com/rust-lang/crates.io-index)" = "0e3d6405328b6edb412158b3b7710e2634e23f3614b9bb1c412df7952489a626"

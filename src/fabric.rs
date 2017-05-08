@@ -6,26 +6,67 @@ use std::sync::atomic::{Ordering, AtomicUsize};
 use std::collections::hash_map::Entry as HMEntry;
 
 use rand::{thread_rng, Rng};
+use bytes::{BufMut, BytesMut};
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
 use bincode;
 
-use futures;
-use futures::future::{self, Future, IntoFuture, Either};
-use futures::stream::{self, Stream};
+use futures::{self, Future, IntoFuture, Stream, Sink};
 use futures::sync::mpsc as fmpsc;
-use extra_futures::{read_at, SignaledChan};
 use tokio_core as tokio;
 use tokio_io::{io as tokio_io, AsyncRead};
+use tokio_io::codec;
 
 pub use fabric_msg::*;
-use utils::{GenericError, IdHashMap};
+use config::Config;
+use utils::{GenericError, IdHashMap, into_io_error};
 use database::NodeId;
 
-const RECONNECT_INTERVAL_MS: u64 = 1000;
+struct FramedBincodeCodec;
+
+impl codec::Decoder for FramedBincodeCodec {
+    type Item = FabricMsg;
+    type Error = io::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> io::Result<Option<Self::Item>> {
+        let (consumed, result) = {
+            let mut bytes: &[u8] = &*src;
+            if let Ok(msg_len) = bytes.read_u32::<LittleEndian>() {
+                if bytes.len() >= msg_len as usize {
+                    match bincode::deserialize_from(&mut bytes, bincode::Infinite) {
+                        Ok(v) => (4 + msg_len as usize, Ok(Some(v))),
+                        Err(e) => (0, Err(into_io_error(e))),
+                    }
+                } else {
+                    (0, Ok(None))
+                }
+            } else {
+                (0, Ok(None))
+            }
+        };
+        src.split_to(consumed);
+        result
+    }
+}
+
+impl codec::Encoder for FramedBincodeCodec {
+    type Item = FabricMsg;
+    type Error = io::Error;
+
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> io::Result<()> {
+        let item_size = bincode::serialized_size(&item);
+        dst.reserve(4 + item_size as usize);
+        dst.put_u32::<LittleEndian>(item_size as u32);
+        bincode::serialize_into(&mut dst.writer(), &item, bincode::Infinite).unwrap();
+        Ok(())
+    }
+}
 
 pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
 type SenderChan = fmpsc::UnboundedSender<FabricMsg>;
 type InitType = Result<(Arc<GlobalContext>, futures::sync::oneshot::Sender<()>), io::Error>;
+
+const FABRIC_KEEPALIVE_MS: u32 = 1000;
+const FABRIC_RECONNECT_INTERVAL_MS: u32 = 1000;
 
 /// The messasing network that encompasses all nodes of the cluster
 /// using the fabric you can send messages (best-effort delivery)
@@ -46,20 +87,18 @@ pub enum FabricError {
 struct ReaderContext {
     context: Arc<GlobalContext>,
     peer: NodeId,
-    peer_addr: SocketAddr,
 }
 
 struct WriterContext {
     context: Arc<GlobalContext>,
     peer: NodeId,
-    peer_addr: SocketAddr,
-    sender: SenderChan,
     sender_chan_id: usize,
 }
 
 struct GlobalContext {
     node: NodeId,
     addr: SocketAddr,
+    timeout: u32, // not currently used
     loop_remote: tokio::reactor::Remote,
     msg_handlers: Mutex<IdHashMap<u8, FabricHandlerFn>>,
     nodes_addr: Mutex<IdHashMap<NodeId, SocketAddr>>,
@@ -71,18 +110,20 @@ struct GlobalContext {
 impl GlobalContext {
     fn add_writer_chan(&self, peer: NodeId, sender: SenderChan) -> usize {
         let chan_id = self.chan_id_gen.fetch_add(1, Ordering::Relaxed);
+        debug!("add_writer_chan peer: {}, chan_id: {:?}", peer, chan_id);
         let mut locked = self.writer_chans.lock().unwrap();
         locked
             .entry(peer)
             .or_insert(Default::default())
-            .push((chan_id, sender.clone()));
+            .push((chan_id, sender));
         chan_id
     }
 
-    fn remove_writer_chan(&self, peer: NodeId, sender_chan_id: usize) {
+    fn remove_writer_chan(&self, peer: NodeId, chan_id: usize) {
+        debug!("remove_writer_chan peer: {}, chan_id: {:?}", peer, chan_id);
         let mut locked = self.writer_chans.lock().unwrap();
         if let HMEntry::Occupied(mut o) = locked.entry(peer) {
-            o.get_mut().retain(|&(i, _)| i != sender_chan_id);
+            o.get_mut().retain(|&(i, _)| i != chan_id);
             // cleanup entry if empty
             if o.get().is_empty() {
                 o.remove();
@@ -94,11 +135,10 @@ impl GlobalContext {
 }
 
 impl ReaderContext {
-    fn new(context: Arc<GlobalContext>, peer: NodeId, peer_addr: SocketAddr) -> Self {
+    fn new(context: Arc<GlobalContext>, peer: NodeId) -> Self {
         ReaderContext {
             context: context,
             peer: peer,
-            peer_addr: peer_addr,
         }
     }
 
@@ -114,15 +154,12 @@ impl ReaderContext {
 }
 
 impl WriterContext {
-    fn new(context: Arc<GlobalContext>, peer: NodeId, peer_addr: SocketAddr, sender: SenderChan)
-        -> Self {
-        let chan_id = context.add_writer_chan(peer, sender.clone());
+    fn new(context: Arc<GlobalContext>, peer: NodeId, sender: SenderChan) -> Self {
+        let chan_id = context.add_writer_chan(peer, sender);
         WriterContext {
             context: context,
             peer: peer,
-            peer_addr: peer_addr,
             sender_chan_id: chan_id,
-            sender: sender,
         }
     }
 }
@@ -141,7 +178,7 @@ impl Fabric {
         debug!("Starting fabric listener");
         let fut = listener
             .incoming()
-            .and_then(
+            .for_each(
                 move |(socket, addr)| {
                     debug!("Accepting fabric connection from {:?}", addr);
                     let handle_cloned = handle.clone();
@@ -155,8 +192,7 @@ impl Fabric {
                     Ok(())
                 },
             )
-            .map_err(|_| ())
-            .for_each(|_| Ok(()));
+            .map_err(|_| ());
         Box::new(fut)
     }
 
@@ -175,7 +211,7 @@ impl Fabric {
             .then(
                 move |_| {
                     tokio::reactor::Timeout::new(
-                        Duration::from_millis(RECONNECT_INTERVAL_MS),
+                        Duration::from_millis(FABRIC_RECONNECT_INTERVAL_MS as u64),
                         &handle,
                     )
                             .into_future()
@@ -210,8 +246,10 @@ impl Fabric {
         socket: tokio::net::TcpStream, expected_node: Option<NodeId>, addr: SocketAddr,
         context: Arc<GlobalContext>, handle: tokio::reactor::Handle
     ) -> Box<Future<Item = (), Error = io::Error>> {
-        let _ = socket.set_nodelay(true);
-        let _ = socket.set_keepalive_ms(Some(2000));
+        socket.set_nodelay(true).expect("Failed to set nodelay");
+        socket
+            .set_keepalive_ms(Some(FABRIC_KEEPALIVE_MS))
+            .expect("Failed to set keepalive");
         let mut buffer = [0u8; 8];
         (&mut buffer[..]).write_u64::<LittleEndian>(context.node).unwrap();
         let fut = tokio_io::write_all(socket, buffer)
@@ -243,112 +281,47 @@ impl Fabric {
     }
 
     fn steady_connection(
-        socket: tokio::net::TcpStream, peer: NodeId, peer_addr: SocketAddr,
+        socket: tokio::net::TcpStream, peer: NodeId, _peer_addr: SocketAddr,
         context: Arc<GlobalContext>, _handle: tokio::reactor::Handle
     ) -> Box<Future<Item = (), Error = io::Error>> {
-        let (sock_rx, sock_tx) = socket.split();
+        let (socket_rx, socket_tx) = socket.split();
+        let socket_tx = codec::FramedWrite::new(socket_tx, FramedBincodeCodec);
+        let socket_rx = codec::FramedRead::new(socket_rx, FramedBincodeCodec);
         let (chan_tx, chan_rx) = fmpsc::unbounded();
-        let ctx_rx = ReaderContext::new(context.clone(), peer, peer_addr);
-        let ctx_tx = WriterContext::new(context, peer, peer_addr, chan_tx);
 
-        let rx_fut = stream::iter((0..).map(|_| -> Result<(), io::Error> { Ok(()) }))
-            .fold(
-                (ctx_rx, sock_rx, Vec::new(), 0), |(ctx, s, mut b, p), _| {
-                    if b.len() - p < 4 * 1024 {
-                        unsafe {
-                            b.reserve(16 * 1024);
-                            let cap = b.capacity();
-                            b.set_len(cap);
-                        }
-                    }
+        let ctx_rx = ReaderContext::new(context.clone(), peer);
+        let fut_rx = socket_rx
+            .for_each(
+                move |msg| -> io::Result<_> {
+                    ctx_rx.dispatch(msg);
+                    Ok(())
+                },
+            );
 
-                    read_at(s, b, p).and_then(
-                        |(s, b, p, r)| {
-                            let end = p + r;
-                            let mut consumed = 0;
-                            while end - consumed > 4 {
-                                let mut slice = &b[consumed..end];
-                                let msg_len = slice.read_u32::<LittleEndian>().unwrap() as usize;
-                                // TODO: sanity check msg_len
-                                if slice.len() < msg_len {
-                                    break;
-                                }
+        let ctx_tx = WriterContext::new(context, peer, chan_tx);
+        let fut_tx = socket_tx
+            .send_all(
+            chan_rx.map_err(|_| -> io::Error { io::ErrorKind::Other.into() }))
+            .then(
+                move |r| {
+                    // hold onto ctx_tx until the stream is done
+                    drop(ctx_tx);
+                    r.map(|_| ())
+                },
+            );
 
-                                let de_result =
-                                    bincode::deserialize_from(&mut slice, bincode::Infinite);
-
-                                match de_result {
-                                    Ok(msg) => {
-                                        debug!("Received from node {} msg {:?}", ctx.peer, msg);
-                                        ctx.dispatch(msg);
-                                        consumed += 4 + msg_len;
-                                    }
-                                    Err(e) => {
-                                        return Err(io::Error::new(io::ErrorKind::Other, e));
-                                    }
-                                }
-                            }
-
-                            if end != consumed {
-                                // TODO: this should be abstracted away
-                                // copy remaining to start of buffer
-                                unsafe {
-                                    ::std::ptr::copy(
-                                        b.as_ptr().offset(consumed as isize),
-                                        b.as_ptr() as *mut _,
-                                        end - consumed,
-                                    );
-                                }
-                            }
-                            Ok((ctx, s, b, end - consumed))
-                        },
-                    )
-                }
-            )
-            .map(|_| ());
-
-        let tx_fut = SignaledChan::new(chan_rx)
-            .map_err(|_| io::ErrorKind::Other.into())
-            .fold(
-                (ctx_tx, sock_tx, Vec::new()), move |(ctx, s, mut b), msg_opt| {
-                    let flush = if let Some(msg) = msg_opt {
-                        debug!("Sending to node {} msg {:?}", ctx.peer, msg);
-                        let offset = b.len();
-                        b.write_u32::<LittleEndian>(0).unwrap();
-                        bincode::serialize_into(&mut b, &msg, bincode::Infinite).unwrap();
-                        let msg_len = (b.len() - offset - 4) as u32;
-                        (&mut b[offset..offset + 4]).write_u32::<LittleEndian>(msg_len).unwrap();
-                        b.len() >= 4 * 1024
-                    } else {
-                        true
-                    };
-                    if flush {
-                        trace!("flushing msgs to node {:?}", ctx.peer);
-                        Either::A(
-                            tokio_io::write_all(s, b).map(
-                                |(s, mut b)| {
-                                    b.clear();
-                                    (ctx, s, b)
-                                },
-                            ),
-                        )
-                    } else {
-                        Either::B(future::ok((ctx, s, b)))
-                    }
-                }
-            )
-            .map(|_| ());
-        Box::new(rx_fut.select(tx_fut).map(|_| ()).map_err(|(e, _)| e))
+        Box::new(fut_rx.select(fut_tx).map(|_| ()).map_err(|(e, _)| e))
     }
 
-    fn run(node: NodeId, addr: SocketAddr, init_tx: ::std::sync::mpsc::Sender<InitType>) {
+    fn run(node: NodeId, config: Config, init_tx: ::std::sync::mpsc::Sender<InitType>) {
         let mut core = tokio::reactor::Core::new().unwrap();
         let handle = core.handle();
         let remote = core.remote();
         let context = Arc::new(
             GlobalContext {
                 node: node,
-                addr: addr,
+                addr: config.fabric_addr,
+                timeout: config.fabric_timeout,
                 loop_remote: remote,
                 nodes_addr: Default::default(),
                 msg_handlers: Default::default(),
@@ -374,12 +347,13 @@ impl Fabric {
         }
     }
 
-    pub fn new(node: NodeId, addr: SocketAddr) -> Result<Self, GenericError> {
+    pub fn new(node: NodeId, config: &Config) -> Result<Self, GenericError> {
         // start event loop thread
+        let config = config.clone();
         let (init_tx, init_rx) = ::std::sync::mpsc::channel();
         let thread = thread::Builder::new()
             .name(format!("Fabric:{}", node))
-            .spawn(move || Self::run(node, addr, init_tx))
+            .spawn(move || Self::run(node, config, init_tx))
             .unwrap();
         let (context, completer) = init_rx.recv()??;
         Ok(
@@ -462,8 +436,9 @@ impl Fabric {
         let mut writers = self.context.writer_chans.lock().unwrap();
         match writers.entry(node) {
             HMEntry::Occupied(mut o) => {
-                if let Some(&mut (_, ref mut chan)) = thread_rng().choose_mut(o.get_mut()) {
-                    let _ = chan.send(msg);
+                if let Some(&mut (chan_id, ref mut chan)) = thread_rng().choose_mut(o.get_mut()) {
+                    debug!("send_msg node:{}, chan:{}", node, chan_id);
+                    let _ = SenderChan::send(&chan, msg);
                     Ok(())
                 } else {
                     warn!("DROPING MSG - No channel available for {:?}", node);
@@ -491,6 +466,7 @@ impl Drop for Fabric {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::Config;
     use std::{thread, net};
     use std::time::Duration;
     use env_logger;
@@ -499,8 +475,16 @@ mod tests {
     #[test]
     fn test() {
         let _ = env_logger::init();
-        let fabric1 = Fabric::new(1, "127.0.0.1:6481".parse().unwrap()).unwrap();
-        let fabric2 = Fabric::new(2, "127.0.0.1:6482".parse().unwrap()).unwrap();
+        let config1 = Config {
+            fabric_addr: "127.0.0.1:6481".parse().unwrap(),
+            ..Default::default()
+        };
+        let config2 = Config {
+            fabric_addr: "127.0.0.1:6482".parse().unwrap(),
+            ..Default::default()
+        };
+        let fabric1 = Fabric::new(1, &config1).unwrap();
+        let fabric2 = Fabric::new(2, &config2).unwrap();
         fabric1.register_node(2, "127.0.0.1:6482".parse().unwrap());
         fabric2.register_node(1, "127.0.0.1:6481".parse().unwrap());
         thread::sleep(Duration::from_millis(10));
