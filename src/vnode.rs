@@ -131,7 +131,7 @@ impl VNodeLog {
         // then only keep [highest + 1..]
         let highest = self.knowledge.values().cloned().min().unwrap_or(0);
         let new_log = self.log.split_off(&(highest + 1));
-        info!("gc cleaned {} log keys", self.log.len());
+        debug!("gc cleaned {} log keys", self.log.len());
         self.log = new_log;
     }
 }
@@ -341,9 +341,15 @@ impl VNode {
             db.respond_error(req.token, CommandError::Timeout);
         }
 
-        // check if there's a pending bootstrap we need to start
         if self.state.pending_bootstrap {
+            // check if there's a pending bootstrap we need to start
             self.start_bootstrap(db);
+        } else if self.status() == VNodeStatus::Zombie && self.inflight.is_empty() &&
+                  self.syncs.is_empty() &&
+                  self.state.last_status_change.elapsed() >
+                  Duration::from_millis(ZOMBIE_TIMEOUT_MS) {
+            // go absent when zombie timeout
+            self.state.set_status(db, VNodeStatus::Absent);
         }
     }
 

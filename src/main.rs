@@ -26,7 +26,6 @@ extern crate metrics as rust_metrics;
 #[macro_use]
 extern crate lazy_static;
 extern crate futures;
-#[macro_use]
 extern crate tokio_core;
 extern crate tokio_io;
 extern crate bytes;
@@ -35,7 +34,6 @@ extern crate toml;
 #[macro_use]
 mod utils;
 mod types;
-mod extra_futures;
 mod version_vector;
 // mod gossip;
 mod inflightmap;
@@ -135,6 +133,10 @@ fn configure() -> config::Config {
 
     if let Some(v) = matches.value_of("config_file") {
         read_config_file(Path::new(v), &mut config);
+    }
+
+    if let Some(v) = matches.value_of("data_dir") {
+        config.data_dir = v.into();
     }
 
     if let Some(v) = matches.value_of("cluster_name") {

@@ -87,7 +87,7 @@ pub fn parse_duration(duration_text: &str) -> Result<u64, GenericError> {
         "m" => 1000 * 60,
         "h" => 1000 * 60 * 60,
         "d" => 1000 * 60 * 60 * 24,
-        _ => return Err(format!("Unknown suffix `{}`", suffix).into()),
+        _ => return Err(format!("Unknown duration suffix `{}`", suffix).into()),
     };
     number.checked_mul(scale).ok_or("Overflow error".into())
 }
@@ -99,7 +99,7 @@ pub fn parse_size(size_text: &str) -> Result<u64, GenericError> {
         "k" | "kb" => 1024,
         "m" | "mb" => 1024 * 1024,
         "g" | "gb" => 1024 * 1024 * 1024,
-        _ => return Err(format!("Unknown suffix `{}`", suffix).into()),
+        _ => return Err(format!("Unknown size suffix `{}`", suffix).into()),
     };
     number.checked_mul(scale).ok_or("Overflow error".into())
 }

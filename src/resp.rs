@@ -1,5 +1,5 @@
 use std::{str, fmt};
-use std::io::Write;
+use std::io::{self, Write};
 use std::error::Error;
 use bytes::Bytes;
 use utils::assume_str;
@@ -29,34 +29,46 @@ pub enum RespValue {
 }
 
 impl RespValue {
-    pub fn serialize_to<W: Write>(self, f: &mut W) {
-        match self {
-                RespValue::Nil => write!(f, "$-1\r\n"),
-                RespValue::Int(v) => write!(f, ":{}\r\n", v),
-                RespValue::Data(v) => {
-                    write!(f, "${}\r\n", v.len()).unwrap();
-                    f.write_all(v.as_ref()).unwrap();
-                    write!(f, "\r\n")
-                }
-                RespValue::Array(a) => {
-                    write!(f, "*{}\r\n", a.len()).unwrap();
-                    for v in a {
-                        v.serialize_to(f);
-                    }
-                    Ok(())
-                }
-                RespValue::Status(v) => {
-                    write!(f, "+").unwrap();
-                    f.write_all(v.as_ref()).unwrap();
-                    write!(f, "\r\n")
-                }
-                RespValue::Error(v) => {
-                    write!(f, "-").unwrap();
-                    f.write_all(v.as_ref()).unwrap();
-                    write!(f, "\r\n")
-                }
+    pub fn serialized_size(&self) -> usize {
+        match *self {
+            RespValue::Nil => "$-1\r\n".len(),
+            RespValue::Int(_) => ":{}\r\n".len() + 20,
+            RespValue::Data(ref v) => "${}\r\n".len() + 20 + v.len() + "\r\n".len(),
+            RespValue::Array(ref a) => {
+                "*{}\r\n".len() + 20 + a.iter().map(Self::serialized_size).sum::<usize>()
             }
-            .unwrap()
+            RespValue::Status(ref v) |
+            RespValue::Error(ref v) => "+".len() + v.len() + "\r\n".len(),
+        }
+    }
+
+    pub fn serialize_into<W: Write>(self, f: &mut W) -> io::Result<()> {
+        match self {
+            RespValue::Nil => write!(f, "$-1\r\n"),
+            RespValue::Int(v) => write!(f, ":{}\r\n", v),
+            RespValue::Data(v) => {
+                write!(f, "${}\r\n", v.len())?;
+                f.write_all(v.as_ref())?;
+                write!(f, "\r\n")
+            }
+            RespValue::Array(a) => {
+                write!(f, "*{}\r\n", a.len())?;
+                for v in a {
+                    v.serialize_into(f)?;
+                }
+                Ok(())
+            }
+            RespValue::Status(v) => {
+                write!(f, "+")?;
+                f.write_all(v.as_ref())?;
+                write!(f, "\r\n")
+            }
+            RespValue::Error(v) => {
+                write!(f, "-")?;
+                f.write_all(v.as_ref())?;
+                write!(f, "\r\n")
+            }
+        }
     }
 }
 
@@ -71,14 +83,14 @@ impl fmt::Debug for RespValue {
         match *self {
             RespValue::Nil => write!(f, "Nil"),
             RespValue::Int(v) => write!(f, "Int({:?})", v),
-            RespValue::Data(ref v) => write!(f, "Data({:?})", String::from_utf8_lossy(v)),
+            RespValue::Data(ref v) => write!(f, "Data({:?})", v),
             RespValue::Array(ref b) => {
                 write!(f, "Array(")?;
                 f.debug_list().entries(b).finish()?;
                 write!(f, ")")
             }
-            RespValue::Status(ref v) => write!(f, "Status({:?})", v.as_ref()),
-            RespValue::Error(ref v) => write!(f, "Error({:?})", v.as_ref()),
+            RespValue::Status(ref v) => write!(f, "Status({:?})", v),
+            RespValue::Error(ref v) => write!(f, "Error({:?})", v),
         }
     }
 }
@@ -90,6 +102,7 @@ pub struct Parser {
 }
 
 impl Parser {
+    // TODO: take bytes
     pub fn new<T: AsRef<[u8]>>(body: T) -> RespResult<Parser> {
         let valid_to = Self::speculate_buffer(body.as_ref())?;
         Ok(

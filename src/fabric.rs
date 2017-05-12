@@ -112,10 +112,7 @@ impl GlobalContext {
         let chan_id = self.chan_id_gen.fetch_add(1, Ordering::Relaxed);
         debug!("add_writer_chan peer: {}, chan_id: {:?}", peer, chan_id);
         let mut locked = self.writer_chans.lock().unwrap();
-        locked
-            .entry(peer)
-            .or_insert(Default::default())
-            .push((chan_id, sender));
+        locked.entry(peer).or_insert(Default::default()).push((chan_id, sender));
         chan_id
     }
 
@@ -180,14 +177,12 @@ impl Fabric {
             .incoming()
             .for_each(
                 move |(socket, addr)| {
-                    debug!("Accepting fabric connection from {:?}", addr);
+                    debug!("Accepting connection from {:?}", addr);
                     let handle_cloned = handle.clone();
                     let context_cloned = context.clone();
-                    handle.spawn_fn(
-                        move || {
-                            Self::connection(socket, None, addr, context_cloned, handle_cloned)
-                                .map_err(|_| ())
-                        },
+                    handle.spawn(
+                        Self::connection(socket, None, addr, context_cloned, handle_cloned)
+                            .map_err(|_| ()),
                     );
                     Ok(())
                 },
@@ -198,13 +193,13 @@ impl Fabric {
 
     fn connect(node: NodeId, addr: SocketAddr, context: Arc<GlobalContext>, handle: tokio::reactor::Handle)
         -> Box<Future<Item = (), Error = ()>> {
-        debug!("Opening fabric connection to node {:?}", addr);
+        debug!("Connecting to node {:?}: {:?}", node, addr);
         let context_cloned = context.clone();
         let handle_cloned = handle.clone();
         let fut = tokio::net::TcpStream::connect(&addr, &handle)
             .and_then(
                 move |s| {
-                    debug!("Stablished fabric connection with {:?}", addr);
+                    debug!("Stablished connection with {:?}: {:?}", node, addr);
                     Self::connection(s, Some(node), addr, context_cloned, handle_cloned)
                 },
             )
@@ -223,7 +218,7 @@ impl Fabric {
                                         locked.get(&node).cloned()
                                     };
                                     if let Some(addr) = addr_opt {
-                                        debug!("Reconnecting fabric connection to node {:?}", addr);
+                                        debug!("Reconnecting fabric connection to {:?}", addr);
                                         handle.spawn(
                                             Self::connect(
                                                 node,
@@ -237,9 +232,8 @@ impl Fabric {
                                 },
                             )
                 },
-            )
-            .map_err(|_| ());
-        Box::new(fut)
+            );
+        Box::new(fut.map_err(|_| ()))
     }
 
     fn connection(
@@ -266,14 +260,13 @@ impl Fabric {
             )
             .and_then(
                 move |(s, peer_id)| {
-                    debug!("Identified fabric connection to node {:?}", peer_id);
-                    Self::steady_connection(s, peer_id, addr, context, handle)
-                },
-            )
-            .then(
-                |r| {
-                    debug!("Fabric connection exit {:?}", r);
-                    r
+                    debug!("Identified connection to node {}", peer_id);
+                    Self::steady_connection(s, peer_id, addr, context, handle).then(
+                        move |r| {
+                            debug!("Connection to node {} disconnected {:?}", peer_id, r);
+                            r
+                        },
+                    )
                 },
             );
 
@@ -290,18 +283,16 @@ impl Fabric {
         let (chan_tx, chan_rx) = fmpsc::unbounded();
 
         let ctx_rx = ReaderContext::new(context.clone(), peer);
-        let fut_rx = socket_rx
-            .for_each(
-                move |msg| -> io::Result<_> {
-                    ctx_rx.dispatch(msg);
-                    Ok(())
-                },
-            );
+        let fut_rx = socket_rx.for_each(
+            move |msg| -> io::Result<_> {
+                ctx_rx.dispatch(msg);
+                Ok(())
+            },
+        );
 
         let ctx_tx = WriterContext::new(context, peer, chan_tx);
         let fut_tx = socket_tx
-            .send_all(
-            chan_rx.map_err(|_| -> io::Error { io::ErrorKind::Other.into() }))
+            .send_all(chan_rx.map_err(|_| -> io::Error { io::ErrorKind::Other.into() }))
             .then(
                 move |r| {
                     // hold onto ctx_tx until the stream is done
@@ -438,7 +429,7 @@ impl Fabric {
             HMEntry::Occupied(mut o) => {
                 if let Some(&mut (chan_id, ref mut chan)) = thread_rng().choose_mut(o.get_mut()) {
                     debug!("send_msg node:{}, chan:{}", node, chan_id);
-                    let _ = SenderChan::send(&chan, msg);
+                    SenderChan::send(&chan, msg).expect("Can't send to fabric chan");
                     Ok(())
                 } else {
                     warn!("DROPING MSG - No channel available for {:?}", node);

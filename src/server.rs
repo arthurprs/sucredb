@@ -2,26 +2,57 @@ use std::str;
 use std::io;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::net::SocketAddr;
 use std::sync::{Mutex, Arc};
 use std::collections::VecDeque;
+
 use database::{Database, Token};
 use workers::{WorkerMsg, WorkerSender};
-use futures::{self, Future};
-use futures::stream::{self, Stream};
+use futures::{Future, Stream, Sink};
 use futures::sync::mpsc as fmpsc;
-use extra_futures::read_at;
 use tokio_core as tokio;
-use tokio_io::{io as tokio_io, AsyncRead};
+use tokio_io::{codec, AsyncRead};
+use bytes::{BufMut, BytesMut};
+
 use resp::{self, RespValue};
 use config::Config;
 use metrics::{self, Gauge};
 use utils::IdHashMap;
 
-struct RespConnection {
-    context: Rc<GlobalContext>,
-    token: Token,
-    addr: SocketAddr,
+struct RespCodec;
+
+impl codec::Decoder for RespCodec {
+    type Item = RespValue;
+    type Error = io::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> io::Result<Option<Self::Item>> {
+        let (consumed, result) = resp::Parser::new(&*src)
+            .and_then(
+                |mut p| match p.parse() {
+                    Ok(v) => Ok((p.consumed(), Ok(Some(v)))),
+                    Err(e) => Err(e),
+                },
+            )
+            .unwrap_or_else(
+                |e| match e {
+                    resp::RespError::Incomplete => (0, Ok(None)),
+                    _ => (0, Err(io::ErrorKind::InvalidData.into())),
+                },
+            );
+        src.split_to(consumed);
+        result
+    }
+}
+
+impl codec::Encoder for RespCodec {
+    type Item = RespValue;
+    type Error = io::Error;
+
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> io::Result<()> {
+        dst.reserve(item.serialized_size());
+        item.serialize_into(&mut dst.writer())
+            .expect("Failed to serialize into reserved space");
+        Ok(())
+    }
 }
 
 struct LocalContext {
@@ -42,6 +73,18 @@ pub struct Server {
 }
 
 impl LocalContext {
+    fn new(context: Rc<GlobalContext>, token: Token, chan_tx: fmpsc::UnboundedSender<RespValue>)
+        -> Self {
+        metrics::CLIENT_CONNECTION.inc();
+        context.token_chans.lock().unwrap().insert(token, chan_tx);
+        LocalContext {
+            context: context,
+            token: token,
+            inflight: false,
+            requests: VecDeque::new(),
+        }
+    }
+
     fn dispatch(&mut self, req: RespValue) {
         if self.inflight {
             debug!("Enqueued request ({}) {:?}", self.token, req);
@@ -70,110 +113,7 @@ impl LocalContext {
     }
 }
 
-impl RespConnection {
-    fn new(context: Rc<GlobalContext>, addr: SocketAddr, token: Token) -> Self {
-        metrics::CLIENT_CONNECTION.inc();
-        RespConnection {
-            context: context,
-            addr: addr,
-            token: token,
-        }
-    }
-
-    fn run(self, socket: tokio::net::TcpStream, _handle: tokio::reactor::Handle)
-        -> Box<Future<Item = (), Error = ()>> {
-        debug!("run token {}", self.token);
-        socket.set_nodelay(true).expect("Failed to set nodelay");
-        let (sock_rx, sock_tx) = socket.split();
-        let (pipe_tx, pipe_rx) = fmpsc::unbounded();
-        self.context.token_chans.lock().unwrap().insert(self.token, pipe_tx);
-        let ctx_rx = Rc::new(
-            RefCell::new(
-                LocalContext {
-                    context: self.context.clone(),
-                    token: self.token,
-                    inflight: false,
-                    requests: VecDeque::new(),
-                },
-            ),
-        );
-        let ctx_tx = ctx_rx.clone();
-
-        let read_fut = stream::iter((0..).map(|_| -> Result<(), io::Error> { Ok(()) }))
-            .fold(
-                (ctx_rx, sock_rx, Vec::new(), 0), |(ctx, s, mut b, p), _| {
-                    if b.len() - p < 4 * 1024 {
-                        unsafe {
-                            b.reserve(16 * 1024);
-                            let cap = b.capacity();
-                            b.set_len(cap);
-                        }
-                    }
-
-                    read_at(s, b, p).and_then(
-                        |(s, b, p, r)| {
-                            trace!("read {} bytes at [{}..{}]", r, p, b.len());
-                            let end = p + r;
-                            let mut parser = match resp::Parser::new(&b[..end]) {
-                                Ok(parser) => parser,
-                                Err(resp::RespError::Incomplete) => return Ok((ctx, s, b, end)),
-                                Err(resp::RespError::Invalid(e)) => {
-                                    return Err(io::Error::new(io::ErrorKind::Other, e))
-                                }
-                            };
-                            loop {
-                                match parser.parse() {
-                                    Ok(req) => ctx.borrow_mut().dispatch(req),
-                                    Err(resp::RespError::Incomplete) => break,
-                                    Err(resp::RespError::Invalid(e)) => {
-                                        return Err(io::Error::new(io::ErrorKind::Other, e))
-                                    }
-                                }
-                            }
-                            if end != parser.consumed() {
-                                // TODO: this should be abstracted away
-                                // copy remaining to start of buffer
-                                unsafe {
-                                    ::std::ptr::copy(
-                                        b.as_ptr().offset(parser.consumed() as isize),
-                                        b.as_ptr() as *mut _,
-                                        end - parser.consumed(),
-                                    );
-                                }
-                            }
-                            Ok((ctx, s, b, end - parser.consumed()))
-                        },
-                    )
-                }
-            )
-            .map(|_| ());
-
-        let write_fut = pipe_rx
-            .map_err(|_| io::ErrorKind::Other.into())
-            .fold(
-                (ctx_tx, sock_tx, Vec::new()), |(ctx, s, mut b), resp| {
-                    ctx.borrow_mut().dispatch_next();
-                    b.clear();
-                    resp.serialize_to(&mut b);
-                    tokio_io::write_all(s, b).map(move |(s, b)| (ctx, s, b))
-                }
-            )
-            .map(|_| ());
-
-        Box::new(
-            read_fut
-                .select(write_fut)
-                .then(
-                    move |_| {
-                        debug!("finished token {}", self.token);
-                        futures::finished::<(), ()>(())
-                    },
-                ),
-        )
-    }
-}
-
-impl Drop for RespConnection {
+impl Drop for LocalContext {
     fn drop(&mut self) {
         self.context.token_chans.lock().unwrap().remove(&self.token);
         metrics::CLIENT_CONNECTION.dec();
@@ -183,6 +123,40 @@ impl Drop for RespConnection {
 impl Server {
     pub fn new(config: Config) -> Server {
         Server { config: config }
+    }
+
+    fn connection(context: Rc<GlobalContext>, token: Token, socket: tokio::net::TcpStream)
+        -> Box<Future<Item = (), Error = io::Error>> {
+        socket.set_nodelay(true).expect("Failed to set nodelay");
+        let (sock_rx, sock_tx) = socket.split();
+        let sock_tx = codec::FramedWrite::new(sock_tx, RespCodec);
+        let sock_rx = codec::FramedRead::new(sock_rx, RespCodec);
+        let (chan_tx, chan_rx) = fmpsc::unbounded();
+        let ctx_rx = Rc::new(RefCell::new(LocalContext::new(context, token, chan_tx)));
+        let ctx_tx = ctx_rx.clone();
+
+        let fut_rx = sock_rx.for_each(
+            move |request| {
+                ctx_rx.borrow_mut().dispatch(request);
+                Ok(())
+            },
+        );
+
+        let fut_tx = sock_tx
+            .send_all(
+                chan_rx
+                    .map(
+                        move |response| {
+                            warn!("recv, {:?}", response);
+                            ctx_tx.borrow_mut().dispatch_next();
+                            response
+                        },
+                    )
+                    .map_err(|_| -> io::Error { io::ErrorKind::Other.into() }),
+            )
+            .map(|_| ());
+
+        Box::new(fut_rx.select(fut_tx).map(|_| ()).map_err(|(e, _)| e))
     }
 
     pub fn run(self) {
@@ -198,7 +172,7 @@ impl Server {
                    .lock()
                    .unwrap()
                    .get_mut(&token) {
-                let _ = chan.send(resp);
+                fmpsc::UnboundedSender::send(&chan, resp).expect("Can't send to token chan");
             } else {
                 debug!("Can't find response channel for token {:?}", token);
             },
@@ -225,10 +199,16 @@ impl Server {
                         info!("Refusing connection from {:?}, connection limit reached", addr);
                         return Ok(());
                     }
-                    info!("Accepting connection from {:?}", addr);
-                    let conn = RespConnection::new(context.clone(), addr, next_token);
-                    let conn_handle = handle.clone();
-                    handle.spawn_fn(move || conn.run(socket, conn_handle));
+                    info!("Token {} accepting connection from {:?}", next_token, addr);
+                    let conn_ctx = context.clone();
+                    handle.spawn(
+                        Self::connection(conn_ctx, next_token, socket).then(
+                            move |r| {
+                                info!("Token {} disconnected {:?}", next_token, r);
+                                Ok(())
+                            },
+                        ),
+                    );
                     next_token = next_token.wrapping_add(1);
                     Ok(())
                 },
