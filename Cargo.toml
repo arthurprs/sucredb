@@ -20,6 +20,8 @@ crc16="*"
 metrics="*"
 lazy_static = "*"
 toml="*"
+etcd="*"
+bincode="*"
 
 [dependencies.rocksdb]
 git = "https://github.com/pingcap/rust-rocksdb.git"
@@ -29,23 +31,15 @@ features = ["static-link", "portable"]
 git = "https://github.com/contain-rs/linear-map.git"
 features = ["serde_impl"]
 
-[dependencies.bincode]
-git = "https://github.com/TyOverby/bincode.git"
-
 [dependencies.bytes]
-path = "/home/arthurprs/dev/bytes"
+git = "https://github.com/carllerche/bytes.git"
 features = ["serde"]
 
 [dependencies.roaring]
 git = "https://github.com/arthurprs/roaring-rs"
 
-[dependencies.etcd]
-version="*"
-default-features = false
-features = ["nightly"]
-
 [replace]
-"bytes:0.4.2" = { path = "/home/arthurprs/dev/bytes"}
+"bytes:0.4.3" = { git = "https://github.com/carllerche/bytes.git", features = ["serde"] }
 
 # for profiling
 # [profile.release]
