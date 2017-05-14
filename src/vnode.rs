@@ -129,9 +129,9 @@ impl VNodeLog {
     pub fn gc(&mut self) {
         // get the highest dot that is known by all peers
         // then only keep [highest + 1..]
-        let highest = self.knowledge.values().cloned().min().unwrap_or(0);
-        let new_log = self.log.split_off(&(highest + 1));
-        debug!("gc cleaned {} log keys", self.log.len());
+        let horizon = 1 + self.knowledge.values().cloned().min().unwrap_or(0);
+        let new_log = self.log.split_off(&horizon);
+        debug!("gc horizon {}, {} cleaned, {} left", horizon, self.log.len(), new_log.len());
         self.log = new_log;
     }
 }
@@ -782,9 +782,12 @@ impl VNodeState {
 
     /// Updates knowledge of a peer based on it's clocks vector
     pub fn update_peer_knowledge(&mut self, peer: NodeId, bvv: &BitmappedVersionVector) {
+        debug!("update_peer_knowledge {} {:?}", peer, bvv);
         for (&node, bv) in bvv.iter() {
-            let log = self.logs.entry(node).or_insert_with(Default::default);
-            log.advance_knowledge(peer, bv.base());
+            self.logs
+                .entry(node)
+                .or_insert_with(Default::default)
+                .advance_knowledge(peer, bv.base());
         }
     }
 
@@ -793,6 +796,9 @@ impl VNodeState {
         let physical_peers: LinearSet<_> = peers.iter().cloned().map(|n| split_u64(n).0).collect();
         let mut to_remove = Vec::new();
         for &peer in &peers {
+            if peer == db.dht.node() {
+                continue; // skip itself
+            }
             let log = self.logs.entry(peer).or_insert_with(Default::default);
             for &physical_peer in &physical_peers {
                 log.knowledge.entry(physical_peer).or_insert(0);
