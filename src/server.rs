@@ -147,7 +147,6 @@ impl Server {
                 chan_rx
                     .map(
                         move |response| {
-                            warn!("recv, {:?}", response);
                             ctx_tx.borrow_mut().dispatch_next();
                             response
                         },

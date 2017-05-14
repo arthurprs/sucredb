@@ -2,7 +2,7 @@ use std::{fmt, thread, net};
 use std::cmp::min;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
-use std::collections::{HashMap, HashSet, BTreeMap};
+use std::collections::BTreeMap;
 use linear_map::set::LinearSet;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -10,7 +10,7 @@ use serde_json;
 use hash::{hash_slot, HASH_SLOTS};
 use database::{NodeId, VNodeId};
 use etcd;
-use utils::{IdHashMap, GenericError};
+use utils::{IdHashMap, IdHashSet, GenericError};
 
 pub type DHTChangeFn = Box<FnMut() + Send>;
 pub trait Metadata
@@ -165,10 +165,10 @@ impl<T: Metadata> Ring<T> {
         // 2. assing replicas for under replicated vnodes
 
         // map of active nodes to vnodes
-        let mut node_map = HashMap::new();
+        let mut node_map = IdHashMap::default();
         for (&node, &(_, leaving, _)) in &self.nodes {
             if !leaving {
-                node_map.insert(node, Vec::new());
+                node_map.insert(node, IdHashSet::default());
             }
         }
         for vn in 0..self.vnodes.len() {
@@ -176,7 +176,7 @@ impl<T: Metadata> Ring<T> {
             let pending = &mut self.pending[vn];
             // let retiring = &mut self.retiring[vn];
             for node in vnodes.iter().chain(pending.iter()) {
-                node_map.get_mut(node).unwrap().push(vn);
+                node_map.get_mut(node).unwrap().insert(vn);
             }
         }
 
@@ -188,13 +188,13 @@ impl<T: Metadata> Ring<T> {
             let vnodes = &mut self.vnodes[vn];
             let pending = &mut self.pending[vn];
             let retiring = &mut self.retiring[vn];
-            let doing_much: HashSet<_> = vnodes
+            let doing_much: IdHashSet<_> = vnodes
                 .iter()
                 .chain(pending.iter())
                 .filter(|n| node_map.get(n).unwrap().len() > vnpn)
                 .cloned()
                 .collect();
-            let candidates: HashSet<_> = node_map
+            let candidates: IdHashSet<_> = node_map
                 .keys()
                 .filter(
                     |n| {
@@ -208,6 +208,8 @@ impl<T: Metadata> Ring<T> {
                 assert!(vnodes.remove(&from) || pending.remove(&from));
                 assert!(pending.insert(to));
                 assert!(retiring.insert(from));
+                assert!(node_map.get_mut(&from).unwrap().remove(&vn));
+                assert!(node_map.get_mut(&to).unwrap().insert(vn));
             }
         }
 
@@ -217,27 +219,27 @@ impl<T: Metadata> Ring<T> {
             let pending = &mut self.pending[vn];
             let retiring = &mut self.retiring[vn];
             'outer: while vnodes.len() + pending.len() < self.replication_factor {
-                for (&node, partitions) in &mut node_map {
-                    if partitions.len() < vnpn && !vnodes.contains(&node) &&
-                       !pending.contains(&node) {
-                        partitions.push(vn);
-                        pending.insert(node);
-                        continue 'outer;
-                    }
+                // try to find a candidate that is doing less work
+                if let Some((&node, partitions)) =
+                    node_map
+                        .iter_mut()
+                        .filter(
+                            |&(&node, _)| {
+                                !vnodes.contains(&node) && !pending.contains(&node) &&
+                                !retiring.contains(&node)
+                            },
+                        )
+                        .min_by_key(|&(_, ref p)| p.len()) {
+                    assert!(partitions.insert(vn));
+                    assert!(pending.insert(node));
+                    continue 'outer;
                 }
-                for (&node, partitions) in &mut node_map {
-                    if !vnodes.contains(&node) && !pending.contains(&node) &&
-                       !retiring.contains(&node) {
-                        partitions.push(vn);
-                        pending.insert(node);
-                        continue 'outer;
-                    }
-                }
+                // try to find candidate that was retiring from that vnode
                 if let Some(&node) =
                     retiring.iter().min_by_key(|n| node_map.get(n).unwrap().len()) {
-                    node_map.get_mut(&node).unwrap().push(vn);
-                    retiring.remove(&node);
-                    vnodes.insert(node);
+                    assert!(node_map.get_mut(&node).unwrap().insert(vn));
+                    assert!(retiring.remove(&node));
+                    assert!(vnodes.insert(node));
                     continue 'outer;
                 }
                 unreachable!(
@@ -257,7 +259,7 @@ impl<T: Metadata> Ring<T> {
     }
 
     #[cfg(test)]
-    fn finish_rebalance(&mut self) {
+    fn finish_rebalance(&mut self) -> Result<(), GenericError> {
         self.is_valid().unwrap();
         for retiring in &mut self.retiring {
             retiring.clear();
@@ -267,19 +269,43 @@ impl<T: Metadata> Ring<T> {
                 assert!(self.vnodes[vn].insert(pending));
             }
         }
-        self.is_valid().unwrap();
+        self.is_valid()
     }
 
     fn is_valid(&self) -> Result<(), GenericError> {
         let replicas = min(self.nodes.len(), self.replication_factor);
+        let vnpn = self.vnodes.len() * self.replication_factor / self.nodes.len();
+        let vnpn_rest = self.vnodes.len() * self.replication_factor % self.nodes.len();
+        let mut node_map = IdHashMap::default();
+        node_map.reserve(self.nodes.len());
+
         for vn in 0..self.vnodes.len() {
             let vnodes = &self.vnodes[vn];
             let pending = &self.pending[vn];
             // let retiring = &self.retiring[vn];
             if vnodes.len() + pending.len() != replicas {
-                return Err(format!("vn {} has {:?}{:?} replicas", vn, vnodes, pending).into());
+                return Err(format!("vnode {} has {:?}{:?} replicas", vn, vnodes, pending).into());
+            }
+            for &n in vnodes.iter().chain(pending) {
+                *node_map.entry(n).or_insert(0usize) += 1;
             }
         }
+
+        for (&n, &count) in &node_map {
+            if count > vnpn + vnpn_rest + 1 {
+                return Err(
+                    format!(
+                        "node {} is a replica for {} vnodes, expected {} max, {:?}",
+                        n,
+                        count,
+                        vnpn + vnpn_rest + 1,
+                        node_map
+                    )
+                            .into(),
+                );
+            }
+        }
+
         Ok(())
     }
 }
@@ -515,7 +541,7 @@ impl<T: Metadata> DHT<T> {
         result
     }
 
-    pub fn members(&self) -> HashMap<NodeId, net::SocketAddr> {
+    pub fn members(&self) -> IdHashMap<NodeId, net::SocketAddr> {
         let inner = self.inner.lock().unwrap();
         inner.ring.nodes.iter().map(|(k, v)| (k.clone(), v.0.clone())).collect()
     }
@@ -653,7 +679,6 @@ impl<T: Metadata> Drop for DHT<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use super::*;
     use std::net;
     use config;
@@ -678,8 +703,18 @@ mod tests {
             assert_eq!(dht.nodes_for_vnode(0, false, false), &[node]);
             assert_eq!(dht.nodes_for_vnode(0, false, false), &[node]);
             assert_eq!(dht.nodes_for_vnode(0, true, true), &[node]);
-            assert_eq!(dht.members(), [(node, addr)].iter().cloned().collect::<HashMap<_, _>>());
+            assert_eq!(dht.members(), [(node, addr)].iter().cloned().collect());
         }
+    }
+
+    #[test]
+    fn test_rebalance_rf1() {
+        let _ = env_logger::init();
+        let addr = "0.0.0.0:0".parse().unwrap();
+        let mut ring = Ring::new(0, addr, (), 64, 1);
+        ring.join_node(1, addr, ()).unwrap();
+        ring.rebalance().unwrap();
+        ring.finish_rebalance().unwrap();
     }
 
     #[test]
@@ -690,22 +725,16 @@ mod tests {
         for i in 0..1_000 {
             let mut ring = Ring::new(0, addr, (), 64, 1 + thread_rng().gen::<u8>() % 4);
             for i in 0..thread_rng().gen::<u64>() % 64 {
-                ring.join_node(i, addr, ());
+                ring.join_node(i, addr, ()).unwrap();
             }
-            ring.rebalance();
-            if let Err(e) = ring.is_valid() {
-                panic!("{:?}: Invalid Ring {:?}", e, ring);
-            }
-            ring.finish_rebalance();
+            ring.rebalance().unwrap();
+            ring.finish_rebalance().unwrap();
 
             for i in 0..thread_rng().gen::<u64>() % ring.nodes.len() as u64 {
-                ring.remove_node(i);
+                ring.remove_node(i).unwrap();
             }
-            ring.rebalance();
-            if let Err(e) = ring.is_valid() {
-                panic!("{:?}: Invalid Ring {:?}", e, ring);
-            }
-            ring.finish_rebalance();
+            ring.rebalance().unwrap();
+            ring.finish_rebalance().unwrap();
         }
     }
 }
