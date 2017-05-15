@@ -12,7 +12,7 @@ Code quality and commit messages could be of subpar quality, I'll try to improve
 
 [1] Gonçalves, Ricardo, et al. "Concise server-wide causality management for eventually consistent data stores."
 
-### please ignore, checklist
+### please ignore, dev checklist
 
 * [x] store node id
 * [x] store vnode state (skip logs unless it's shutting down)
@@ -28,7 +28,7 @@ Code quality and commit messages could be of subpar quality, I'll try to improve
 * [x] resending sync/bootstrap data from sender side
 * [x] resending sync/bootstrap start from receiver side
 * [x] generic sync/bootstrap code?
-* [x] when log isn't enough to satisfy sync, iter the database sending necessary dots
+* [x] when log isn't enough to satisfy sync, iter the database sending missing dots
 * [x] propagate dht notifications to vnodes and take actions
 * [ ] dead node handling (either with gossip or smarter fabric)
 * [x] prevent log overflow from crashing ongoing syncs
@@ -44,8 +44,9 @@ Code quality and commit messages could be of subpar quality, I'll try to improve
 * [x] config file
 * [ ] better logging
 * [x] CI like Travis
-* [ ] modernize tokio servers (client and fabric)
+* [x] modernize tokio servers (client and fabric)
 * [ ] configurations everywhere
-* [ ] track deleted keys pending physical deletion (is this a good idea?)
-* [ ] persisted dot->key (is this a good idea?)
+* [ ] track deleted keys pending physical deletion (is this a good idea? maybe a compaction filter?)
+* [ ] persisted dot->key log (is this a good idea?)
 * [ ] pruning old nodes from node clocks (is it possible?)
+* [ ] inner vnode parallelism

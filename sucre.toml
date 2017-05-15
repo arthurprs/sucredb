@@ -1,0 +1,20 @@
+# All settings are usually acompained by a short description and a sane default
+#
+# NOTE:
+# to specify "size" you need to use a suffix, like:
+#
+# 1b => 1 byte
+# 1k | 1kb => 1024 bytes
+# 1m | 1mb => 1024*1024 bytes
+# 1g | 1gb => 1024*1024*1024 bytes
+#
+# to specify "time" you need to use a suffix, like:
+#
+# 1ms => 1 millisecond
+# 1s => 1 second
+# 1m => 60 seconds
+# 1h => 60 minutes
+# 1d => 24 hours
+#
+
+# TODO:

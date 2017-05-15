@@ -35,9 +35,9 @@ pub struct Config {
     pub request_timeout: u32,
     pub connections_max: u32,
     pub value_version_max: u16,
+    // TODO: these should be in the cluster config instead
     pub consistency_read: ConsistencyLevel,
     pub consistency_write: ConsistencyLevel,
-    // TODO: add config for socket buffers
 }
 
 impl Default for Config {
@@ -73,26 +73,25 @@ pub struct InitCommand {
     pub partitions: u16,
 }
 
-fn split_number_suffix(s: &str) -> Result<(u64, &str), GenericError> {
+fn split_number_suffix(s: &str) -> Result<(i64, &str), GenericError> {
     let digits_end = s.trim().chars().position(|c| !c.is_digit(10)).unwrap_or(s.len());
-    let (digits, suffix) = (&s[0..digits_end], &s[digits_end..]);
-    Ok((digits.parse::<u64>()?, suffix.trim()))
+    let (digits, suffix) = s.split_at(digits_end);
+    Ok((digits.parse::<i64>()?, suffix.trim_left()))
 }
 
-pub fn parse_duration(duration_text: &str) -> Result<u64, GenericError> {
+pub fn parse_duration(duration_text: &str) -> Result<i64, GenericError> {
     let (number, suffix) = split_number_suffix(duration_text)?;
     let scale = match suffix.to_lowercase().as_ref() {
         "ms" => 1,
         "s" => 1000,
         "m" => 1000 * 60,
         "h" => 1000 * 60 * 60,
-        "d" => 1000 * 60 * 60 * 24,
         _ => return Err(format!("Unknown duration suffix `{}`", suffix).into()),
     };
     number.checked_mul(scale).ok_or("Overflow error".into())
 }
 
-pub fn parse_size(size_text: &str) -> Result<u64, GenericError> {
+pub fn parse_size(size_text: &str) -> Result<i64, GenericError> {
     let (number, suffix) = split_number_suffix(size_text)?;
     let scale = match suffix.to_lowercase().as_ref() {
         "b" => 1,
