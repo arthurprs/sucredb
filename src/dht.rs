@@ -72,6 +72,14 @@ impl RingDescription {
     }
 }
 
+fn squash_etcd_errors(mut errors: Vec<etcd::Error>) -> GenericError {
+    if errors.len() == 1 {
+        errors.pop().unwrap().into()
+    } else {
+        format!("{:?}", errors).into()
+    }
+}
+
 impl<T: Metadata> Ring<T> {
     fn new(node: NodeId, addr: net::SocketAddr, meta: T, partitions: u16, replication_factor: u8)
         -> Self {
@@ -218,7 +226,7 @@ impl<T: Metadata> Ring<T> {
             let vnodes = &mut self.vnodes[vn];
             let pending = &mut self.pending[vn];
             let retiring = &mut self.retiring[vn];
-            'outer: while vnodes.len() + pending.len() < self.replication_factor {
+            while vnodes.len() + pending.len() < self.replication_factor {
                 // try to find a candidate that is doing less work
                 if let Some((&node, partitions)) =
                     node_map
@@ -232,7 +240,7 @@ impl<T: Metadata> Ring<T> {
                         .min_by_key(|&(_, ref p)| p.len()) {
                     assert!(partitions.insert(vn));
                     assert!(pending.insert(node));
-                    continue 'outer;
+                    continue;
                 }
                 // try to find candidate that was retiring from that vnode
                 if let Some(&node) =
@@ -240,7 +248,7 @@ impl<T: Metadata> Ring<T> {
                     assert!(node_map.get_mut(&node).unwrap().insert(vn));
                     assert!(retiring.remove(&node));
                     assert!(vnodes.insert(node));
-                    continue 'outer;
+                    continue;
                 }
                 unreachable!(
                     "cant find replica for vnode {} v{:?} p{:?} r{:?} rf:{}",
@@ -346,12 +354,12 @@ impl<T: Metadata> DHT<T> {
             etcd_client: etcd_client1,
         };
         if let Some(description) = initial {
-            assert!(description.partitions <= 4 * 1024);
-            dht.reset(meta, description.replication_factor, description.partitions);
+            dht.reset(meta, description.replication_factor, description.partitions)
+                .expect("Failed to init cluster");
         } else if let Some(old) = old_node {
-            dht.replace(old, meta);
+            dht.replace(old, meta).expect("Failed to replace node");
         } else {
-            dht.join(meta);
+            dht.join(meta).expect("Failed join cluster");
         }
         dht.partitions = inner.lock().unwrap().ring.vnodes.len();
         dht.slots_per_partition = HASH_SLOTS / dht.partitions as u16;
@@ -414,50 +422,56 @@ impl<T: Metadata> DHT<T> {
         debug!("exiting dht thread");
     }
 
-    fn refresh_ring(&self) {
+    fn refresh_ring(&self) -> Result<(), GenericError> {
         let cluster_key = format!("/sucredb/{}/dht", self.cluster);
-        let r = self.etcd_client.get(&cluster_key, false, false, false).unwrap();
+        let r = self.etcd_client
+            .get(&cluster_key, false, false, false)
+            .map_err(squash_etcd_errors)?;
         let node = r.node.unwrap();
         let mut inner = self.inner.lock().unwrap();
         inner.ring = Self::deserialize(&node.value.unwrap()).unwrap();
         inner.ring_version = node.modified_index.unwrap();
+        Ok(())
     }
 
-    fn join(&self, meta: T) {
-        self.refresh_ring();
+    fn join(&self, meta: T) -> Result<(), GenericError> {
+        self.refresh_ring()?;
         self.try_cas(
-                || {
-                    let (mut ring, ring_version) = self.ring_clone();
-                    ring.join_node(self.node, self.addr, meta.clone())?;
-                    Ok((ring_version, ring))
-                },
-                true,
-            )
-            .unwrap();
+            || {
+                let (mut ring, ring_version) = self.ring_clone();
+                ring.join_node(self.node, self.addr, meta.clone())?;
+                Ok((ring_version, ring))
+            },
+            true,
+        )
     }
 
-    fn replace(&self, old: NodeId, meta: T) {
-        self.refresh_ring();
+    fn replace(&self, old: NodeId, meta: T) -> Result<(), GenericError> {
+        self.refresh_ring()?;
         self.try_cas(
-                || {
-                    let (mut ring, ring_version) = self.ring_clone();
-                    ring.replace(old, self.node, self.addr, meta.clone())?;
-                    Ok((ring_version, ring))
-                },
-                true,
-            )
-            .unwrap();
+            || {
+                let (mut ring, ring_version) = self.ring_clone();
+                ring.replace(old, self.node, self.addr, meta.clone())?;
+                Ok((ring_version, ring))
+            },
+            true,
+        )
     }
 
-    fn reset(&self, meta: T, replication_factor: u8, partitions: u16) {
-        assert!(partitions.is_power_of_two(), "Number of partitions must be power of 2");
+    fn reset(&self, meta: T, replication_factor: u8, partitions: u16) -> Result<(), GenericError> {
+        assert!(partitions.is_power_of_two(), "Partition count must be a power of 2");
+        assert!(partitions >= 32, "Partition count must be >= 32");
+        assert!(partitions <= 1024, "Partition count must be <= 1024");
         assert!(replication_factor >= 1, "Replication factor must be >= 1");
+        assert!(replication_factor <= 6, "Replication factor must be <= 6");
+
         let cluster_key = format!("/sucredb/{}/dht", self.cluster);
         let mut inner = self.inner.lock().unwrap();
         inner.ring = Ring::new(self.node, self.addr, meta, partitions, replication_factor);
         let new = Self::serialize(&inner.ring).unwrap();
-        let r = self.etcd_client.set(&cluster_key, &new, None).unwrap();
+        let r = self.etcd_client.set(&cluster_key, &new, None).map_err(squash_etcd_errors)?;
         inner.ring_version = r.node.unwrap().modified_index.unwrap();
+        Ok(())
     }
 
     pub fn set_callback(&self, callback: DHTChangeFn) {

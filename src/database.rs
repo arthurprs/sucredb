@@ -205,7 +205,6 @@ impl Database {
     }
 
     // Gets a Sender handle that allows sending work to the database worker pool
-    // FIXME: leaky abstraction
     pub fn sender(&self) -> WorkerSender {
         self.workers.lock().unwrap().sender()
     }
