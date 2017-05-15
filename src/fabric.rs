@@ -10,7 +10,7 @@ use bytes::{BufMut, BytesMut};
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
 use bincode;
 
-use futures::{self, Future, IntoFuture, Stream, Sink};
+use futures::{self, Future, Stream, Sink};
 use futures::sync::mpsc as fmpsc;
 use tokio_core as tokio;
 use tokio_io::{io as tokio_io, AsyncRead};
@@ -195,42 +195,35 @@ impl Fabric {
         -> Box<Future<Item = (), Error = ()>> {
         debug!("Connecting to node {:?}: {:?}", node, addr);
         let context_cloned = context.clone();
-        let handle_cloned = handle.clone();
+        let handle1 = handle.clone();
+        let handle2 = handle.clone();
         let fut = tokio::net::TcpStream::connect(&addr, &handle)
             .and_then(
                 move |s| {
                     debug!("Stablished connection with {:?}: {:?}", node, addr);
-                    Self::connection(s, Some(node), addr, context_cloned, handle_cloned)
+                    Self::connection(s, Some(node), addr, context_cloned, handle)
                 },
             )
             .then(
                 move |_| {
                     tokio::reactor::Timeout::new(
                         Duration::from_millis(FABRIC_RECONNECT_INTERVAL_MS as u64),
-                        &handle,
+                        &handle1,
                     )
-                            .into_future()
-                            .and_then(|t| t)
-                            .and_then(
-                                move |_| {
-                                    let addr_opt = {
-                                        let locked = context.nodes_addr.lock().unwrap();
-                                        locked.get(&node).cloned()
-                                    };
-                                    if let Some(addr) = addr_opt {
-                                        debug!("Reconnecting fabric connection to {:?}", addr);
-                                        handle.spawn(
-                                            Self::connect(
-                                                node,
-                                                addr,
-                                                context,
-                                                handle.clone(),
-                                            ),
-                                        );
-                                    }
-                                    Ok(())
-                                },
-                            )
+                },
+            )
+            .and_then(|t| t)
+            .and_then(
+                move |_| {
+                    let addr_opt = {
+                        let locked = context.nodes_addr.lock().unwrap();
+                        locked.get(&node).cloned()
+                    };
+                    if let Some(addr) = addr_opt {
+                        debug!("Reconnecting fabric connection to {:?}", addr);
+                        handle2.spawn(Self::connect(node, addr, context, handle2.clone()));
+                    }
+                    Ok(())
                 },
             );
         Box::new(fut.map_err(|_| ()))
