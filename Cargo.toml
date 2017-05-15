@@ -4,42 +4,44 @@ version = "0.1.0"
 authors = ["arthurprs"]
 
 [dependencies]
-rand = "*"
-serde = "*"
-serde_derive = "*"
-serde_json = "*"
-log = "*"
-env_logger = "*"
-byteorder="*"
-nodrop="*"
-tokio-core = "*"
-tokio-io = "*"
-futures = "*"
-clap="*"
-crc16="*"
-metrics="*"
-lazy_static = "*"
-toml="*"
-etcd="*"
-bincode="*"
+rand = "0.3"
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
+log = "0.3"
+env_logger = "0.4"
+byteorder="1.0"
+nodrop="0.1"
+tokio-core = "0.1"
+tokio-io = "0.1"
+futures = "0.1"
+clap="2.0"
+crc16="0.3"
+metrics="0.2"
+lazy_static = "0.2"
+toml="0.4"
+etcd="0.6"
+bincode="0.8"
+num_cpus="1.0"
+roaring="0.5"
 
 [dependencies.rocksdb]
 git = "https://github.com/pingcap/rust-rocksdb.git"
+rev = "5e80fbd4"
 features = ["static-link", "portable"]
 
 [dependencies.linear-map]
 git = "https://github.com/contain-rs/linear-map.git"
+rev = "bb5b6481"
 features = ["serde_impl"]
 
 [dependencies.bytes]
 git = "https://github.com/carllerche/bytes.git"
+rev = "7110d57b"
 features = ["serde"]
 
-[dependencies.roaring]
-git = "https://github.com/arthurprs/roaring-rs"
-
 [replace]
-"bytes:0.4.3" = { git = "https://github.com/carllerche/bytes.git", features = ["serde"] }
+"bytes:0.4.3" = { git = "https://github.com/carllerche/bytes.git", rev="7110d57b", features = ["serde"] }
 
 # for profiling
 # [profile.release]

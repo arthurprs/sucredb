@@ -3,10 +3,15 @@ use std::fs::File;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::convert::TryInto;
-use types::ConsistencyLevel;
-use utils::GenericError;
+use std::cmp::max;
+
+use num_cpus;
 use toml;
 
+use utils::GenericError;
+use types::ConsistencyLevel;
+
+// Remember to update defaults in sucre.toml!
 pub const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:6379";
 pub const DEFAULT_FABRIC_ADDR: &str = "127.0.0.1:16379";
 pub const DEFAULT_ETCD_ADDR: &str = "http://127.0.0.1:2379";
@@ -33,7 +38,7 @@ pub struct Config {
     pub sync_msg_inflight: u32,
     pub fabric_timeout: u32,
     pub request_timeout: u32,
-    pub connections_max: u32,
+    pub client_connection_max: u32,
     pub value_version_max: u16,
     // TODO: these should be in the cluster config instead
     pub consistency_read: ConsistencyLevel,
@@ -42,6 +47,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
+        // Remember to update defaults in sucre.toml!
         Config {
             data_dir: DEFAULT_DATA_DIR.into(),
             cluster_name: DEFAULT_CLUSTER_NAME.into(),
@@ -50,16 +56,16 @@ impl Default for Config {
             etcd_addr: DEFAULT_ETCD_ADDR.into(),
             cmd_init: None,
             worker_timer: 500,
-            worker_count: 4,
-            sync_incomming_max: 1,
-            sync_outgoing_max: 1,
+            worker_count: max(4, 1 + num_cpus::get() as u16 * 2),
+            sync_incomming_max: 10,
+            sync_outgoing_max: 10,
             sync_timeout: 10_000,
             sync_msg_timeout: 1000,
             sync_msg_inflight: 10,
             sync_auto: true,
             fabric_timeout: 1000,
             request_timeout: 1000,
-            connections_max: 100,
+            client_connection_max: 100,
             value_version_max: 100,
             consistency_read: ConsistencyLevel::One,
             consistency_write: ConsistencyLevel::One,
@@ -157,7 +163,7 @@ pub fn read_config_file(path: &Path, config: &mut Config) {
     cfg!(toml, config, sync_msg_inflight, as_integer, try_into);
     cfg!(toml, config, fabric_timeout, as_str, parse_duration, try_into);
     cfg!(toml, config, request_timeout, as_str, parse_duration, try_into);
-    cfg!(toml, config, connections_max, as_integer, try_into);
+    cfg!(toml, config, client_connection_max, as_integer, try_into);
     cfg!(toml, config, value_version_max, as_integer, try_into);
     cfg!(toml, config, consistency_read, as_str, try_into);
     cfg!(toml, config, consistency_write, as_str, try_into);

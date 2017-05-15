@@ -450,8 +450,8 @@ impl<T: Metadata> DHT<T> {
     }
 
     fn reset(&self, meta: T, replication_factor: u8, partitions: u16) {
-        assert!(partitions.is_power_of_two());
-        assert!(replication_factor > 0);
+        assert!(partitions.is_power_of_two(), "Number of partitions must be power of 2");
+        assert!(replication_factor >= 1, "Replication factor must be >= 1");
         let cluster_key = format!("/sucredb/{}/dht", self.cluster);
         let mut inner = self.inner.lock().unwrap();
         inner.ring = Ring::new(self.node, self.addr, meta, partitions, replication_factor);
@@ -487,8 +487,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn key_vnode(&self, key: &[u8]) -> VNodeId {
-        // use / instead of % to get continuous hash slots
-        // for each vnode
+        // use / instead of % to get continuous hash slots for each vnode
         (hash_slot(key) / self.slots_per_partition) as VNodeId
     }
 

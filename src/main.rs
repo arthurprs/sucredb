@@ -30,6 +30,7 @@ extern crate tokio_core;
 extern crate tokio_io;
 extern crate bytes;
 extern crate toml;
+extern crate num_cpus;
 
 #[macro_use]
 mod utils;
@@ -123,6 +124,10 @@ fn configure() -> config::Config {
                     Arg::with_name("partitions")
                         .short("p")
                         .help("Number of partitions")
+                        .long_help(
+                            "Number of partitions, the recommended value is \
+                            `expected node count * 10` rounded up to the next power of 2.",
+                        )
                         .default_value(DEFAULT_PARTITIONS),
                 )
                 .display_order(0),

@@ -194,7 +194,7 @@ impl Server {
             .for_each(
                 |(socket, addr)| {
                     if context.token_chans.lock().unwrap().len() >=
-                       context.database.config.connections_max as usize {
+                       context.database.config.client_connection_max as usize {
                         info!("Refusing connection from {:?}, connection limit reached", addr);
                         return Ok(());
                     }
