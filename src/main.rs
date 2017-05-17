@@ -32,6 +32,10 @@ extern crate tokio_io;
 extern crate bytes;
 extern crate num_cpus;
 
+
+#[cfg(test)]
+extern crate env_logger;
+
 #[macro_use]
 mod utils;
 mod types;

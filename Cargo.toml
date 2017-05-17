@@ -47,6 +47,9 @@ features = ["serde"]
 [replace]
 "bytes:0.4.3" = { git = "https://github.com/carllerche/bytes.git", rev="7110d57b", features = ["serde"] }
 
+[dev-dependencies]
+env_logger = "0.4"
+
 # for profiling
 # [profile.release]
 # debug=true
