@@ -7,12 +7,13 @@
 #![allow(dead_code)]
 #[macro_use]
 extern crate log;
-extern crate env_logger;
+extern crate log4rs;
 extern crate rand;
 extern crate roaring;
 extern crate linear_map;
 extern crate serde;
 extern crate serde_json;
+extern crate serde_yaml;
 #[macro_use]
 extern crate serde_derive;
 extern crate bincode;
@@ -29,7 +30,6 @@ extern crate futures;
 extern crate tokio_core;
 extern crate tokio_io;
 extern crate bytes;
-extern crate toml;
 extern crate num_cpus;
 
 #[macro_use]
@@ -68,9 +68,9 @@ fn configure() -> config::Config {
                 .short("c")
                 .long("config")
                 .takes_value(true)
-                .help(".toml config file")
+                .help(".yaml config file")
                 .long_help(
-                    "Path to the .toml config file. Note that configuration \
+                    "Path to the .yaml config file. Note that configuration \
                     set through the command line will take precedence \
                     over the config file.",
                 )
@@ -138,6 +138,8 @@ fn configure() -> config::Config {
 
     if let Some(v) = matches.value_of("config_file") {
         read_config_file(Path::new(v), &mut config);
+    } else {
+        setup_default_logging();
     }
 
     if let Some(v) = matches.value_of("data_dir") {
@@ -174,7 +176,6 @@ fn configure() -> config::Config {
 
 #[cfg(not(test))]
 fn main() {
-    env_logger::init().unwrap();
     let server = server::Server::new(configure());
     server.run();
 }

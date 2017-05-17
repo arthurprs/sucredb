@@ -16,50 +16,65 @@
 # ====== GENERAL CONFIGURATION ======
 
 # Location of data directory in the file system
-data_dir = "./data"
+data_dir: "./data"
 
 # URL to etcd, used to manage the cluster metadata
 # All key/values will have the "/sucredb/{cluster_name}/" prefix
-etcd_addr = "http://127.0.0.1:2379"
+etcd_addr: "http://127.0.0.1:2379"
 
 # Cluster name, must be the same for nodes to see each other in etcd
-cluster_name = "default"
+cluster_name: "default"
 
 # Ip and port to bind the socket for client connections
-listen_addr = "127.0.0.1:9797"
+listen_addr: "127.0.0.1:9797"
 
 # Ip and port to bind the socket for internal cluster connections
-fabric_addr = "127.0.0.1:19797"
+fabric_addr: "127.0.0.1:19797"
 
 # Timeout for client requests
-# request_timeout = "1000ms"
+# request_timeout: "1000ms"
 
 # Resolution for internal tasks timer
-# worker_timer = "500ms"
+# worker_timer: "500ms"
 
 # Number of worker threads
 # Defaults to max(4, 1 + cpucount * 2)
-# worker_count = 4
+# worker_count: 4
 
 # Maximum number of incomming syncs
-# sync_incomming_max = 10
+# sync_incomming_max: 10
 
 # Maximum number of outgoing syncs
-# sync_outgoing_max = 10
+# sync_outgoing_max: 10
 
 # Maximum number of client connections
-# client_connection_max = 100
+# client_connection_max: 100
+
+# logging configuration, log4rs style
+logging:
+  appenders:
+    console:
+      kind: "console"
+      target: "stderr"
+    file:
+      kind: "file"
+      path: "./sucredb.log"
+
+  loggers:
+    sucredb:
+      level: "info"
+      appenders: ["file", "console"]
 
 # ====== ADVANCED CONFIGURATION ======
 
 # Amount of time to wait before aborting an unresponsible sync
-# sync_timeout = "10s"
+# sync_timeout: "10s"
 
 # Timeout for sync messages
-# sync_msg_timeout = "1000ms"
+# sync_msg_timeout: "1000ms"
 
 # Maximum number of sync messages inflight (per sync)
-# sync_msg_inflight = 10
+# sync_msg_inflight: 10
 
 # Maximum number of conflicting versions for a given value
-# value_version_max = 100
+# value_version_max: 100
