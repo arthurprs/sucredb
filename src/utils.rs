@@ -2,8 +2,6 @@ use std::hash::{Hasher, BuildHasherDefault};
 use std::collections::{HashMap, HashSet};
 use std::{io, path, fs};
 use std::error::Error;
-use serde;
-use serde_json;
 
 pub type GenericError = Box<Error + Send + Sync + 'static>;
 
@@ -67,25 +65,12 @@ pub fn assume_str(bytes: &[u8]) -> &str {
     unsafe { ::std::str::from_utf8_unchecked(bytes) }
 }
 
-pub fn write_json_to_file<T: serde::Serialize, P: AsRef<path::Path>>
-    (data: &T, path: P)
-     -> Result<(), GenericError> {
-    let mut tmp_ext = path.as_ref().extension().unwrap().to_owned();
-    tmp_ext.push(".tmp");
-    let tmp_path = path.as_ref().with_extension(tmp_ext);
-    let mut tmp_file = fs::File::create(&tmp_path)?;
-    serde_json::to_writer_pretty(&mut tmp_file, data)?;
-    drop(tmp_file);
-    fs::rename(&tmp_path, path)?;
-    Ok(())
-}
-
-pub fn read_json_from_file<T: serde::de::DeserializeOwned, P: AsRef<path::Path>>
-    (path: P)
-     -> Result<T, GenericError> {
-    let file = fs::File::open(path)?;
-    let result = serde_json::from_reader(&file)?;
-    Ok(result)
+pub fn is_dir_empty_or_absent<P: AsRef<path::Path>>(path: P) -> io::Result<bool> {
+    match fs::read_dir(path.as_ref()) {
+        Ok(dir) => Ok(dir.count() == 0),
+        Err(ref err) if err.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(err) => Err(err),
+    }
 }
 
 macro_rules! assert_eq_repr {

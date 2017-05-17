@@ -8,7 +8,7 @@ use workers::*;
 use resp::RespValue;
 use storage::{StorageManager, Storage};
 use rand::{thread_rng, Rng};
-use utils::{IdHashMap, split_u64, join_u64};
+use utils::{IdHashMap, split_u64, join_u64, assume_str, is_dir_empty_or_absent};
 pub use types::*;
 use config::Config;
 use metrics::{self, Gauge};
@@ -60,6 +60,11 @@ macro_rules! vnode {
 
 impl Database {
     pub fn new(config: &Config, response_fn: DatabaseResponseFn) -> Arc<Database> {
+        if config.cmd_init.is_some() &&
+           !is_dir_empty_or_absent(&config.data_dir).expect("failed to open data dir") {
+            panic!("can't init cluster when data directory isn't clean");
+        }
+
         let storage_manager = StorageManager::new(&config.data_dir).unwrap();
         let meta_storage = storage_manager.open(u16::max_value(), true).unwrap();
 
@@ -74,15 +79,18 @@ impl Database {
         } else {
             (None, thread_rng().gen::<i64>().abs() as NodeId)
         };
-        if let Some(s_cluster) = meta_storage.get_vec(b"cluster") {
-            assert_eq!(s_cluster, config.cluster_name.as_bytes(), "Stored cluster name differs!");
+        if let Some(cluster_in_storage) = meta_storage.get_vec(b"cluster") {
+            if cluster_in_storage != config.cluster_name.as_bytes() {
+                panic!("Cluster name differs! Expected `{}` got `{}`",
+                    config.cluster_name, assume_str(&cluster_in_storage));
+            };
         }
         meta_storage.set(b"cluster", config.cluster_name.as_bytes());
         meta_storage.set(b"node", node.to_string().as_bytes());
         meta_storage.del(b"clean_shutdown");
         meta_storage.sync();
 
-        info!("Metadata loaded! node:{:?} old_node:{:?}", node, old_node);
+        info!("Metadata loaded! node_id:{} previous:{:?}", node, old_node);
 
         let fabric = Fabric::new(node, &config).unwrap();
         let dht = DHT::new(
