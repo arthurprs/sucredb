@@ -11,7 +11,7 @@ dependencies = [
  "etcd 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures 0.1.13 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazy_static 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "linear-map 1.1.0 (git+https://github.com/contain-rs/linear-map.git?rev=bb5b6481)",
+ "linear-map 1.1.0 (git+https://github.com/arthurprs/linear-map.git?branch=retain)",
  "log 0.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "log4rs 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "metrics 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -348,7 +348,7 @@ dependencies = [
 [[package]]
 name = "linear-map"
 version = "1.1.0"
-source = "git+https://github.com/contain-rs/linear-map.git?rev=bb5b6481#bb5b6481956829be2a840989a92a84fb502e24c4"
+source = "git+https://github.com/arthurprs/linear-map.git?branch=retain#e88b67b29e6204d2271bb6b848e4e9102ba53f6f"
 dependencies = [
  "serde 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_test 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1025,7 +1025,7 @@ dependencies = [
 "checksum lazycell 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "ce12306c4739d86ee97c23139f3a34ddf0387bbf181bc7929d287025a8c3ef6b"
 "checksum libc 0.2.22 (registry+https://github.com/rust-lang/crates.io-index)" = "babb8281da88cba992fa1f4ddec7d63ed96280a1a53ec9b919fd37b53d71e502"
 "checksum librocksdb_sys 0.1.0 (git+https://github.com/pingcap/rust-rocksdb.git?rev=5e80fbd4)" = "<none>"
-"checksum linear-map 1.1.0 (git+https://github.com/contain-rs/linear-map.git?rev=bb5b6481)" = "<none>"
+"checksum linear-map 1.1.0 (git+https://github.com/arthurprs/linear-map.git?branch=retain)" = "<none>"
 "checksum linked-hash-map 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)" = "6d262045c5b87c0861b3f004610afd0e2c851e2908d08b6c870cbb9d5f494ecd"
 "checksum linked-hash-map 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)" = "7860ec297f7008ff7a1e3382d7f7e1dcd69efc94751a2284bafc3d013c2aa939"
 "checksum log 0.3.7 (registry+https://github.com/rust-lang/crates.io-index)" = "5141eca02775a762cc6cd564d8d2c50f67c0ea3a372cbf1c51592b3e029e10ad"

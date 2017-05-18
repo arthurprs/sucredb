@@ -475,24 +475,16 @@ impl<T> DottedCausalContainer<T> {
     }
 
     pub fn discard(&mut self, vv: &VersionVector) {
-        // FIXME: shouldn't allocate
-        let new = self.dots
+        self.dots
             .0
-            .drain()
-            .filter(|&((id, version), _)| version > vv.get(id).unwrap_or(0))
-            .collect();
-        self.dots = Dots(new);
+            .retain(|&(id, version), _| version > vv.get(id).unwrap_or(0));
         self.vv.merge(vv);
     }
 
     pub fn strip(&mut self, bvv: &BitmappedVersionVector) {
-        // FIXME: shouldn't allocate
-        let new = self.vv
+        self.vv
             .0
-            .drain()
-            .filter(|&(id, version)| version > bvv.get(id).map(|b| b.base).unwrap_or(0))
-            .collect();
-        self.vv = VersionVector(new);
+            .retain(|&id, &mut version| version > bvv.get(id).map(|b| b.base).unwrap_or(0));
     }
 
     pub fn fill(&mut self, bvv: &BitmappedVersionVector) {

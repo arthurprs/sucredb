@@ -1,8 +1,6 @@
 #![feature(
-    proc_macro,
     slice_patterns,
     fnbox,
-    conservative_impl_trait,
     try_from)]
 #![allow(dead_code)]
 #[macro_use]
@@ -31,7 +29,6 @@ extern crate tokio_core;
 extern crate tokio_io;
 extern crate bytes;
 extern crate num_cpus;
-
 
 #[cfg(test)]
 extern crate env_logger;

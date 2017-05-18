@@ -35,8 +35,8 @@ rev = "5e80fbd4"
 features = ["static-link", "portable"]
 
 [dependencies.linear-map]
-git = "https://github.com/contain-rs/linear-map.git"
-rev = "bb5b6481"
+git = "https://github.com/arthurprs/linear-map.git"
+branch = "retain"
 features = ["serde_impl"]
 
 [dependencies.bytes]
