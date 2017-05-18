@@ -20,7 +20,7 @@ pub trait Metadata
 impl<T: Clone + Serialize + DeserializeOwned + Send + fmt::Debug + 'static> Metadata for T {}
 
 /// The Cluster controller, it knows how to map keys to their vnodes and
-//// whose nodes hold data for each vnodes.
+/// whose nodes hold data for each vnodes.
 /// Calls a callback on cluster changes so the database can execute logic to converge
 /// it's state to match the DHT.
 /// Consistency is achieved by using etcd in the background but it's only required for
@@ -49,13 +49,21 @@ struct Inner<T: Metadata> {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(bound="T: DeserializeOwned")]
+struct Node<T: Metadata> {
+    addr: net::SocketAddr,
+    leaving: bool,
+    meta: T,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(bound="T: DeserializeOwned")]
 pub struct Ring<T: Metadata> {
     replication_factor: usize,
     vnodes: Vec<LinearSet<NodeId>>,
     pending: Vec<LinearSet<NodeId>>,
     retiring: Vec<LinearSet<NodeId>>,
     // map of nodes to (fabric_addr, leaving_flag, meta)
-    nodes: IdHashMap<NodeId, (net::SocketAddr, bool, T)>,
+    nodes: IdHashMap<NodeId, Node<T>>,
 }
 
 pub struct RingDescription {
@@ -88,7 +96,16 @@ impl<T: Metadata> Ring<T> {
             vnodes: vec![[node].iter().cloned().collect(); partitions as usize],
             pending: vec![Default::default(); partitions as usize],
             retiring: vec![Default::default(); partitions as usize],
-            nodes: vec![(node, (addr, false, meta))].into_iter().collect(),
+            nodes: vec![
+                (node,
+                 Node {
+                     addr,
+                     leaving: false,
+                     meta,
+                 }),
+            ]
+                    .into_iter()
+                    .collect(),
         }
     }
 
@@ -101,13 +118,21 @@ impl<T: Metadata> Ring<T> {
                 assert!(self.pending[i].remove(&node));
             }
         }
-        self.nodes.get_mut(&node).unwrap().1 = true;
+        self.nodes.get_mut(&node).unwrap().leaving = true;
         Ok(())
     }
 
     fn join_node(&mut self, node: NodeId, addr: net::SocketAddr, meta: T)
         -> Result<(), GenericError> {
-        self.nodes.insert(node, (addr, false, meta));
+        self.nodes
+            .insert(
+                node,
+                Node {
+                    addr,
+                    leaving: false,
+                    meta,
+                },
+            );
         Ok(())
     }
 
@@ -134,23 +159,28 @@ impl<T: Metadata> Ring<T> {
         Ok(())
     }
 
-    fn replace(&mut self, old: NodeId, node: NodeId, addr: net::SocketAddr, meta: T)
+    fn replace(&mut self, old: NodeId, new: NodeId, addr: net::SocketAddr, meta: T)
         -> Result<(), GenericError> {
-        let (_, leaving, _) = if let Some(removed) = self.nodes.remove(&old) {
+        let Node { leaving, .. } = if let Some(removed) = self.nodes.remove(&old) {
             let iter = self.vnodes
                 .iter_mut()
                 .chain(self.pending.iter_mut().chain(self.retiring.iter_mut()));
             for v in iter {
                 if v.remove(&old) {
-                    assert!(v.insert(node));
+                    assert!(v.insert(new));
                 }
             }
             removed
         } else {
-            return Err(format!("{} is not in the cluster", node).into());
+            return Err(format!("{} is not in the cluster", new).into());
         };
-        if self.nodes.insert(node, (addr, leaving, meta)).is_some() {
-            return Err(format!("{} is already in the cluster", node).into());
+        let node = Node {
+            addr,
+            leaving,
+            meta,
+        };
+        if self.nodes.insert(new, node).is_some() {
+            return Err(format!("{} is already in the cluster", new).into());
         }
         Ok(())
     }
@@ -174,7 +204,7 @@ impl<T: Metadata> Ring<T> {
 
         // map of active nodes to vnodes
         let mut node_map = IdHashMap::default();
-        for (&node, &(_, leaving, _)) in &self.nodes {
+        for (&node, &Node { leaving, .. }) in &self.nodes {
             if !leaving {
                 node_map.insert(node, IdHashSet::default());
             }
@@ -544,10 +574,14 @@ impl<T: Metadata> DHT<T> {
             inner.ring.vnodes[vnode as usize]
                 .iter()
                 .chain(inner.ring.pending[vnode as usize].iter())
-                .map(
+                .filter_map(
                     |n| {
-                        let (addr, _, meta) = inner.ring.nodes.get(n).cloned().unwrap();
-                        (*n, (addr, meta))
+                        let node = inner.ring.nodes.get(n).unwrap();
+                        if node.leaving {
+                            None
+                        } else {
+                            Some((*n, (node.addr, node.meta.clone())))
+                        }
                     },
                 ),
         );
@@ -556,7 +590,7 @@ impl<T: Metadata> DHT<T> {
 
     pub fn members(&self) -> IdHashMap<NodeId, net::SocketAddr> {
         let inner = self.inner.lock().unwrap();
-        inner.ring.nodes.iter().map(|(k, v)| (k.clone(), v.0.clone())).collect()
+        inner.ring.nodes.iter().map(|(k, v)| (k.clone(), v.addr)).collect()
     }
 
     pub fn slots(&self) -> BTreeMap<(u16, u16), Vec<(NodeId, (net::SocketAddr, T))>> {
@@ -574,10 +608,14 @@ impl<T: Metadata> DHT<T> {
             let members: Vec<_> = v.iter()
                 .chain(p.iter())
                 .chain(r.iter())
-                .map(
+                .filter_map(
                     |n| {
-                        let (addr, _, meta) = inner.ring.nodes.get(n).cloned().unwrap();
-                        (*n, (addr, meta))
+                        let node = inner.ring.nodes.get(n).unwrap();
+                        if node.leaving {
+                            None
+                        } else {
+                            Some((*n, (node.addr, node.meta.clone())))
+                        }
                     },
                 )
                 .collect();
@@ -721,17 +759,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rebalance_rf1() {
-        let _ = env_logger::init();
-        let addr = "0.0.0.0:0".parse().unwrap();
-        let mut ring = Ring::new(0, addr, (), 64, 1);
-        ring.join_node(1, addr, ()).unwrap();
-        ring.rebalance().unwrap();
-        ring.finish_rebalance().unwrap();
-    }
-
-    #[test]
-    // #[ignore]
     fn test_rebalance() {
         let _ = env_logger::init();
         let addr = "0.0.0.0:0".parse().unwrap();

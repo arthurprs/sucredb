@@ -22,6 +22,13 @@ struct Stats {
     outgoing_syncs: u16,
 }
 
+// TODO: some things to investigate
+// track deleted keys pending physical deletion (is this a good idea? maybe a compaction filter?)
+// persisted dot->key log (is this a good idea?)
+// pruning old nodes from node clocks (is it possible?)
+// inner vnode parallelism
+// track bad peers with the fabric or gossip and use that info
+
 pub struct Database {
     pub dht: DHT<net::SocketAddr>,
     pub fabric: Fabric,
@@ -81,8 +88,11 @@ impl Database {
         };
         if let Some(cluster_in_storage) = meta_storage.get_vec(b"cluster") {
             if cluster_in_storage != config.cluster_name.as_bytes() {
-                panic!("Cluster name differs! Expected `{}` got `{}`",
-                    config.cluster_name, assume_str(&cluster_in_storage));
+                panic!(
+                    "Cluster name differs! Expected `{}` got `{}`",
+                    config.cluster_name,
+                    assume_str(&cluster_in_storage)
+                );
             };
         }
         meta_storage.set(b"cluster", config.cluster_name.as_bytes());

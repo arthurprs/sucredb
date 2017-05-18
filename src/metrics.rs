@@ -2,6 +2,7 @@ use std::sync::Arc;
 use rust_metrics::metrics::{StdMeter, StdGauge};
 pub use rust_metrics::metrics::{Counter, Gauge, Meter, Metric};
 
+// TODO: Expose these metrics
 lazy_static!{
     pub static ref CLIENT_CONNECTION: Arc<StdGauge> = {
         StdGauge::new()

@@ -25,6 +25,7 @@ pub struct StorageManager {
     db: Arc<rocksdb::DB>,
 }
 
+// TODO: merge operator would be a huge win
 // This implementation goes to a lot of trouble to allow
 // safe-ish iterators that don't require a lifetime attached to them.
 pub struct Storage {
@@ -61,8 +62,8 @@ impl StorageManager {
                 rocksdb::DBCompressionType::DBLz4,
             ],
         );
-        opts.set_write_buffer_size(32 * 4 * 1024);
-        opts.set_max_bytes_for_level_base(128 * 1024 * 1024);
+        opts.set_write_buffer_size(32 * 1024);
+        opts.set_max_bytes_for_level_base(32 * 4 * 1024 * 1024);
         opts.set_max_write_buffer_number(3);
         opts.set_max_background_flushes(3);
         let mut block_opts = rocksdb::BlockBasedOptions::new();

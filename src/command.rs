@@ -16,6 +16,8 @@ pub enum CommandError {
     UnknownCommand,
     TooManyVersions,
     InvalidArgCount,
+    InvalidKey, // TODO: max key length
+    InvalidValue, // TODO: max value length
     InvalidConsistencyValue,
     InvalidIntValue,
     Unavailable,

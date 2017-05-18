@@ -393,7 +393,7 @@ impl VersionVector {
                 vac.insert(version);
             }
             Entry::Occupied(mut ocu) => {
-                if ocu.get() < &version {
+                if *ocu.get() < version {
                     ocu.insert(version);
                 }
             }
@@ -475,9 +475,7 @@ impl<T> DottedCausalContainer<T> {
     }
 
     pub fn discard(&mut self, vv: &VersionVector) {
-        self.dots
-            .0
-            .retain(|&(id, version), _| version > vv.get(id).unwrap_or(0));
+        self.dots.0.retain(|&(id, version), _| version > vv.get(id).unwrap_or(0));
         self.vv.merge(vv);
     }
 
