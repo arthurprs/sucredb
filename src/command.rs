@@ -181,6 +181,10 @@ impl Database {
         (&self.response_fn)(token, resp);
     }
 
+    pub fn respond_int(&self, token: Token, int: i64) {
+        self.respond(token, RespValue::Int(int));
+    }
+
     pub fn respond_ok(&self, token: Token) {
         self.respond(token, RespValue::Status("OK".into()));
     }

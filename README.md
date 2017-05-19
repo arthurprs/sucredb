@@ -4,39 +4,39 @@
 
 Sucredb is a multi-master key-value distributed database, it providers a dynamo style tunable consistent and causality tracking.
 
-Any node that owns a partition (usually 3) can serve both reads and writes. The database tracks causality using vector-clocks and will NOT drop any conflicting writes unlike LWW (last write wins) and other strategies. Conflicts can and will happen due to races between clients and network partitions.
+Any node that owns a partition (replication factor) can serve both reads and writes. The database tracks causality using vector-clocks and will NOT drop any conflicting writes unlike LWW (last write wins) and other strategies. Conflicts can and will happen due to races between clients and network partitions.
 
 Status: Alpha quality with missing pieces.
 
 # API & Clients
 
-You can use Sucredb with any redis cluster client.
+You can use Sucredb with any Redis Cluster client.
 
 *Get* like most commands bellow can be done with various commands, you can choose any that makes you client library happy. Consistency level is optional.
 
 Results are returned as an array containing the values (zero, one or more if there's conflicting versions), the last item of that array (always present) is a binary string representing the causal context.
 
-> `get/hget/mget key {consistency}`
->
-> `[{value1}, {value2}, .., causal_context]`
+\> `get/hget/mget key {consistency}`
+
+< `[{value1}, {value2}, .., causal_context]`
 
 *SET*, note that you need to use the context that you got from the get along the value. If you're sure it don't exist you can omit the context, if you're wrong it'll create a conflicting version.
 
-> `set/hset key value {context} {consistency}`
->
-> `OK`
+\> `set/hset key value {context} {consistency}`
 
-*Getset* Like set, but returns the new value (and possibly more, if conflicting) and the new context, consistency level is optional. Despite the name and the semantics in redis, the get is done *after* the set.
+< `OK`
 
-> `getset key value context {consistency}`
->
-> `[{value1}, {value2}, .., causal_context]`
+*Getset* Like set, but returns the new value (and possibly more, if conflicting) and the new context, consistency level is optional. Despite the name and the semantics in Redis, the get is done *after* the set.
+
+\> `getset key value context {consistency}`
+
+< `[{value1}, {value2}, .., causal_context]`
 
 *Delete*, consistency level is optional. Note that the server always returns 1, even if the key isn't present.
 
-> `del/hdel/mdel key context {consistency}`
->
-> `1`
+\> `del/hdel/mdel key context {consistency}`
+
+< `1`
 
 `{consistency}` follows the dynamo/cassandra/riak style:
 
@@ -70,7 +70,7 @@ OK
 1) "4"
 2) "\x01\x00\x00\x00\x00\x00\x00\x00P\xb0n\x83g\xef`\n\x04\x00\x00\x00\x00\x00\x00\x00"
 127.0.0.1:6379> DEL there "\x01\x00\x00\x00\x00\x00\x00\x00P\xb0n\x83g\xef`\n\x04\x00\x00\x00\x00\x00\x00\x00"
-OK
+1
 127.0.0.1:6379> GET there q
 1) "\x01\x00\x00\x00\x00\x00\x00\x00P\xb0n\x83g\xef`\n\x05\x00\x00\x00\x00\x00\x00\x00
 ```

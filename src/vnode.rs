@@ -74,6 +74,7 @@ struct ReqState {
     succesfull: u8,
     required: u8,
     total: u8,
+    is_delete: bool,
     reply_result: bool,
     container: DottedCausalContainer<Bytes>,
     token: Token,
@@ -178,12 +179,13 @@ macro_rules! forward {
 }
 
 impl ReqState {
-    fn new(token: Token, nodes: usize, consistency: ConsistencyLevel, reply_result: bool) -> Self {
+    fn new(token: Token, nodes: usize, consistency: ConsistencyLevel, is_delete: bool, reply_result: bool) -> Self {
         ReqState {
             required: consistency.required(nodes as u8),
             total: nodes as u8,
             replies: 0,
             succesfull: 0,
+            is_delete: is_delete,
             reply_result: reply_result,
             container: DottedCausalContainer::new(),
             token: token,
@@ -360,7 +362,7 @@ impl VNode {
         let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(db.config.request_timeout as _);
-        let req = ReqState::new(token, nodes.len(), consistency, true);
+        let req = ReqState::new(token, nodes.len(), consistency, false, true);
         assert!(self.inflight.insert(cookie, req, expire).is_none());
 
         for node in nodes {
@@ -415,13 +417,13 @@ impl VNode {
         let nodes = db.dht.nodes_for_vnode(self.state.num, true, true);
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(db.config.request_timeout as _);
+        let mut req = ReqState::new(token, nodes.len(), consistency, value_opt.is_none(), reply_result);
 
         let dcc = match self.state.storage_set_local(db, key, value_opt, &vv) {
             Ok(dcc) => dcc,
             Err(_) => return db.respond_error(token, CommandError::TooManyVersions),
         };
 
-        let mut req = ReqState::new(token, nodes.len(), consistency, reply_result);
         req.container = dcc.clone();
         assert!(self.inflight.insert(cookie, req, expire).is_none());
 
@@ -475,19 +477,20 @@ impl VNode {
 
     fn process_set(&mut self, db: &Database, cookie: Cookie, succesfull: bool) {
         if let HMEntry::Occupied(mut o) = self.inflight.entry(cookie) {
-            let (done, reply_result) = {
+            let done = {
                 let state = o.get_mut();
                 state.replies += 1;
                 if succesfull {
                     state.succesfull += 1;
                 }
-                let done = state.succesfull == state.required || state.replies == state.total;
-                (done, state.reply_result)
+                state.succesfull == state.required || state.replies == state.total
             };
             if done {
                 let state = o.remove();
-                if reply_result {
+                if state.reply_result {
                     db.respond_dcc(state.token, state.container);
+                } else if state.is_delete {
+                    db.respond_int(state.token, 1);
                 } else {
                     db.respond_ok(state.token);
                 }
