@@ -26,10 +26,10 @@ etcd_addr: "http://127.0.0.1:2379"
 cluster_name: "default"
 
 # Ip and port to bind the socket for client connections
-listen_addr: "127.0.0.1:9797"
+listen_addr: "127.0.0.1:6379"
 
 # Ip and port to bind the socket for internal cluster connections
-fabric_addr: "127.0.0.1:19797"
+fabric_addr: "127.0.0.1:16379"
 
 # Timeout for client requests
 # request_timeout: "1000ms"
