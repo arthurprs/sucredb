@@ -6,9 +6,11 @@ Sucredb is a multi-master key-value distributed database, it providers a dynamo 
 
 Any node that owns a partition (usually 3) can serve both reads and writes. The database tracks causality using vector-clocks and will NOT drop any conflicting writes unlike LWW (last write wins) and other strategies. Conflicts can and will happen due to races between clients and network partitions.
 
+Status: Alpha quality with missing pieces.
+
 # API & Clients
 
-You can use Sucredb with any redis cluter client.
+You can use Sucredb with any redis cluster client.
 
 *Get* like most commands bellow can be done with various commands, you can choose any that makes you client library happy. Consistency level is optional.
 
@@ -75,7 +77,35 @@ OK
 
 # Running
 
-TODO
+**Requirements**
+
+* Sucredb uses etcd 3.0+ to coordinate cluster changes, so you'll need an instance of it, check https://coreos.com/etcd.
+* Needs a reasonably recent Rust (nightly[1]) and C++ compiler (for Rocksdb).
+
+**Running**
+
+* The following setup will use the default etcd settings (lcocalhost, default port).
+* Clone the repo and enter repository root
+* `cargo install .` [2]
+* `sucredb --help`
+
+Single/First Node
+
+`sucredb -d datadir1 -l 127.0.0.1:6379 -f 127.0.0.1:16379 init`
+
+Second node
+
+`sucredb -d datadir2 -l 127.0.0.1:6378 -f 127.0.0.1:16378`
+
+[1] Mostly due to the try_from feature that should be stable soon.
+
+[2] Be patient.
+
+# Configuration
+
+See `sucredb.yaml`
+
+To use configuration file use: `sucredb -c sucredb.yaml`
 
 # CAP theorem
 
@@ -85,11 +115,13 @@ Sucredb doesn't use sloppy quorum or hinted handoff so it can't serve requests t
 
 # Performance
 
-No claims at this point, but it's probably fast.
+Almost every single new thing claims to be fast or blazing fast. Sucredb makes no claims at this point, but it's probably fast.
 
 There's some obvious things I didn't explore that could make it faster, notably using merge operator on the storage engine.
 
 # Ideas worth exploring
+
+* Implement some of Redis data types that work reasonable as CRDTs, like HyperLogLog.
 
 * Take advantage of UDFs (user defined functions) to prevent extra round-trips and conflicts.
 
