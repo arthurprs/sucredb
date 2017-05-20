@@ -20,19 +20,19 @@ Results are returned as an array containing the values (zero, one or more if the
 
 < `[{value1}, {value2}, .., causal_context]`
 
-*SET*, note that you need to use the context that you got from the get along the value. If you're sure it don't exist you can omit the context, if you're wrong it'll create a conflicting version.
+*Set*, in addition to the key and value, also takes the causal context. If you're sure it don't exist you can actually omit the context, if you're wrong it'll create a conflicting version.
 
 \> `set/hset key value {context} {consistency}`
 
 < `OK`
 
-*Getset* Like set, but returns the new value (and possibly more, if conflicting) and the new context, consistency level is optional. Despite the name and the semantics in Redis, the get is done *after* the set.
+*Getset* is similar to set, but returns the updated value(s) and a new context. Despite the name and the semantics in Redis, the get is always done *after* the set.
 
 \> `getset key value context {consistency}`
 
 < `[{value1}, {value2}, .., causal_context]`
 
-*Delete*, consistency level is optional. Note that the server always returns 1, even if the key isn't present.
+*Delete* is like set and also requires a context. Note that the server always returns 1 regardless of the key situation.
 
 \> `del/hdel/mdel key context {consistency}`
 
@@ -121,7 +121,7 @@ There's some obvious things I didn't explore that could make it faster, notably 
 
 # Ideas worth exploring
 
-* Implement some of Redis data types that work reasonable as CRDTs, like HyperLogLog.
+* Implement some of Redis data types that work reasonably as CRDTs, like sets and HyperLogLog.
 
 * Take advantage of UDFs (user defined functions) to prevent extra round-trips and conflicts.
 
