@@ -1,6 +1,5 @@
 use std::{mem, str};
 use std::path::{Path, PathBuf};
-use std::ops::Deref;
 use std::io::Write;
 use std::sync::Arc;
 use rocksdb::{self, Writable};
@@ -62,13 +61,14 @@ impl StorageManager {
                 rocksdb::DBCompressionType::DBLz4,
             ],
         );
-        opts.set_write_buffer_size(32 * 1024);
-        opts.set_max_bytes_for_level_base(32 * 4 * 1024 * 1024);
-        opts.set_max_write_buffer_number(3);
-        opts.set_max_background_flushes(3);
+        opts.set_write_buffer_size(32 * 1024 * 1024);
+        opts.set_max_bytes_for_level_base(4 * 32 * 1024 * 1024);
+        opts.set_max_write_buffer_number(4);
+        opts.set_max_background_flushes(2);
+        opts.set_max_background_compactions(2);
         let mut block_opts = rocksdb::BlockBasedOptions::new();
         block_opts.set_bloom_filter(10, false);
-        block_opts.set_lru_cache(128 * 1024 * 1024);
+        block_opts.set_lru_cache(4 * 32 * 1024 * 1024);
         opts.set_block_based_table_factory(&block_opts);
         // TODO: Rocksdb is complicated, we might want to tune some more options
         let db = rocksdb::DB::open(opts, path.as_ref().to_str().unwrap()).unwrap();
@@ -101,13 +101,19 @@ impl Drop for StorageManager {
 }
 
 impl Storage {
-    pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
-        let mut buffer = [0u8; 512];
+    #[inline]
+    fn build_key<'a>(&self, buffer: &'a mut [u8], key: &[u8]) -> &'a [u8] {
         (&mut buffer[..2]).write_u16::<BigEndian>(self.num).unwrap();
         (&mut buffer[2..]).write_all(key).unwrap();
-        let r = self.db.get(&buffer[..2 + key.len()]).unwrap();
+        &buffer[.. 2 + key.len()]
+    }
+
+    pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
+        let mut buffer = [0u8; 512];
+        let buffer = self.build_key(&mut buffer, key);
+        let r = self.db.get(buffer).unwrap();
         trace!("get {:?} ({:?} bytes)", str::from_utf8(key), r.as_ref().map(|x| x.len()));
-        r.map(|r| callback(r.deref()))
+        r.map(|r| callback(&*r))
     }
 
     pub fn iterator(&self) -> StorageIterator {
@@ -136,17 +142,15 @@ impl Storage {
     pub fn set(&self, key: &[u8], value: &[u8]) {
         trace!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
         let mut buffer = [0u8; 512];
-        (&mut buffer[..2]).write_u16::<BigEndian>(self.num).unwrap();
-        (&mut buffer[2..]).write_all(key).unwrap();
-        self.db.put(&buffer[..2 + key.len()], value).unwrap();
+        let buffer = self.build_key(&mut buffer, key);
+        self.db.put(buffer, value).unwrap();
     }
 
     pub fn del(&self, key: &[u8]) {
         trace!("del {:?}", str::from_utf8(key));
         let mut buffer = [0u8; 512];
-        (&mut buffer[..2]).write_u16::<BigEndian>(self.num).unwrap();
-        (&mut buffer[2..]).write_all(key).unwrap();
-        self.db.delete(&buffer[..2 + key.len()]).unwrap()
+        let buffer = self.build_key(&mut buffer, key);
+        self.db.delete(buffer).unwrap()
     }
 
     pub fn clear(&self) {
@@ -157,7 +161,9 @@ impl Storage {
         (&mut from[..]).write_u16::<BigEndian>(self.num).unwrap();
         (&mut to[..]).write_u16::<BigEndian>(self.num + 1).unwrap();
         self.db.delete_file_in_range(&from[..], &to[..]).unwrap();
-        self.db.delete_range(&from[..], &to[..]).unwrap();
+        for (key, _) in self.iterator().iter() {
+            self.db.delete(key).unwrap();
+        }
     }
 
     pub fn sync(&self) {

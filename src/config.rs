@@ -216,5 +216,5 @@ pub fn setup_default_logging() {
         .build(log4rs::config::Root::builder().build(log::LogLevelFilter::Off))
         .expect("failed to setup default logging");
 
-    log4rs::init_config(config).expect("failed to init logging");
+    // log4rs::init_config(config).expect("failed to init logging");
 }

@@ -32,10 +32,10 @@ impl RespValue {
     pub fn serialized_size(&self) -> usize {
         match *self {
             RespValue::Nil => "$-1\r\n".len(),
-            RespValue::Int(_) => ":{}\r\n".len() + 20,
-            RespValue::Data(ref v) => "${}\r\n".len() + 20 + v.len() + "\r\n".len(),
+            RespValue::Int(_) => ":-9223372036854775808\r\n".len(),
+            RespValue::Data(ref v) => "$4294967296\r\n".len() + v.len() + "\r\n".len(),
             RespValue::Array(ref a) => {
-                "*{}\r\n".len() + 20 + a.iter().map(Self::serialized_size).sum::<usize>()
+                "*4294967296\r\n".len() + a.iter().map(Self::serialized_size).sum::<usize>()
             }
             RespValue::Status(ref v) |
             RespValue::Error(ref v) => "+".len() + v.len() + "\r\n".len(),
@@ -102,7 +102,6 @@ pub struct Parser {
 }
 
 impl Parser {
-    // TODO: take bytes
     pub fn new<T: AsRef<[u8]>>(body: T) -> RespResult<Parser> {
         let valid_to = Self::speculate_buffer(body.as_ref())?;
         Ok(
@@ -198,10 +197,10 @@ impl Parser {
 
     fn parse_value(&mut self) -> RespResult<RespValue> {
         match self.read_byte()? {
-            b'+' => self.parse_status(),
-            b':' => self.parse_int(),
             b'$' => self.parse_data(),
             b'*' => self.parse_array(),
+            b':' => self.parse_int(),
+            b'+' => self.parse_status(),
             b'-' => self.parse_error(),
             c => {
                 if c == b'\r' && self.read_byte()? == b'\n' {
@@ -256,8 +255,7 @@ impl Parser {
 
     fn read_int_line(&mut self) -> RespResult<i64> {
         let line = self.read_line()?;
-        let line_str = assume_str(line.as_ref());
-        match line_str.parse::<i64>() {
+        match assume_str(line.as_ref()).parse::<i64>() {
             Err(_) => Err("Expected integer, got garbage".into()),
             Ok(value) => Ok(value),
         }

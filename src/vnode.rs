@@ -179,7 +179,10 @@ macro_rules! forward {
 }
 
 impl ReqState {
-    fn new(token: Token, nodes: usize, consistency: ConsistencyLevel, is_delete: bool, reply_result: bool) -> Self {
+    fn new(
+        token: Token, nodes: usize, consistency: ConsistencyLevel, is_delete: bool,
+        reply_result: bool
+    ) -> Self {
         ReqState {
             required: consistency.required(nodes as u8),
             total: nodes as u8,
@@ -417,7 +420,8 @@ impl VNode {
         let nodes = db.dht.nodes_for_vnode(self.state.num, true, true);
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(db.config.request_timeout as _);
-        let mut req = ReqState::new(token, nodes.len(), consistency, value_opt.is_none(), reply_result);
+        let mut req =
+            ReqState::new(token, nodes.len(), consistency, value_opt.is_none(), reply_result);
 
         let dcc = match self.state.storage_set_local(db, key, value_opt, &vv) {
             Ok(dcc) => dcc,
@@ -939,18 +943,13 @@ impl VNodeState {
         debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
         let serialized_saved_state = bincode::serialize(&saved_state, bincode::Infinite).unwrap();
         db.meta_storage.set(self.num.to_string().as_bytes(), &serialized_saved_state);
-        if shutdown {
-            db.meta_storage.sync();
-        }
     }
 
     // STORAGE
     pub fn storage_get(&self, key: &[u8]) -> DottedCausalContainer<Bytes> {
-        let mut dcc = if let Some(bytes) = self.storage.get_vec(key) {
-            bincode::deserialize(&bytes).unwrap()
-        } else {
-            DottedCausalContainer::new()
-        };
+        let mut dcc = self.storage
+            .get(key, |bytes| bincode::deserialize(&bytes).unwrap())
+            .unwrap_or_else(DottedCausalContainer::new);
         dcc.fill(&self.clocks);
         dcc
     }

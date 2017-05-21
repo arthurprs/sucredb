@@ -171,7 +171,7 @@ impl Server {
                    .lock()
                    .unwrap()
                    .get_mut(&token) {
-                fmpsc::UnboundedSender::send(&chan, resp).expect("Can't send to token chan");
+                let _ = fmpsc::UnboundedSender::send(&chan, resp);
             } else {
                 debug!("Can't find response channel for token {:?}", token);
             },

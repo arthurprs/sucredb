@@ -32,7 +32,7 @@ features = ["all_components", "file", "yaml_format"]
 [dependencies.rocksdb]
 git = "https://github.com/pingcap/rust-rocksdb.git"
 rev = "5e80fbd4"
-features = ["static-link", "portable"]
+features = ["static-link", "portable", "sse"]
 
 [dependencies.linear-map]
 git = "https://github.com/arthurprs/linear-map.git"
@@ -50,6 +50,6 @@ features = ["serde"]
 [dev-dependencies]
 env_logger = "0.4"
 
-# for profiling
-# [profile.release]
-# debug=true
+# enable for profiling
+[profile.release]
+debug=true
