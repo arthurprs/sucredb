@@ -61,9 +61,8 @@ fn configure() -> config::Config {
     use std::path::Path;
 
     let matches = App::new("SucreDB")
-        .version("0.0")
-        .author("Noone")
-        .about("Does a few things with keys and values")
+        .version("0.1")
+        .about("A database made of sugar cubes")
         .arg(
             Arg::with_name("config_file")
                 .short("c")

@@ -28,6 +28,7 @@ struct Stats {
 // pruning old nodes from node clocks (is it possible?)
 // inner vnode parallelism
 // track bad peers with the fabric or gossip and use that info
+// avoid fill/strip altogether
 
 pub struct Database {
     pub dht: DHT<net::SocketAddr>,

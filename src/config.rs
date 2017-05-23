@@ -58,7 +58,7 @@ impl Default for Config {
             etcd_addr: DEFAULT_ETCD_ADDR.into(),
             cmd_init: None,
             worker_timer: 500,
-            worker_count: max(4, 1 + num_cpus::get() as u16 * 2),
+            worker_count: max(4, num_cpus::get() as u16 * 2),
             sync_incomming_max: 10,
             sync_outgoing_max: 10,
             sync_timeout: 10_000,
@@ -216,5 +216,5 @@ pub fn setup_default_logging() {
         .build(log4rs::config::Root::builder().build(log::LogLevelFilter::Off))
         .expect("failed to setup default logging");
 
-    // log4rs::init_config(config).expect("failed to init logging");
+    log4rs::init_config(config).expect("failed to init logging");
 }
