@@ -2,6 +2,8 @@
 
 > *A database made of sugar cubes*
 
+[![Build Status](https://travis-ci.org/arthurprs/sucredb.svg?branch=master)](https://travis-ci.org/arthurprs/sucredb)
+
 Sucredb is a multi-master key-value distributed database, it provides a dynamo style tunable consistent and causality tracking.
 
 Any node that owns a partition (replication factor) can serve both reads and writes. The database tracks causality using vector-clocks and will NOT drop any conflicting writes unlike LWW (last write wins) and other strategies. Conflicts can and will happen due to races between clients and network partitions.
