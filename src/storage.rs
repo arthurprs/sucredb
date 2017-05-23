@@ -162,7 +162,7 @@ impl Storage {
         (&mut to[..]).write_u16::<BigEndian>(self.num + 1).unwrap();
         self.db.delete_file_in_range(&from[..], &to[..]).unwrap();
         for (key, _) in self.iterator().iter() {
-            self.db.delete(key).unwrap();
+            self.del(key);
         }
     }
 
