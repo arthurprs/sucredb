@@ -37,7 +37,7 @@ pub enum VNodeStatus {
 pub struct VNode {
     state: VNodeState,
     syncs: IdHashMap<Cookie, Synchronization>,
-    inflight: InFlightMap<Cookie, ReqState, Instant, IdHasherBuilder>,
+    requests: InFlightMap<Cookie, ReqState, Instant, IdHasherBuilder>,
 }
 
 pub struct VNodeState {
@@ -203,7 +203,7 @@ impl VNode {
 
         let mut vnode = VNode {
             state: state,
-            inflight: InFlightMap::new(),
+            requests: InFlightMap::new(),
             syncs: Default::default(),
         };
         if vnode.status() != VNodeStatus::Absent {
@@ -341,7 +341,7 @@ impl VNode {
         }
 
         let now = Instant::now();
-        while let Some((cookie, req)) = self.inflight.pop_expired(now) {
+        while let Some((cookie, req)) = self.requests.pop_expired(now) {
             debug!("Request cookie:{:?} token:{} timed out", cookie, req.token);
             db.respond_error(req.token, CommandError::Timeout);
         }
@@ -349,7 +349,7 @@ impl VNode {
         if self.state.pending_bootstrap {
             // check if there's a pending bootstrap we need to start
             self.start_bootstrap(db);
-        } else if self.status() == VNodeStatus::Zombie && self.inflight.is_empty() &&
+        } else if self.status() == VNodeStatus::Zombie && self.requests.is_empty() &&
                   self.syncs.is_empty() &&
                   self.state.last_status_change.elapsed() >
                   Duration::from_millis(ZOMBIE_TIMEOUT_MS) {
@@ -366,14 +366,14 @@ impl VNode {
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(db.config.request_timeout as _);
         let req = ReqState::new(token, nodes.len(), consistency, false, true);
-        assert!(self.inflight.insert(cookie, req, expire).is_none());
+        assert!(self.requests.insert(cookie, req, expire).is_none());
 
         for node in nodes {
             if node == db.dht.node() {
                 let container = self.state.storage_get(key);
                 self.process_get(db, cookie, Some(container));
             } else {
-                let _ = db.fabric
+                let ok = db.fabric
                     .send_msg(
                         node,
                         MsgRemoteGet {
@@ -381,7 +381,10 @@ impl VNode {
                             vnode: self.state.num,
                             key: key.into(),
                         },
-                    );
+                    ).is_ok();
+                if !ok {
+                    self.process_get(db, cookie, None);
+                }
             }
         }
     }
@@ -429,13 +432,13 @@ impl VNode {
         };
 
         req.container = dcc.clone();
-        assert!(self.inflight.insert(cookie, req, expire).is_none());
+        assert!(self.requests.insert(cookie, req, expire).is_none());
 
         self.process_set(db, cookie, true);
         let reply = consistency != ConsistencyLevel::One;
         for node in nodes {
             if node != db.dht.node() {
-                let _ = db.fabric
+                let ok = db.fabric
                     .send_msg(
                         node,
                         MsgRemoteSet {
@@ -445,7 +448,10 @@ impl VNode {
                             container: dcc.clone(),
                             reply: reply,
                         },
-                    );
+                    ).is_ok();
+                if !ok {
+                    self.process_set(db, cookie, false);
+                }
             }
         }
     }
@@ -455,7 +461,7 @@ impl VNode {
         &mut self, db: &Database, cookie: Cookie,
         container_opt: Option<DottedCausalContainer<Bytes>>
     ) {
-        if let HMEntry::Occupied(mut o) = self.inflight.entry(cookie) {
+        if let HMEntry::Occupied(mut o) = self.requests.entry(cookie) {
             let done = {
                 let state = o.get_mut();
                 state.replies += 1;
@@ -480,7 +486,7 @@ impl VNode {
     }
 
     fn process_set(&mut self, db: &Database, cookie: Cookie, succesfull: bool) {
-        if let HMEntry::Occupied(mut o) = self.inflight.entry(cookie) {
+        if let HMEntry::Occupied(mut o) = self.requests.entry(cookie) {
             let done = {
                 let state = o.get_mut();
                 state.replies += 1;
@@ -767,7 +773,7 @@ impl VNode {
 impl Drop for VNode {
     fn drop(&mut self) {
         // clean up any references to the storage
-        self.inflight.clear();
+        self.requests.clear();
         self.syncs.clear();
     }
 }

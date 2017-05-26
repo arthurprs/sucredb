@@ -422,18 +422,21 @@ impl Fabric {
             HMEntry::Occupied(mut o) => {
                 if let Some(&mut (chan_id, ref mut chan)) = thread_rng().choose_mut(o.get_mut()) {
                     debug!("send_msg node:{}, chan:{}", node, chan_id);
-                    SenderChan::send(&chan, msg).expect("Can't send to fabric chan");
-                    Ok(())
+                    if let Err(e) = SenderChan::send(&chan, msg) {
+                        warn!("Can't send to fabric {}-{} chan: {:?}", node, chan_id, e);
+                    } else {
+                        return Ok(());
+                    }
                 } else {
                     warn!("DROPING MSG - No channel available for {:?}", node);
-                    Err(FabricError::NoRoute)
                 }
             }
             HMEntry::Vacant(_v) => {
                 warn!("DROPING MSG - No entry for node {:?}", node);
-                Err(FabricError::NoRoute)
             }
         }
+
+        Err(FabricError::NoRoute)
     }
 }
 
