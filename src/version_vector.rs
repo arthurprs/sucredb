@@ -237,6 +237,12 @@ impl BitmappedVersionVector {
         bvv
     }
 
+    pub fn add_dots<T>(&mut self, dcc: &DottedCausalContainer<T>) {
+        for &(id, version) in dcc.dots.0.keys() {
+            self.add(id, version);
+        }
+    }
+
     pub fn add(&mut self, id: Id, version: Version) {
         self.0.entry(id).or_insert_with(Default::default).add(version);
     }
@@ -460,13 +466,6 @@ impl<T> DottedCausalContainer<T> {
     pub fn add(&mut self, id: Id, version: Version, value: T) {
         self.dots.add((id, version), value);
         self.vv.add(id, version);
-    }
-
-    pub fn add_to_bvv(&self, other: &mut BitmappedVersionVector) {
-        // FIXME: move to bvv?
-        for &(id, version) in self.dots.0.keys() {
-            other.add(id, version);
-        }
     }
 
     pub fn contained(&self, bvv: &BitmappedVersionVector) -> bool {
@@ -745,11 +744,11 @@ mod test_dcc {
     }
 
     #[test]
-    fn add_to_bvv() {
+    fn add_dots() {
         let d1 = data()[0].clone();
         let mut bvv0 = BitmappedVersionVector::new();
         bvv0.0.insert(1, BitmappedVersion::new(5, 3));
-        d1.add_to_bvv(&mut bvv0);
+        bvv0.add_dots(&d1);
         let mut bvv1 = BitmappedVersionVector::new();
         bvv1.0.insert(1, BitmappedVersion::new(8, 0));
         bvv1.0.insert(2, BitmappedVersion::new(0, 2));

@@ -904,7 +904,7 @@ impl VNodeState {
             let mut count = 0;
             for (k, v) in iter.iter() {
                 let dcc: DottedCausalContainer<&[u8]> = bincode::deserialize(v).unwrap();
-                dcc.add_to_bvv(&mut clocks);
+                clocks.add_dots(&dcc);
                 for (&(node, version), _) in dcc.iter() {
                     logs.entry(node).or_insert_with(Default::default).log(version, k.into());
                 }
@@ -996,7 +996,8 @@ impl VNodeState {
 
     pub fn storage_set_remote(&mut self, _db: &Database, key: &[u8], mut new_dcc: DottedCausalContainer<Bytes>) {
         let old_dcc = self.storage_get(key);
-        new_dcc.add_to_bvv(&mut self.clocks);
+        // it's important to only add_dots after fetching (and fill()) the old dcc
+        self.clocks.add_dots(&new_dcc);
         new_dcc.sync(old_dcc);
         new_dcc.strip(&self.clocks);
 
