@@ -330,7 +330,7 @@ impl BitmappedVersionVector {
                     if let Some(other_bv) = other.get(id) {
                         bv.delta(other_bv).map(move |v| (id, v)).next()
                     } else {
-                        Some((id, 1)) // start from 1 if the other bv don't have this node
+                        Some((id, 1)) // start from 1 if the other bvv don't have this node
                     }
                 },
             )
@@ -400,11 +400,11 @@ impl VersionVector {
         }
     }
 
-    pub fn reset(&mut self) {
-        for (_, v) in &mut self.0 {
-            *v = 0;
-        }
-    }
+    // pub fn reset(&mut self) {
+    //     for (_, v) in &mut self.0 {
+    //         *v = 0;
+    //     }
+    // }
 
     pub fn iter(&self) -> linear_map::Iter<Id, Version> {
         self.0.iter()
@@ -417,19 +417,18 @@ impl<T> Dots<T> {
     }
 
     fn merge(&mut self, other: &mut Self, vv1: &VersionVector, vv2: &VersionVector) {
-        // TODO: use a smallvec for dups
-        let mut dups: LinearMap<(Id, Version), ()> = LinearMap::new();
-        // drain self into other
-        for (dot, value) in self.0.drain() {
-            if other.0.insert(dot, value).is_some() {
-                dups.insert(dot, ());
-            }
-        }
+        // retain in self what's not outdated or also exists in other
+        self.0
+            .retain(
+                |&(id, version), _| {
+                    version > vv1.get(id).unwrap_or(0) || version > vv2.get(id).unwrap_or(0) ||
+                    other.0.remove(&(id, version)).is_some()
+                },
+            );
 
-        // add back to self filtering out outdated versions
+        // drain other into self filtering outdated versions
         for ((id, version), value) in other.0.drain() {
-            if dups.contains_key(&(id, version)) ||
-               version > cmp::min(vv1.get(id).unwrap_or(0), vv2.get(id).unwrap_or(0)) {
+            if version > vv1.get(id).unwrap_or(0) || version > vv2.get(id).unwrap_or(0) {
                 self.0.insert((id, version), value);
             }
         }
@@ -662,17 +661,17 @@ mod test_bvv {
 mod test_vv {
     use super::*;
 
-    #[test]
-    fn reset() {
-        let mut a1 = VersionVector::new();
-        a1.add(1, 2);
-        a1.add(2, 4);
-        a1.add(3, 4);
-        a1.reset();
-        assert_eq!(a1.get(1), Some(0));
-        assert_eq!(a1.get(2), Some(0));
-        assert_eq!(a1.get(3), Some(0));
-    }
+    // #[test]
+    // fn reset() {
+    //     let mut a1 = VersionVector::new();
+    //     a1.add(1, 2);
+    //     a1.add(2, 4);
+    //     a1.add(3, 4);
+    //     a1.reset();
+    //     assert_eq!(a1.get(1), Some(0));
+    //     assert_eq!(a1.get(2), Some(0));
+    //     assert_eq!(a1.get(3), Some(0));
+    // }
 
     #[test]
     fn remove() {

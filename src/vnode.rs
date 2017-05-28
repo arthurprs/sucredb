@@ -381,7 +381,8 @@ impl VNode {
                             vnode: self.state.num,
                             key: key.into(),
                         },
-                    ).is_ok();
+                    )
+                    .is_ok();
                 if !ok {
                     self.process_get(db, cookie, None);
                 }
@@ -448,7 +449,8 @@ impl VNode {
                             container: dcc.clone(),
                             reply: reply,
                         },
-                    ).is_ok();
+                    )
+                    .is_ok();
                 if !ok {
                     self.process_set(db, cookie, false);
                 }

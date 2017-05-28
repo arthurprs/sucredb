@@ -4,6 +4,7 @@ trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
 export RUST_BACKTRACE=1
 export RUST_LOG=sucredb=info,sucredb::vnode=debug,sucredb::fabric=info
 SLEEP=2
+cargo build --release
 rm -rf n1 n2
 ../target/release/sucredb -d n1 -l 127.0.0.1:6379 -f 127.0.0.1:16379 init -r 2 > log1.txt 2>&1  &
 echo "WAITING $SLEEP"

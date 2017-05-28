@@ -105,7 +105,7 @@ impl Storage {
     fn build_key<'a>(&self, buffer: &'a mut [u8], key: &[u8]) -> &'a [u8] {
         (&mut buffer[..2]).write_u16::<BigEndian>(self.num).unwrap();
         (&mut buffer[2..]).write_all(key).unwrap();
-        &buffer[.. 2 + key.len()]
+        &buffer[..2 + key.len()]
     }
 
     pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
