@@ -137,6 +137,7 @@ impl VNodeLog {
     }
 }
 
+#[cfg(test)]
 macro_rules! assert_any {
     ($value: expr, $($status:pat)|*) => {
         match $value {

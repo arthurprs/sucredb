@@ -73,6 +73,7 @@ pub fn is_dir_empty_or_absent<P: AsRef<path::Path>>(path: P) -> io::Result<bool>
     }
 }
 
+#[cfg(test)]
 macro_rules! assert_eq_repr {
     ($left:expr , $right:expr) => ({
         match (format!("{:?}", &$left), format!("{:?}", &$right)) {

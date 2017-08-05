@@ -30,15 +30,6 @@ pub enum FabricMsg {
     Unknown,
 }
 
-macro_rules! fmsg {
-    ($e: expr, $v: path) => (
-        match $e {
-            $v(r) => r,
-            _ => unreachable!(),
-        }
-    );
-}
-
 impl FabricMsg {
     pub fn get_type(&self) -> FabricMsgType {
         match *self {

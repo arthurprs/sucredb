@@ -65,8 +65,8 @@ pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
 type SenderChan = fmpsc::UnboundedSender<FabricMsg>;
 type InitType = Result<(Arc<GlobalContext>, futures::sync::oneshot::Sender<()>), io::Error>;
 
-const FABRIC_KEEPALIVE_MS: u32 = 1000;
-const FABRIC_RECONNECT_INTERVAL_MS: u32 = 1000;
+const FABRIC_KEEPALIVE_MS: u64 = 1000;
+const FABRIC_RECONNECT_INTERVAL_MS: u64 = 1000;
 
 /// The messasing network that encompasses all nodes of the cluster
 /// using the fabric you can send messages (best-effort delivery)
@@ -207,7 +207,7 @@ impl Fabric {
             .then(
                 move |_| {
                     tokio::reactor::Timeout::new(
-                        Duration::from_millis(FABRIC_RECONNECT_INTERVAL_MS as u64),
+                        Duration::from_millis(FABRIC_RECONNECT_INTERVAL_MS),
                         &handle1,
                     )
                 },
@@ -235,7 +235,7 @@ impl Fabric {
     ) -> Box<Future<Item = (), Error = io::Error>> {
         socket.set_nodelay(true).expect("Failed to set nodelay");
         socket
-            .set_keepalive_ms(Some(FABRIC_KEEPALIVE_MS))
+            .set_keepalive(Some(Duration::from_millis(FABRIC_KEEPALIVE_MS)))
             .expect("Failed to set keepalive");
         let mut buffer = [0u8; 8];
         (&mut buffer[..]).write_u64::<LittleEndian>(context.node).unwrap();
