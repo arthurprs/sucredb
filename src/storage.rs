@@ -46,48 +46,51 @@ unsafe impl Send for StorageIterator {}
 
 impl StorageManager {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<StorageManager, GenericError> {
-        let mut opts = rocksdb::Options::new();
+        let mut opts = rocksdb::DBOptions::new();
         opts.create_if_missing(true);
-        opts.set_prefix_extractor("U16BeSuffixTransform", Box::new(U16BeSuffixTransform))
+        opts.set_max_background_jobs(4);
+        let mut cf_opts = rocksdb::ColumnFamilyOptions::new();
+        cf_opts
+            .set_prefix_extractor("U16BeSuffixTransform", Box::new(U16BeSuffixTransform))
             .unwrap();
-        opts.compression_per_level(
+        cf_opts.compression_per_level(
             &[
-                rocksdb::DBCompressionType::DBNo,
-                rocksdb::DBCompressionType::DBNo,
-                rocksdb::DBCompressionType::DBLz4,
-                rocksdb::DBCompressionType::DBLz4,
-                rocksdb::DBCompressionType::DBLz4,
-                rocksdb::DBCompressionType::DBLz4,
-                rocksdb::DBCompressionType::DBLz4,
+                rocksdb::DBCompressionType::No,
+                rocksdb::DBCompressionType::No,
+                rocksdb::DBCompressionType::Lz4,
+                rocksdb::DBCompressionType::Lz4,
+                rocksdb::DBCompressionType::Lz4,
+                rocksdb::DBCompressionType::Lz4,
+                rocksdb::DBCompressionType::Lz4,
             ],
         );
-        opts.set_write_buffer_size(32 * 1024 * 1024);
-        opts.set_max_bytes_for_level_base(4 * 32 * 1024 * 1024);
-        opts.set_max_write_buffer_number(4);
-        opts.set_max_background_flushes(2);
-        opts.set_max_background_compactions(2);
+        cf_opts.set_write_buffer_size(32 * 1024 * 1024);
+        cf_opts.set_max_bytes_for_level_base(4 * 32 * 1024 * 1024);
+        cf_opts.set_max_write_buffer_number(4);
         let mut block_opts = rocksdb::BlockBasedOptions::new();
         block_opts.set_bloom_filter(10, false);
         block_opts.set_lru_cache(4 * 32 * 1024 * 1024);
-        opts.set_block_based_table_factory(&block_opts);
+        cf_opts.set_block_based_table_factory(&block_opts);
+
         // TODO: Rocksdb is complicated, we might want to tune some more options
-        let db = rocksdb::DB::open(opts, path.as_ref().to_str().unwrap()).unwrap();
-        Ok(
-            StorageManager {
-                path: path.as_ref().into(),
-                db: Arc::new(db),
-            },
-        )
+        let db = rocksdb::DB::open_cf(
+            opts,
+            path.as_ref().to_str().unwrap(),
+            vec!["default"],
+            vec![cf_opts],
+        ).unwrap();
+        Ok(StorageManager {
+            path: path.as_ref().into(),
+            db: Arc::new(db),
+        })
     }
 
     pub fn open(&self, db_num: u16, _create: bool) -> Result<Storage, GenericError> {
-        Ok(
-            Storage {
-                db: self.db.clone(),
-                num: db_num,
-                iterators_handle: Arc::new(()),
-            },
-        )
+        Ok(Storage {
+            db: self.db.clone(),
+            num: db_num,
+            iterators_handle: Arc::new(()),
+        })
     }
 }
 
@@ -112,13 +115,19 @@ impl Storage {
         let mut buffer = [0u8; 512];
         let buffer = self.build_key(&mut buffer, key);
         let r = self.db.get(buffer).unwrap();
-        trace!("get {:?} ({:?} bytes)", str::from_utf8(key), r.as_ref().map(|x| x.len()));
+        trace!(
+            "get {:?} ({:?} bytes)",
+            str::from_utf8(key),
+            r.as_ref().map(|x| x.len())
+        );
         r.map(|r| callback(&*r))
     }
 
     pub fn iterator(&self) -> StorageIterator {
         let mut key_prefix = [0u8; 2];
-        (&mut key_prefix[..]).write_u16::<BigEndian>(self.num).unwrap();
+        (&mut key_prefix[..])
+            .write_u16::<BigEndian>(self.num)
+            .unwrap();
         unsafe {
             let snapshot = NoDrop::new(Box::new(self.db.snapshot()));
             let mut iterator = NoDrop::new(Box::new(snapshot.iter()));
@@ -206,10 +215,10 @@ impl<'a> Iterator for StorageIter<'a> {
         if self.it.iterator.valid() && self.it.iterator.key()[..2] == self.it.key_prefix[..] {
             unsafe {
                 // safe as slices are valid until the next call to next
-                Some(
-                    (mem::transmute(&self.it.iterator.key()[2..]),
-                     mem::transmute(self.it.iterator.value())),
-                )
+                Some((
+                    mem::transmute(&self.it.iterator.key()[2..]),
+                    mem::transmute(self.it.iterator.value()),
+                ))
             }
         } else {
             None
@@ -220,8 +229,10 @@ impl<'a> Iterator for StorageIter<'a> {
 impl Drop for StorageIterator {
     fn drop(&mut self) {
         unsafe {
-            let iterator: NoDrop<Box<rocksdb::rocksdb::DBIterator>> = mem::transmute_copy(&self.iterator,);
-            let snapshot: NoDrop<Box<rocksdb::rocksdb::Snapshot>> = mem::transmute_copy(&self.snapshot,);
+            let iterator: NoDrop<Box<rocksdb::rocksdb::DBIterator>> =
+                mem::transmute_copy(&self.iterator);
+            let snapshot: NoDrop<Box<rocksdb::rocksdb::Snapshot>> =
+                mem::transmute_copy(&self.snapshot);
             drop(iterator.into_inner());
             drop(snapshot.into_inner());
         }

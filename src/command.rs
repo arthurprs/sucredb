@@ -128,7 +128,14 @@ impl Database {
             self.config.consistency_write
         };
         metrics::REQUEST_WRITE.mark(1);
-        Ok(self.set(token, args[0], Some(args[1]), vv, consistency, reply_result))
+        Ok(self.set(
+            token,
+            args[0],
+            Some(args[1]),
+            vv,
+            consistency,
+            reply_result,
+        ))
     }
 
     fn cmd_del(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
@@ -157,16 +164,14 @@ impl Database {
                 let mut slots = Vec::new();
                 for (&(start, end), members) in self.dht.slots().iter() {
                     let mut slot = vec![RespValue::Int(start as _), RespValue::Int(end as _)];
-                    slot.extend(members
-                                    .iter()
-                                    .map(|&(node, (_, ext_addr))| {
-                        RespValue::Array(vec![RespValue::Data(ext_addr
-                                                                  .ip()
-                                                                  .to_string()
-                                                                  .as_bytes()
-                                                                  .into()),
-                                              RespValue::Int(ext_addr.port() as _),
-                                              RespValue::Data(node.to_string().as_bytes().into())])
+                    slot.extend(members.iter().map(|&(node, (_, ext_addr))| {
+                        RespValue::Array(vec![
+                            RespValue::Data(
+                                ext_addr.ip().to_string().as_bytes().into()
+                            ),
+                            RespValue::Int(ext_addr.port() as _),
+                            RespValue::Data(node.to_string().as_bytes().into()),
+                        ])
                     }));
                     slots.push(RespValue::Array(slot));
                 }
@@ -198,11 +203,17 @@ impl Database {
     }
 
     pub fn respond_moved(&self, token: Token, vnode: VNodeId, addr: net::SocketAddr) {
-        self.respond(token, RespValue::Error(format!("MOVED {} {}", vnode, addr).into()));
+        self.respond(
+            token,
+            RespValue::Error(format!("MOVED {} {}", vnode, addr).into()),
+        );
     }
 
     pub fn respond_ask(&self, token: Token, vnode: VNodeId, addr: net::SocketAddr) {
-        self.respond(token, RespValue::Error(format!("ASK {} {}", vnode, addr).into()));
+        self.respond(
+            token,
+            RespValue::Error(format!("ASK {} {}", vnode, addr).into()),
+        );
     }
 }
 

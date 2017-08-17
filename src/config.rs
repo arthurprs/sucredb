@@ -82,7 +82,9 @@ pub struct InitCommand {
 }
 
 fn split_number_suffix(s: &str) -> Result<(i64, &str), GenericError> {
-    let digits_end = s.trim().chars().position(|c| !c.is_digit(10)).unwrap_or(s.len());
+    let digits_end = s.trim().chars().position(|c| !c.is_digit(10)).unwrap_or(
+        s.len(),
+    );
     let (digits, suffix) = s.split_at(digits_end);
     Ok((digits.parse::<i64>()?, suffix.trim_left()))
 }
@@ -160,10 +162,31 @@ pub fn read_config_file(path: &Path, config: &mut Config) {
     cfg!(yaml, config, sync_outgoing_max, as_u64, try_into);
     // cfg!(yaml, config, sync_auto, as_bool);
     cfg!(yaml, config, sync_timeout, as_str, parse_duration, try_into);
-    cfg!(yaml, config, sync_msg_timeout, as_str, parse_duration, try_into);
+    cfg!(
+        yaml,
+        config,
+        sync_msg_timeout,
+        as_str,
+        parse_duration,
+        try_into
+    );
     cfg!(yaml, config, sync_msg_inflight, as_u64, try_into);
-    cfg!(yaml, config, fabric_timeout, as_str, parse_duration, try_into);
-    cfg!(yaml, config, request_timeout, as_str, parse_duration, try_into);
+    cfg!(
+        yaml,
+        config,
+        fabric_timeout,
+        as_str,
+        parse_duration,
+        try_into
+    );
+    cfg!(
+        yaml,
+        config,
+        request_timeout,
+        as_str,
+        parse_duration,
+        try_into
+    );
     cfg!(yaml, config, client_connection_max, as_u64, try_into);
     cfg!(yaml, config, value_version_max, as_u64, try_into);
     cfg!(yaml, config, consistency_read, as_str, try_into);
@@ -198,22 +221,23 @@ pub fn setup_logging(config_value: &yaml::Value) {
 pub fn setup_default_logging() {
     let config = log4rs::config::Config::builder()
         .appender(
-            log4rs::config::Appender::builder()
-                .build(
-                    "console",
-                    Box::new(
-                        log4rs::append::console::ConsoleAppender::builder()
-                            .target(log4rs::append::console::Target::Stderr)
-                            .build(),
-                    ),
+            log4rs::config::Appender::builder().build(
+                "console",
+                Box::new(
+                    log4rs::append::console::ConsoleAppender::builder()
+                        .target(log4rs::append::console::Target::Stderr)
+                        .build(),
                 ),
+            ),
         )
         .logger(
             log4rs::config::Logger::builder()
                 .appender("console")
                 .build("sucredb", log::LogLevelFilter::Info),
         )
-        .build(log4rs::config::Root::builder().build(log::LogLevelFilter::Off))
+        .build(log4rs::config::Root::builder().build(
+            log::LogLevelFilter::Off,
+        ))
         .expect("failed to setup default logging");
 
     log4rs::init_config(config).expect("failed to init logging");

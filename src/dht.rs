@@ -48,7 +48,7 @@ struct Inner<T: Metadata> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(bound="T: DeserializeOwned")]
+#[serde(bound = "T: DeserializeOwned")]
 struct Node<T: Metadata> {
     addr: net::SocketAddr,
     leaving: bool,
@@ -56,7 +56,7 @@ struct Node<T: Metadata> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(bound="T: DeserializeOwned")]
+#[serde(bound = "T: DeserializeOwned")]
 pub struct Ring<T: Metadata> {
     replication_factor: usize,
     vnodes: Vec<LinearSet<NodeId>>,
@@ -89,23 +89,29 @@ fn squash_etcd_errors(mut errors: Vec<etcd::Error>) -> GenericError {
 }
 
 impl<T: Metadata> Ring<T> {
-    fn new(node: NodeId, addr: net::SocketAddr, meta: T, partitions: u16, replication_factor: u8)
-        -> Self {
+    fn new(
+        node: NodeId,
+        addr: net::SocketAddr,
+        meta: T,
+        partitions: u16,
+        replication_factor: u8,
+    ) -> Self {
         Ring {
             replication_factor: replication_factor as usize,
             vnodes: vec![[node].iter().cloned().collect(); partitions as usize],
             pending: vec![Default::default(); partitions as usize],
             retiring: vec![Default::default(); partitions as usize],
             nodes: vec![
-                (node,
-                 Node {
-                     addr,
-                     leaving: false,
-                     meta,
-                 }),
-            ]
-                    .into_iter()
-                    .collect(),
+                (
+                    node,
+                    Node {
+                        addr,
+                        leaving: false,
+                        meta,
+                    }
+                ),
+            ].into_iter()
+                .collect(),
         }
     }
 
@@ -122,17 +128,20 @@ impl<T: Metadata> Ring<T> {
         Ok(())
     }
 
-    fn join_node(&mut self, node: NodeId, addr: net::SocketAddr, meta: T)
-        -> Result<(), GenericError> {
-        self.nodes
-            .insert(
-                node,
-                Node {
-                    addr,
-                    leaving: false,
-                    meta,
-                },
-            );
+    fn join_node(
+        &mut self,
+        node: NodeId,
+        addr: net::SocketAddr,
+        meta: T,
+    ) -> Result<(), GenericError> {
+        self.nodes.insert(
+            node,
+            Node {
+                addr,
+                leaving: false,
+                meta,
+            },
+        );
         Ok(())
     }
 
@@ -159,12 +168,17 @@ impl<T: Metadata> Ring<T> {
         Ok(())
     }
 
-    fn replace(&mut self, old: NodeId, new: NodeId, addr: net::SocketAddr, meta: T)
-        -> Result<(), GenericError> {
+    fn replace(
+        &mut self,
+        old: NodeId,
+        new: NodeId,
+        addr: net::SocketAddr,
+        meta: T,
+    ) -> Result<(), GenericError> {
         let Node { leaving, .. } = if let Some(removed) = self.nodes.remove(&old) {
-            let iter = self.vnodes
-                .iter_mut()
-                .chain(self.pending.iter_mut().chain(self.retiring.iter_mut()));
+            let iter = self.vnodes.iter_mut().chain(self.pending.iter_mut().chain(
+                self.retiring.iter_mut(),
+            ));
             for v in iter {
                 if v.remove(&old) {
                     assert!(v.insert(new));
@@ -234,12 +248,10 @@ impl<T: Metadata> Ring<T> {
                 .collect();
             let candidates: IdHashSet<_> = node_map
                 .keys()
-                .filter(
-                    |n| {
-                        node_map.get(n).unwrap().len() < vnpn && !vnodes.contains(n) &&
+                .filter(|n| {
+                    node_map.get(n).unwrap().len() < vnpn && !vnodes.contains(n) &&
                         !pending.contains(n) && !retiring.contains(n)
-                    },
-                )
+                })
                 .cloned()
                 .collect();
             for (from, to) in doing_much.into_iter().zip(candidates.into_iter()) {
@@ -261,20 +273,21 @@ impl<T: Metadata> Ring<T> {
                 if let Some((&node, partitions)) =
                     node_map
                         .iter_mut()
-                        .filter(
-                            |&(&node, _)| {
-                                !vnodes.contains(&node) && !pending.contains(&node) &&
+                        .filter(|&(&node, _)| {
+                            !vnodes.contains(&node) && !pending.contains(&node) &&
                                 !retiring.contains(&node)
-                            },
-                        )
-                        .min_by_key(|&(_, ref p)| p.len()) {
+                        })
+                        .min_by_key(|&(_, ref p)| p.len())
+                {
                     assert!(partitions.insert(vn));
                     assert!(pending.insert(node));
                     continue;
                 }
                 // try to find candidate that was retiring from that vnode
-                if let Some(&node) =
-                    retiring.iter().min_by_key(|n| node_map.get(n).unwrap().len()) {
+                if let Some(&node) = retiring.iter().min_by_key(
+                    |n| node_map.get(n).unwrap().len(),
+                )
+                {
                     assert!(node_map.get_mut(&node).unwrap().insert(vn));
                     assert!(retiring.remove(&node));
                     assert!(vnodes.insert(node));
@@ -322,7 +335,9 @@ impl<T: Metadata> Ring<T> {
             let pending = &self.pending[vn];
             // let retiring = &self.retiring[vn];
             if vnodes.len() + pending.len() != replicas {
-                return Err(format!("vnode {} has {:?}{:?} replicas", vn, vnodes, pending).into());
+                return Err(
+                    format!("vnode {} has {:?}{:?} replicas", vn, vnodes, pending).into(),
+                );
             }
             for &n in vnodes.iter().chain(pending) {
                 *node_map.entry(n).or_insert(0usize) += 1;
@@ -338,8 +353,7 @@ impl<T: Metadata> Ring<T> {
                         count,
                         vnpn + vnpn_rest + 1,
                         node_map
-                    )
-                            .into(),
+                    ).into(),
                 );
             }
         }
@@ -350,28 +364,29 @@ impl<T: Metadata> Ring<T> {
 
 impl<T: Metadata> DHT<T> {
     pub fn new(
-        node: NodeId, fabric_addr: net::SocketAddr, cluster: &str, etcd: &str, meta: T,
-        initial: Option<RingDescription>, old_node: Option<NodeId>
+        node: NodeId,
+        fabric_addr: net::SocketAddr,
+        cluster: &str,
+        etcd: &str,
+        meta: T,
+        initial: Option<RingDescription>,
+        old_node: Option<NodeId>,
     ) -> DHT<T> {
         let etcd_client1 = etcd::Client::new(&[etcd]).unwrap();
         let etcd_client2 = etcd::Client::new(&[etcd]).unwrap();
-        let inner = Arc::new(
-            Mutex::new(
-                Inner {
-                    ring: Ring {
-                        replication_factor: Default::default(),
-                        vnodes: Default::default(),
-                        pending: Default::default(),
-                        retiring: Default::default(),
-                        nodes: Default::default(),
-                    },
-                    ring_version: 0,
-                    cluster: cluster.into(),
-                    callback: None,
-                    running: true,
-                },
-            ),
-        );
+        let inner = Arc::new(Mutex::new(Inner {
+            ring: Ring {
+                replication_factor: Default::default(),
+                vnodes: Default::default(),
+                pending: Default::default(),
+                retiring: Default::default(),
+                nodes: Default::default(),
+            },
+            ring_version: 0,
+            cluster: cluster.into(),
+            callback: None,
+            running: true,
+        }));
         let mut dht = DHT {
             node: node,
             addr: fabric_addr,
@@ -489,7 +504,10 @@ impl<T: Metadata> DHT<T> {
     }
 
     fn reset(&self, meta: T, replication_factor: u8, partitions: u16) -> Result<(), GenericError> {
-        assert!(partitions.is_power_of_two(), "Partition count must be a power of 2");
+        assert!(
+            partitions.is_power_of_two(),
+            "Partition count must be a power of 2"
+        );
         assert!(partitions >= 32, "Partition count must be >= 32");
         assert!(partitions <= 1024, "Partition count must be <= 1024");
         assert!(replication_factor >= 1, "Replication factor must be >= 1");
@@ -499,7 +517,9 @@ impl<T: Metadata> DHT<T> {
         let mut inner = self.inner.lock().unwrap();
         inner.ring = Ring::new(self.node, self.addr, meta, partitions, replication_factor);
         let new = Self::serialize(&inner.ring).unwrap();
-        let r = self.etcd_client.set(&cluster_key, &new, None).map_err(squash_etcd_errors)?;
+        let r = self.etcd_client.set(&cluster_key, &new, None).map_err(
+            squash_etcd_errors,
+        )?;
         inner.ring_version = r.node.unwrap().modified_index.unwrap();
         Ok(())
     }
@@ -539,7 +559,13 @@ impl<T: Metadata> DHT<T> {
         let mut insync = Vec::new();
         let mut pending = Vec::new();
         let inner = self.inner.lock().unwrap();
-        for (i, (v, p)) in inner.ring.vnodes.iter().zip(inner.ring.pending.iter()).enumerate() {
+        for (i, (v, p)) in inner
+            .ring
+            .vnodes
+            .iter()
+            .zip(inner.ring.pending.iter())
+            .enumerate()
+        {
             if v.contains(&node) {
                 insync.push(i as VNodeId);
             }
@@ -551,8 +577,12 @@ impl<T: Metadata> DHT<T> {
     }
 
     // TODO: split into read_ and write_
-    pub fn nodes_for_vnode(&self, vnode: VNodeId, include_pending: bool, include_retiring: bool)
-        -> Vec<NodeId> {
+    pub fn nodes_for_vnode(
+        &self,
+        vnode: VNodeId,
+        include_pending: bool,
+        include_retiring: bool,
+    ) -> Vec<NodeId> {
         // FIXME: this shouldn't alloc
         let mut result = Vec::new();
         let inner = self.inner.lock().unwrap();
@@ -574,23 +604,26 @@ impl<T: Metadata> DHT<T> {
             inner.ring.vnodes[vnode as usize]
                 .iter()
                 .chain(inner.ring.pending[vnode as usize].iter())
-                .filter_map(
-                    |n| {
-                        let node = inner.ring.nodes.get(n).unwrap();
-                        if node.leaving {
-                            None
-                        } else {
-                            Some((*n, (node.addr, node.meta.clone())))
-                        }
-                    },
-                ),
+                .filter_map(|n| {
+                    let node = inner.ring.nodes.get(n).unwrap();
+                    if node.leaving {
+                        None
+                    } else {
+                        Some((*n, (node.addr, node.meta.clone())))
+                    }
+                }),
         );
         result
     }
 
     pub fn members(&self) -> IdHashMap<NodeId, net::SocketAddr> {
         let inner = self.inner.lock().unwrap();
-        inner.ring.nodes.iter().map(|(k, v)| (k.clone(), v.addr)).collect()
+        inner
+            .ring
+            .nodes
+            .iter()
+            .map(|(k, v)| (k.clone(), v.addr))
+            .collect()
     }
 
     pub fn slots(&self) -> BTreeMap<(u16, u16), Vec<(NodeId, (net::SocketAddr, T))>> {
@@ -604,23 +637,25 @@ impl<T: Metadata> DHT<T> {
                 .iter()
                 .zip(inner.ring.pending.iter())
                 .zip(inner.ring.retiring.iter())
-                .enumerate() {
+                .enumerate()
+        {
             let members: Vec<_> = v.iter()
                 .chain(p.iter())
                 .chain(r.iter())
-                .filter_map(
-                    |n| {
-                        let node = inner.ring.nodes.get(n).unwrap();
-                        if node.leaving {
-                            None
-                        } else {
-                            Some((*n, (node.addr, node.meta.clone())))
-                        }
-                    },
-                )
+                .filter_map(|n| {
+                    let node = inner.ring.nodes.get(n).unwrap();
+                    if node.leaving {
+                        None
+                    } else {
+                        Some((*n, (node.addr, node.meta.clone())))
+                    }
+                })
                 .collect();
             let hi = hi as u16;
-            result.insert((hi * slots_per_partition, (hi + 1) * slots_per_partition - 1), members);
+            result.insert(
+                (hi * slots_per_partition, (hi + 1) * slots_per_partition - 1),
+                members,
+            );
         }
         result
     }
@@ -674,8 +709,12 @@ impl<T: Metadata> DHT<T> {
         )
     }
 
-    fn propose(&self, old_version: u64, new_ring: Ring<T>, update: bool)
-        -> Result<(), etcd::Error> {
+    fn propose(
+        &self,
+        old_version: u64,
+        new_ring: Ring<T>,
+        update: bool,
+    ) -> Result<(), etcd::Error> {
         debug!("Proposing new ring against version {}", old_version);
         let cluster_key = format!("/sucredb/{}/dht", self.cluster);
         let new = Self::serialize(&new_ring).unwrap();
@@ -686,7 +725,11 @@ impl<T: Metadata> DHT<T> {
             let mut inner = self.inner.lock().unwrap();
             inner.ring = new_ring;
             inner.ring_version = r.node.unwrap().modified_index.unwrap();
-            debug!("Updated ring to {:?} version {}", inner.ring, inner.ring_version);
+            debug!(
+                "Updated ring to {:?} version {}",
+                inner.ring,
+                inner.ring_version
+            );
         }
         Ok(())
     }

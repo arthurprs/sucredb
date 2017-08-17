@@ -13,7 +13,7 @@ pub struct VersionVector(LinearMap<Id, Version>);
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BitmappedVersion {
     base: Version,
-    #[serde(serialize_with="serialize_bitmap", deserialize_with="deserialize_bitmap")]
+    #[serde(serialize_with = "serialize_bitmap", deserialize_with = "deserialize_bitmap")]
     bitmap: RoaringTreemap,
 }
 
@@ -164,7 +164,9 @@ where
         buffer_len += 4 + b.serialized_size();
     }
     let mut buffer = Vec::with_capacity(buffer_len);
-    buffer.write_u32::<LittleEndian>(bitmap_count).map_err(Error::custom)?;
+    buffer.write_u32::<LittleEndian>(bitmap_count).map_err(
+        Error::custom,
+    )?;
     for (p, b) in value.bitmaps() {
         buffer.write_u32::<LittleEndian>(p).map_err(Error::custom)?;
         b.serialize_into(&mut buffer).map_err(Error::custom)?;
@@ -205,21 +207,21 @@ where
         }
     }
 
-    deserializer
-        .deserialize_byte_buf(ByteBufVisitor)
-        .and_then(
-            |buffer| {
-                let mut buffer = &buffer[..];
-                let bitmap_count = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
-                let mut bitmaps = Vec::with_capacity(bitmap_count as usize);
-                for _ in 0..bitmap_count {
-                    let p = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
-                    let b = RoaringBitmap::deserialize_from(&mut buffer).map_err(Error::custom)?;
-                    bitmaps.push((p, b));
-                }
-                Ok(RoaringTreemap::from_bitmaps(bitmaps))
-            },
-        )
+    deserializer.deserialize_byte_buf(ByteBufVisitor).and_then(
+        |buffer| {
+            let mut buffer = &buffer[..];
+            let bitmap_count = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
+            let mut bitmaps = Vec::with_capacity(bitmap_count as usize);
+            for _ in 0..bitmap_count {
+                let p = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
+                let b = RoaringBitmap::deserialize_from(&mut buffer).map_err(
+                    Error::custom,
+                )?;
+                bitmaps.push((p, b));
+            }
+            Ok(RoaringTreemap::from_bitmaps(bitmaps))
+        },
+    )
 }
 
 impl BitmappedVersionVector {
@@ -244,7 +246,9 @@ impl BitmappedVersionVector {
     }
 
     pub fn add(&mut self, id: Id, version: Version) {
-        self.0.entry(id).or_insert_with(Default::default).add(version);
+        self.0.entry(id).or_insert_with(Default::default).add(
+            version,
+        );
     }
 
     pub fn add_bv(&mut self, id: Id, bv: &BitmappedVersion) {
@@ -331,27 +335,20 @@ impl BitmappedVersionVector {
     pub fn delta(&self, other: &Self) -> BitmappedVersionVectorDelta {
         let min_versions: Vec<_> = self.0
             .iter()
-            .filter_map(
-                |(&id, bv)| {
-                    if let Some(other_bv) = other.get(id) {
-                        bv.delta(other_bv).map(move |v| (id, v)).next()
-                    } else {
-                        Some((id, 1)) // start from 1 if the other bvv don't have this node
-                    }
-                },
-            )
+            .filter_map(|(&id, bv)| {
+                if let Some(other_bv) = other.get(id) {
+                    bv.delta(other_bv).map(move |v| (id, v)).next()
+                } else {
+                    Some((id, 1)) // start from 1 if the other bvv don't have this node
+                }
+            })
             .collect();
         let empty_bv = BitmappedVersion::new(0, 0);
         let other = other.clone();
-        let iter = self.0
-            .clone()
-            .into_iter()
-            .flat_map(
-                move |(id, bv)| {
-                    let other_bv = other.get(id).unwrap_or(&empty_bv);
-                    bv.delta(other_bv).map(move |v| (id, v))
-                },
-            );
+        let iter = self.0.clone().into_iter().flat_map(move |(id, bv)| {
+            let other_bv = other.get(id).unwrap_or(&empty_bv);
+            bv.delta(other_bv).map(move |v| (id, v))
+        });
         BitmappedVersionVectorDelta {
             iter: Box::new(iter),
             min_versions: min_versions,
@@ -424,13 +421,10 @@ impl<T> Dots<T> {
 
     fn merge(&mut self, other: &mut Self, vv1: &VersionVector, vv2: &VersionVector) {
         // retain in self what's not outdated or also exists in other
-        self.0
-            .retain(
-                |&(id, version), _| {
-                    version > vv1.get(id).unwrap_or(0) || version > vv2.get(id).unwrap_or(0) ||
-                    other.0.remove(&(id, version)).is_some()
-                },
-            );
+        self.0.retain(|&(id, version), _| {
+            version > vv1.get(id).unwrap_or(0) || version > vv2.get(id).unwrap_or(0) ||
+                other.0.remove(&(id, version)).is_some()
+        });
 
         // drain other into self filtering outdated versions
         for ((id, version), value) in other.0.drain() {
@@ -473,14 +467,16 @@ impl<T> DottedCausalContainer<T> {
     }
 
     pub fn discard(&mut self, vv: &VersionVector) {
-        self.dots.0.retain(|&(id, version), _| version > vv.get(id).unwrap_or(0));
+        self.dots.0.retain(|&(id, version), _| {
+            version > vv.get(id).unwrap_or(0)
+        });
         self.vv.merge(vv);
     }
 
     pub fn strip(&mut self, bvv: &BitmappedVersionVector) {
-        self.vv
-            .0
-            .retain(|&id, &mut version| version > bvv.get(id).map(|b| b.base).unwrap_or(0));
+        self.vv.0.retain(|&id, &mut version| {
+            version > bvv.get(id).map(|b| b.base).unwrap_or(0)
+        });
     }
 
     pub fn fill(&mut self, bvv: &BitmappedVersionVector) {

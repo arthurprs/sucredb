@@ -112,7 +112,10 @@ impl GlobalContext {
         let chan_id = self.chan_id_gen.fetch_add(1, Ordering::Relaxed);
         debug!("add_writer_chan peer: {}, chan_id: {:?}", peer, chan_id);
         let mut locked = self.writer_chans.lock().unwrap();
-        locked.entry(peer).or_insert(Default::default()).push((chan_id, sender));
+        locked.entry(peer).or_insert(Default::default()).push((
+            chan_id,
+            sender,
+        ));
         chan_id
     }
 
@@ -141,8 +144,10 @@ impl ReaderContext {
 
     fn dispatch(&self, msg: FabricMsg) {
         let msg_type = msg.get_type();
-        if let Some(handler) =
-            self.context.msg_handlers.lock().unwrap().get_mut(&(msg_type as u8)) {
+        if let Some(handler) = self.context.msg_handlers.lock().unwrap().get_mut(
+            &(msg_type as u8),
+        )
+        {
             handler(self.peer, msg);
         } else {
             panic!("No handler for msg type {:?}", msg_type);
@@ -163,112 +168,114 @@ impl WriterContext {
 
 impl Drop for WriterContext {
     fn drop(&mut self) {
-        self.context.remove_writer_chan(self.peer, self.sender_chan_id);
+        self.context.remove_writer_chan(
+            self.peer,
+            self.sender_chan_id,
+        );
     }
 }
 
 impl Fabric {
     fn listen(
-        listener: tokio::net::TcpListener, context: Arc<GlobalContext>,
-        handle: tokio::reactor::Handle
+        listener: tokio::net::TcpListener,
+        context: Arc<GlobalContext>,
+        handle: tokio::reactor::Handle,
     ) -> Box<Future<Item = (), Error = ()>> {
         debug!("Starting fabric listener");
         let fut = listener
             .incoming()
-            .for_each(
-                move |(socket, addr)| {
-                    debug!("Accepting connection from {:?}", addr);
-                    let handle_cloned = handle.clone();
-                    let context_cloned = context.clone();
-                    handle.spawn(
-                        Self::connection(socket, None, addr, context_cloned, handle_cloned)
-                            .map_err(|_| ()),
-                    );
-                    Ok(())
-                },
-            )
+            .for_each(move |(socket, addr)| {
+                debug!("Accepting connection from {:?}", addr);
+                let handle_cloned = handle.clone();
+                let context_cloned = context.clone();
+                handle.spawn(
+                    Self::connection(socket, None, addr, context_cloned, handle_cloned)
+                        .map_err(|_| ()),
+                );
+                Ok(())
+            })
             .map_err(|_| ());
         Box::new(fut)
     }
 
-    fn connect(node: NodeId, addr: SocketAddr, context: Arc<GlobalContext>, handle: tokio::reactor::Handle)
-        -> Box<Future<Item = (), Error = ()>> {
+    fn connect(
+        node: NodeId,
+        addr: SocketAddr,
+        context: Arc<GlobalContext>,
+        handle: tokio::reactor::Handle,
+    ) -> Box<Future<Item = (), Error = ()>> {
         debug!("Connecting to node {:?}: {:?}", node, addr);
         let context_cloned = context.clone();
         let handle1 = handle.clone();
         let handle2 = handle.clone();
         let fut = tokio::net::TcpStream::connect(&addr, &handle)
-            .and_then(
-                move |s| {
-                    debug!("Stablished connection with {:?}: {:?}", node, addr);
-                    Self::connection(s, Some(node), addr, context_cloned, handle)
-                },
-            )
-            .then(
-                move |_| {
-                    tokio::reactor::Timeout::new(
-                        Duration::from_millis(FABRIC_RECONNECT_INTERVAL_MS),
-                        &handle1,
-                    )
-                },
-            )
+            .and_then(move |s| {
+                debug!("Stablished connection with {:?}: {:?}", node, addr);
+                Self::connection(s, Some(node), addr, context_cloned, handle)
+            })
+            .then(move |_| {
+                tokio::reactor::Timeout::new(
+                    Duration::from_millis(FABRIC_RECONNECT_INTERVAL_MS),
+                    &handle1,
+                )
+            })
             .and_then(|t| t)
-            .and_then(
-                move |_| {
-                    let addr_opt = {
-                        let locked = context.nodes_addr.lock().unwrap();
-                        locked.get(&node).cloned()
-                    };
-                    if let Some(addr) = addr_opt {
-                        debug!("Reconnecting fabric connection to {:?}", addr);
-                        handle2.spawn(Self::connect(node, addr, context, handle2.clone()));
-                    }
-                    Ok(())
-                },
-            );
+            .and_then(move |_| {
+                let addr_opt = {
+                    let locked = context.nodes_addr.lock().unwrap();
+                    locked.get(&node).cloned()
+                };
+                if let Some(addr) = addr_opt {
+                    debug!("Reconnecting fabric connection to {:?}", addr);
+                    handle2.spawn(Self::connect(node, addr, context, handle2.clone()));
+                }
+                Ok(())
+            });
         Box::new(fut.map_err(|_| ()))
     }
 
     fn connection(
-        socket: tokio::net::TcpStream, expected_node: Option<NodeId>, addr: SocketAddr,
-        context: Arc<GlobalContext>, handle: tokio::reactor::Handle
+        socket: tokio::net::TcpStream,
+        expected_node: Option<NodeId>,
+        addr: SocketAddr,
+        context: Arc<GlobalContext>,
+        handle: tokio::reactor::Handle,
     ) -> Box<Future<Item = (), Error = io::Error>> {
         socket.set_nodelay(true).expect("Failed to set nodelay");
         socket
             .set_keepalive(Some(Duration::from_millis(FABRIC_KEEPALIVE_MS)))
             .expect("Failed to set keepalive");
         let mut buffer = [0u8; 8];
-        (&mut buffer[..]).write_u64::<LittleEndian>(context.node).unwrap();
+        (&mut buffer[..])
+            .write_u64::<LittleEndian>(context.node)
+            .unwrap();
         let fut = tokio_io::write_all(socket, buffer)
             .and_then(|(s, b)| tokio_io::read_exact(s, b))
-            .and_then(
-                move |(s, b)| {
-                    let peer_id = (&b[..]).read_u64::<LittleEndian>().unwrap();
-                    if expected_node.unwrap_or(peer_id) == peer_id {
-                        Ok((s, peer_id))
-                    } else {
-                        Err(io::Error::new(io::ErrorKind::Other, "Unexpected NodeId"))
-                    }
-                },
-            )
-            .and_then(
-                move |(s, peer_id)| {
-                    debug!("Identified connection to node {}", peer_id);
-                    Self::steady_connection(s, peer_id, addr, context, handle).then(
-                        move |r| {
-                            debug!("Connection to node {} disconnected {:?}", peer_id, r);
-                            r
-                        },
-                    )
-                },
-            );
+            .and_then(move |(s, b)| {
+                let peer_id = (&b[..]).read_u64::<LittleEndian>().unwrap();
+                if expected_node.unwrap_or(peer_id) == peer_id {
+                    Ok((s, peer_id))
+                } else {
+                    Err(io::Error::new(io::ErrorKind::Other, "Unexpected NodeId"))
+                }
+            })
+            .and_then(move |(s, peer_id)| {
+                debug!("Identified connection to node {}", peer_id);
+                Self::steady_connection(s, peer_id, addr, context, handle).then(move |r| {
+                    debug!("Connection to node {} disconnected {:?}", peer_id, r);
+                    r
+                })
+            });
 
         Box::new(fut)
     }
 
     fn steady_connection(
-        socket: tokio::net::TcpStream, peer: NodeId, _peer_addr: SocketAddr,
-        context: Arc<GlobalContext>, _handle: tokio::reactor::Handle
+        socket: tokio::net::TcpStream,
+        peer: NodeId,
+        _peer_addr: SocketAddr,
+        context: Arc<GlobalContext>,
+        _handle: tokio::reactor::Handle,
     ) -> Box<Future<Item = (), Error = io::Error>> {
         let (socket_rx, socket_tx) = socket.split();
         let socket_tx = codec::FramedWrite::new(socket_tx, FramedBincodeCodec);
@@ -276,23 +283,21 @@ impl Fabric {
         let (chan_tx, chan_rx) = fmpsc::unbounded();
 
         let ctx_rx = ReaderContext::new(context.clone(), peer);
-        let fut_rx = socket_rx.for_each(
-            move |msg| -> io::Result<_> {
-                ctx_rx.dispatch(msg);
-                Ok(())
-            },
-        );
+        let fut_rx = socket_rx.for_each(move |msg| -> io::Result<_> {
+            ctx_rx.dispatch(msg);
+            Ok(())
+        });
 
         let ctx_tx = WriterContext::new(context, peer, chan_tx);
         let fut_tx = socket_tx
-            .send_all(chan_rx.map_err(|_| -> io::Error { io::ErrorKind::Other.into() }))
-            .then(
-                move |r| {
-                    // hold onto ctx_tx until the stream is done
-                    drop(ctx_tx);
-                    r.map(|_| ())
-                },
-            );
+            .send_all(chan_rx.map_err(
+                |_| -> io::Error { io::ErrorKind::Other.into() },
+            ))
+            .then(move |r| {
+                // hold onto ctx_tx until the stream is done
+                drop(ctx_tx);
+                r.map(|_| ())
+            });
 
         Box::new(fut_rx.select(fut_tx).map(|_| ()).map_err(|(e, _)| e))
     }
@@ -301,23 +306,23 @@ impl Fabric {
         let mut core = tokio::reactor::Core::new().unwrap();
         let handle = core.handle();
         let remote = core.remote();
-        let context = Arc::new(
-            GlobalContext {
-                node: node,
-                addr: config.fabric_addr,
-                timeout: config.fabric_timeout,
-                loop_remote: remote,
-                nodes_addr: Default::default(),
-                msg_handlers: Default::default(),
-                writer_chans: Default::default(),
-                chan_id_gen: Default::default(),
-            },
-        );
-        let init_result = tokio::net::TcpListener::bind(&context.addr, &handle).map(
-            |listener| {
-                core.handle().spawn(Self::listen(listener, context.clone(), core.handle()))
-            },
-        );
+        let context = Arc::new(GlobalContext {
+            node: node,
+            addr: config.fabric_addr,
+            timeout: config.fabric_timeout,
+            loop_remote: remote,
+            nodes_addr: Default::default(),
+            msg_handlers: Default::default(),
+            writer_chans: Default::default(),
+            chan_id_gen: Default::default(),
+        });
+        let init_result = tokio::net::TcpListener::bind(&context.addr, &handle).map(|listener| {
+            core.handle().spawn(Self::listen(
+                listener,
+                context.clone(),
+                core.handle(),
+            ))
+        });
 
         match init_result {
             Ok(_) => {
@@ -340,16 +345,17 @@ impl Fabric {
             .spawn(move || Self::run(node, config, init_tx))
             .unwrap();
         let (context, completer) = init_rx.recv()??;
-        Ok(
-            Fabric {
-                context: context,
-                loop_thread: Some((completer, thread)),
-            },
-        )
+        Ok(Fabric {
+            context: context,
+            loop_thread: Some((completer, thread)),
+        })
     }
 
     pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: FabricHandlerFn) {
-        self.context.msg_handlers.lock().unwrap().insert(msg_type as u8, handler);
+        self.context.msg_handlers.lock().unwrap().insert(
+            msg_type as u8,
+            handler,
+        );
     }
 
     pub fn register_node(&self, node: NodeId, addr: SocketAddr) {
@@ -390,9 +396,9 @@ impl Fabric {
             writers.entry(node).or_insert(Default::default());
         }
         let context_cloned = context.clone();
-        context
-            .loop_remote
-            .spawn(move |h| Self::connect(node, addr, context_cloned, h.clone()));
+        context.loop_remote.spawn(move |h| {
+            Self::connect(node, addr, context_cloned, h.clone())
+        });
     }
 
     // TODO: take msgs as references and buffer serialized bytes instead
@@ -480,7 +486,9 @@ mod tests {
         let counter_ = counter.clone();
         fabric2.register_msg_handler(
             FabricMsgType::Crud,
-            Box::new(move |_, m| { counter_.fetch_add(1, atomic::Ordering::Relaxed); }),
+            Box::new(move |_, m| {
+                counter_.fetch_add(1, atomic::Ordering::Relaxed);
+            }),
         );
         for _ in 0..3 {
             fabric1

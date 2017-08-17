@@ -163,12 +163,10 @@ fn configure() -> config::Config {
     }
 
     if let Some(sub) = matches.subcommand_matches("init") {
-        config.cmd_init = Some(
-            InitCommand {
-                partitions: sub.value_of("partitions").unwrap().parse().unwrap(),
-                replication_factor: sub.value_of("replication_factor").unwrap().parse().unwrap(),
-            },
-        );
+        config.cmd_init = Some(InitCommand {
+            partitions: sub.value_of("partitions").unwrap().parse().unwrap(),
+            replication_factor: sub.value_of("replication_factor").unwrap().parse().unwrap(),
+        });
     }
 
     config

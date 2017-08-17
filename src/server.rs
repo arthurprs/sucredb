@@ -26,18 +26,14 @@ impl codec::Decoder for RespCodec {
 
     fn decode(&mut self, src: &mut BytesMut) -> io::Result<Option<Self::Item>> {
         let (consumed, result) = resp::Parser::new(&*src)
-            .and_then(
-                |mut p| match p.parse() {
-                    Ok(v) => Ok((p.consumed(), Ok(Some(v)))),
-                    Err(e) => Err(e),
-                },
-            )
-            .unwrap_or_else(
-                |e| match e {
-                    resp::RespError::Incomplete => (0, Ok(None)),
-                    _ => (0, Err(io::ErrorKind::InvalidData.into())),
-                },
-            );
+            .and_then(|mut p| match p.parse() {
+                Ok(v) => Ok((p.consumed(), Ok(Some(v)))),
+                Err(e) => Err(e),
+            })
+            .unwrap_or_else(|e| match e {
+                resp::RespError::Incomplete => (0, Ok(None)),
+                _ => (0, Err(io::ErrorKind::InvalidData.into())),
+            });
         src.split_to(consumed);
         result
     }
@@ -49,8 +45,9 @@ impl codec::Encoder for RespCodec {
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> io::Result<()> {
         dst.reserve(item.serialized_size());
-        item.serialize_into(&mut dst.writer())
-            .expect("Failed to serialize into reserved space");
+        item.serialize_into(&mut dst.writer()).expect(
+            "Failed to serialize into reserved space",
+        );
         Ok(())
     }
 }
@@ -73,8 +70,11 @@ pub struct Server {
 }
 
 impl LocalContext {
-    fn new(context: Rc<GlobalContext>, token: Token, chan_tx: fmpsc::UnboundedSender<RespValue>)
-        -> Self {
+    fn new(
+        context: Rc<GlobalContext>,
+        token: Token,
+        chan_tx: fmpsc::UnboundedSender<RespValue>,
+    ) -> Self {
         metrics::CLIENT_CONNECTION.inc();
         context.token_chans.lock().unwrap().insert(token, chan_tx);
         LocalContext {
@@ -91,10 +91,12 @@ impl LocalContext {
             self.requests.push_back(req);
         } else {
             debug!("Dispatched request ({}) {:?}", self.token, req);
-            self.context
-                .db_sender
-                .borrow_mut()
-                .send(WorkerMsg::Command(self.token, req));
+            self.context.db_sender.borrow_mut().send(
+                WorkerMsg::Command(
+                    self.token,
+                    req,
+                ),
+            );
             self.inflight = true;
         }
     }
@@ -103,10 +105,12 @@ impl LocalContext {
         assert!(self.inflight, "can't cycle if there's nothing inflight");
         if let Some(req) = self.requests.pop_front() {
             debug!("Dispatched request ({}) {:?}", self.token, req);
-            self.context
-                .db_sender
-                .borrow_mut()
-                .send(WorkerMsg::Command(self.token, req));
+            self.context.db_sender.borrow_mut().send(
+                WorkerMsg::Command(
+                    self.token,
+                    req,
+                ),
+            );
         } else {
             self.inflight = false;
         }
@@ -125,8 +129,11 @@ impl Server {
         Server { config: config }
     }
 
-    fn connection(context: Rc<GlobalContext>, token: Token, socket: tokio::net::TcpStream)
-        -> Box<Future<Item = (), Error = io::Error>> {
+    fn connection(
+        context: Rc<GlobalContext>,
+        token: Token,
+        socket: tokio::net::TcpStream,
+    ) -> Box<Future<Item = (), Error = io::Error>> {
         socket.set_nodelay(true).expect("Failed to set nodelay");
         let (sock_rx, sock_tx) = socket.split();
         let sock_tx = codec::FramedWrite::new(sock_tx, RespCodec);
@@ -135,22 +142,18 @@ impl Server {
         let ctx_rx = Rc::new(RefCell::new(LocalContext::new(context, token, chan_tx)));
         let ctx_tx = ctx_rx.clone();
 
-        let fut_rx = sock_rx.for_each(
-            move |request| {
-                ctx_rx.borrow_mut().dispatch(request);
-                Ok(())
-            },
-        );
+        let fut_rx = sock_rx.for_each(move |request| {
+            ctx_rx.borrow_mut().dispatch(request);
+            Ok(())
+        });
 
         let fut_tx = sock_tx
             .send_all(
                 chan_rx
-                    .map(
-                        move |response| {
-                            ctx_tx.borrow_mut().dispatch_next();
-                            response
-                        },
-                    )
+                    .map(move |response| {
+                        ctx_tx.borrow_mut().dispatch_next();
+                        response
+                    })
                     .map_err(|_| -> io::Error { io::ErrorKind::Other.into() }),
             )
             .map(|_| ());
@@ -166,54 +169,47 @@ impl Server {
         let token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<_>>>> =
             Default::default();
         let token_chans_cloned = token_chans.clone();
-        let response_fn = Box::new(
-            move |token, resp| if let Some(chan) = token_chans_cloned
-                   .lock()
-                   .unwrap()
-                   .get_mut(&token) {
-                if let Err(e) = fmpsc::UnboundedSender::send(&chan, resp) {
-                    warn!("Can't send to token {} chan: {:?}", token, e);
-                }
-            } else {
-                debug!("Can't find response channel for token {:?}", token);
-            },
-        );
+        let response_fn = Box::new(move |token, resp| if let Some(chan) =
+            token_chans_cloned.lock().unwrap().get_mut(&token)
+        {
+            if let Err(e) = fmpsc::UnboundedSender::send(&chan, resp) {
+                warn!("Can't send to token {} chan: {:?}", token, e);
+            }
+        } else {
+            debug!("Can't find response channel for token {:?}", token);
+        });
 
         let database = Database::new(&self.config, response_fn);
 
-        let context = Rc::new(
-            GlobalContext {
-                db_sender: RefCell::new(database.sender()),
-                database: database,
-                token_chans: token_chans,
-            },
-        );
+        let context = Rc::new(GlobalContext {
+            db_sender: RefCell::new(database.sender()),
+            database: database,
+            token_chans: token_chans,
+        });
 
         let mut next_token = 0;
         let handle = core.handle();
-        let listener_fut = listener
-            .incoming()
-            .for_each(
-                |(socket, addr)| {
-                    if context.token_chans.lock().unwrap().len() >=
-                       context.database.config.client_connection_max as usize {
-                        info!("Refusing connection from {:?}, connection limit reached", addr);
-                        return Ok(());
-                    }
-                    info!("Token {} accepting connection from {:?}", next_token, addr);
-                    let conn_ctx = context.clone();
-                    handle.spawn(
-                        Self::connection(conn_ctx, next_token, socket).then(
-                            move |r| {
-                                info!("Token {} disconnected {:?}", next_token, r);
-                                Ok(())
-                            },
-                        ),
-                    );
-                    next_token = next_token.wrapping_add(1);
+        let listener_fut = listener.incoming().for_each(|(socket, addr)| {
+            if context.token_chans.lock().unwrap().len() >=
+                context.database.config.client_connection_max as usize
+            {
+                info!(
+                    "Refusing connection from {:?}, connection limit reached",
+                    addr
+                );
+                return Ok(());
+            }
+            info!("Token {} accepting connection from {:?}", next_token, addr);
+            let conn_ctx = context.clone();
+            handle.spawn(Self::connection(conn_ctx, next_token, socket).then(
+                move |r| {
+                    info!("Token {} disconnected {:?}", next_token, r);
                     Ok(())
                 },
-            );
+            ));
+            next_token = next_token.wrapping_add(1);
+            Ok(())
+        });
 
         core.run(listener_fut).unwrap();
     }

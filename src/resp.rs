@@ -104,12 +104,10 @@ pub struct Parser {
 impl Parser {
     pub fn new<T: AsRef<[u8]>>(body: T) -> RespResult<Parser> {
         let valid_to = Self::speculate_buffer(body.as_ref())?;
-        Ok(
-            Parser {
-                consumed: 0,
-                body: body.as_ref()[..valid_to].into(),
-            },
-        )
+        Ok(Parser {
+            consumed: 0,
+            body: body.as_ref()[..valid_to].into(),
+        })
     }
 
     // Quickly speculate a buffer, checking whatever it has a complete resp objects or not.
@@ -317,13 +315,11 @@ mod tests {
         assert_eq_repr!(r.unwrap(), RespValue::Error("foo".into()));
 
         let r = parse(b"-invalid line sep\r\r");
-        assert!(
-            if let RespError::Invalid(_) = r.unwrap_err() {
-                true
-            } else {
-                false
-            }
-        );
+        assert!(if let RespError::Invalid(_) = r.unwrap_err() {
+            true
+        } else {
+            false
+        });
     }
 
     #[test]
@@ -332,12 +328,10 @@ mod tests {
         assert!(r.is_ok(), "{:?} not ok", r.unwrap_err());
         assert_eq_repr!(
             r.unwrap(),
-            RespValue::Array(
-                vec![
-                    RespValue::Data(b"foo".as_ref().into()),
-                    RespValue::Data(b"barz".as_ref().into()),
-                ],
-            )
+            RespValue::Array(vec![
+                RespValue::Data(b"foo".as_ref().into()),
+                RespValue::Data(b"barz".as_ref().into()),
+            ])
         );
     }
 
@@ -346,19 +340,16 @@ mod tests {
         let mut parser = Parser::new(
             b"*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n"
                 .as_ref(),
-        )
-                .unwrap();
+        ).unwrap();
         for _ in 0..2 {
             let r = parser.parse();
             assert!(r.is_ok(), "{:?} not ok", r.unwrap_err());
             assert_eq_repr!(
                 r.unwrap(),
-                RespValue::Array(
-                    vec![
-                        RespValue::Data(b"foo".as_ref().into()),
-                        RespValue::Data(b"barz".as_ref().into()),
-                    ],
-                )
+                RespValue::Array(vec![
+                    RespValue::Data(b"foo".as_ref().into()),
+                    RespValue::Data(b"barz".as_ref().into()),
+                ])
             );
         }
         let r = parser.parse();
