@@ -24,6 +24,7 @@ pub struct StorageManager {
     db: Arc<rocksdb::DB>,
 }
 
+// TODO: support TTL
 // TODO: merge operator would be a huge win
 // This implementation goes to a lot of trouble to allow
 // safe-ish iterators that don't require a lifetime attached to them.

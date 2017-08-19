@@ -62,7 +62,6 @@ pub struct Ring<T: Metadata> {
     vnodes: Vec<LinearSet<NodeId>>,
     pending: Vec<LinearSet<NodeId>>,
     retiring: Vec<LinearSet<NodeId>>,
-    // map of nodes to (fabric_addr, leaving_flag, meta)
     nodes: IdHashMap<NodeId, Node<T>>,
 }
 
@@ -202,10 +201,10 @@ impl<T: Metadata> Ring<T> {
     fn rebalance(&mut self) -> Result<(), GenericError> {
         // special case when #nodes <= replication factor
         if self.nodes.len() <= self.replication_factor {
-            for (vn_num, vn_replicas) in self.vnodes.iter().enumerate() {
-                for &node in self.nodes.keys() {
-                    if !vn_replicas.contains(&node) {
-                        self.pending[vn_num].insert(node);
+            for (replicas, pending) in self.vnodes.iter().zip(&mut self.pending) {
+                for (&node, &Node { leaving, .. }) in &self.nodes {
+                    if !leaving && !replicas.contains(&node) {
+                        assert!(pending.insert(node));
                     }
                 }
             }
@@ -254,7 +253,7 @@ impl<T: Metadata> Ring<T> {
                 })
                 .cloned()
                 .collect();
-            for (from, to) in doing_much.into_iter().zip(candidates.into_iter()) {
+            for (from, to) in doing_much.into_iter().zip(candidates) {
                 assert!(vnodes.remove(&from) || pending.remove(&from));
                 assert!(pending.insert(to));
                 assert!(retiring.insert(from));
@@ -284,9 +283,11 @@ impl<T: Metadata> Ring<T> {
                     continue;
                 }
                 // try to find candidate that was retiring from that vnode
-                if let Some(&node) = retiring.iter().min_by_key(
-                    |n| node_map.get(n).unwrap().len(),
-                )
+                // only consider nodes in node_map (others could be leaving)
+                if let Some((_, node)) = retiring
+                    .iter()
+                    .filter_map(|&n| node_map.get(&n).map(|p| (p.len(), n)))
+                    .min()
                 {
                     assert!(node_map.get_mut(&node).unwrap().insert(vn));
                     assert!(retiring.remove(&node));
@@ -304,9 +305,7 @@ impl<T: Metadata> Ring<T> {
             }
         }
 
-        self.is_valid()?;
-
-        Ok(())
+        self.is_valid()
     }
 
     #[cfg(test)]
