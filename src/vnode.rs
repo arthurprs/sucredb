@@ -1082,8 +1082,8 @@ impl VNodeState {
         if new_dcc.is_dcc_empty() {
             self.storage.del(key);
         } else {
-            let bytes = bincode::serialize(&new_dcc, bincode::Infinite).unwrap();
-            self.storage.set(key, &bytes);
+            let dcc_bytes = bincode::serialize(&new_dcc, bincode::Infinite).unwrap();
+            self.storage.set(key, &dcc_bytes);
         }
 
         for (&(node, version), _) in new_dcc.iter() {

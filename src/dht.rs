@@ -114,13 +114,17 @@ impl<T: Metadata> Ring<T> {
         }
     }
 
+    fn valid_nodes_count(&self) -> usize {
+        self.nodes.values().filter(|n| !n.leaving).count()
+    }
+
     fn leave_node(&mut self, node: NodeId) -> Result<(), GenericError> {
         for i in 0..self.vnodes.len() {
             if self.vnodes[i].remove(&node) {
                 assert!(self.retiring[i].insert(node));
                 assert!(!self.pending[i].remove(&node));
             } else {
-                assert!(self.pending[i].remove(&node));
+                self.pending[i].remove(&node);
             }
         }
         self.nodes.get_mut(&node).unwrap().leaving = true;
@@ -200,7 +204,7 @@ impl<T: Metadata> Ring<T> {
 
     fn rebalance(&mut self) -> Result<(), GenericError> {
         // special case when #nodes <= replication factor
-        if self.nodes.len() <= self.replication_factor {
+        if self.valid_nodes_count() <= self.replication_factor {
             for (replicas, pending) in self.vnodes.iter().zip(&mut self.pending) {
                 for (&node, &Node { leaving, .. }) in &self.nodes {
                     if !leaving && !replicas.contains(&node) {
@@ -323,11 +327,12 @@ impl<T: Metadata> Ring<T> {
     }
 
     fn is_valid(&self) -> Result<(), GenericError> {
-        let replicas = min(self.nodes.len(), self.replication_factor);
-        let vnpn = self.vnodes.len() * self.replication_factor / self.nodes.len();
-        let vnpn_rest = self.vnodes.len() * self.replication_factor % self.nodes.len();
+        let valid_nodes_count = self.valid_nodes_count();
+        let replicas = min(valid_nodes_count, self.replication_factor);
+        let vnpn = self.vnodes.len() * self.replication_factor / valid_nodes_count;
+        let vnpn_rest = self.vnodes.len() * self.replication_factor % valid_nodes_count;
         let mut node_map = IdHashMap::default();
-        node_map.reserve(self.nodes.len());
+        node_map.reserve(valid_nodes_count);
 
         for vn in 0..self.vnodes.len() {
             let vnodes = &self.vnodes[vn];
@@ -801,6 +806,26 @@ mod tests {
     }
 
     #[test]
+    fn test_rebalance_leaving_nodes() {
+        let _ = env_logger::init();
+        let addr = "0.0.0.0:0".parse().unwrap();
+        for i in 0..1_000 {
+            let mut ring = Ring::new(0, addr, (), 64, 1 + thread_rng().gen::<u8>() % 4);
+            for i in 0..thread_rng().gen::<u64>() % 64 {
+                ring.join_node(i, addr, ()).unwrap();
+            }
+            ring.rebalance().unwrap();
+            ring.finish_rebalance().unwrap();
+
+            for i in 0..thread_rng().gen::<u64>() % ring.valid_nodes_count() as u64 {
+                ring.leave_node(i).unwrap();
+            }
+            ring.rebalance().unwrap();
+            ring.finish_rebalance().unwrap();
+        }
+    }
+
+    #[test]
     fn test_rebalance() {
         let _ = env_logger::init();
         let addr = "0.0.0.0:0".parse().unwrap();
@@ -812,7 +837,7 @@ mod tests {
             ring.rebalance().unwrap();
             ring.finish_rebalance().unwrap();
 
-            for i in 0..thread_rng().gen::<u64>() % ring.nodes.len() as u64 {
+            for i in 0..thread_rng().gen::<u64>() % ring.valid_nodes_count() as u64 {
                 ring.remove_node(i).unwrap();
             }
             ring.rebalance().unwrap();
