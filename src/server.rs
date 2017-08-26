@@ -52,14 +52,14 @@ impl codec::Encoder for RespCodec {
     }
 }
 
-struct LocalContext {
-    context: Rc<GlobalContext>,
+struct Context {
+    context: Rc<SharedContext>,
     token: Token,
     requests: VecDeque<RespValue>,
     inflight: bool,
 }
 
-struct GlobalContext {
+struct SharedContext {
     database: Arc<Database>,
     db_sender: RefCell<WorkerSender>,
     token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<RespValue>>>>,
@@ -69,15 +69,15 @@ pub struct Server {
     config: Config,
 }
 
-impl LocalContext {
+impl Context {
     fn new(
-        context: Rc<GlobalContext>,
+        context: Rc<SharedContext>,
         token: Token,
         chan_tx: fmpsc::UnboundedSender<RespValue>,
     ) -> Self {
         metrics::CLIENT_CONNECTION.inc();
         context.token_chans.lock().unwrap().insert(token, chan_tx);
-        LocalContext {
+        Context {
             context: context,
             token: token,
             inflight: false,
@@ -117,7 +117,7 @@ impl LocalContext {
     }
 }
 
-impl Drop for LocalContext {
+impl Drop for Context {
     fn drop(&mut self) {
         self.context.token_chans.lock().unwrap().remove(&self.token);
         metrics::CLIENT_CONNECTION.dec();
@@ -130,7 +130,7 @@ impl Server {
     }
 
     fn connection(
-        context: Rc<GlobalContext>,
+        context: Rc<SharedContext>,
         token: Token,
         socket: tokio::net::TcpStream,
     ) -> Box<Future<Item = (), Error = io::Error>> {
@@ -139,7 +139,7 @@ impl Server {
         let sock_tx = codec::FramedWrite::new(sock_tx, RespCodec);
         let sock_rx = codec::FramedRead::new(sock_rx, RespCodec);
         let (chan_tx, chan_rx) = fmpsc::unbounded();
-        let ctx_rx = Rc::new(RefCell::new(LocalContext::new(context, token, chan_tx)));
+        let ctx_rx = Rc::new(RefCell::new(Context::new(context, token, chan_tx)));
         let ctx_tx = ctx_rx.clone();
 
         let fut_rx = sock_rx.for_each(move |request| {
@@ -181,7 +181,7 @@ impl Server {
 
         let database = Database::new(&self.config, response_fn);
 
-        let context = Rc::new(GlobalContext {
+        let context = Rc::new(SharedContext {
             db_sender: RefCell::new(database.sender()),
             database: database,
             token_chans: token_chans,

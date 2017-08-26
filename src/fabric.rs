@@ -63,19 +63,19 @@ impl codec::Encoder for FramedBincodeCodec {
 
 pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
 type SenderChan = fmpsc::UnboundedSender<FabricMsg>;
-type InitType = Result<(Arc<GlobalContext>, futures::sync::oneshot::Sender<()>), io::Error>;
+type InitType = Result<(Arc<SharedContext>, futures::sync::oneshot::Sender<()>), io::Error>;
 
 const FABRIC_KEEPALIVE_MS: u64 = 1000;
 const FABRIC_RECONNECT_INTERVAL_MS: u64 = 1000;
 
-/// The messasing network that encompasses all nodes of the cluster
+/// The messaging network that encompasses all nodes of the cluster
 /// using the fabric you can send messages (best-effort delivery)
 /// to any registered node.
 /// Currently each node keeps a connection to every other node. Due to the
 /// full-duplex nature of tcp this gives 2 pipes to each server, both are
 /// used to make better use of the socket buffers (is this a good idea though?).
 pub struct Fabric {
-    context: Arc<GlobalContext>,
+    context: Arc<SharedContext>,
     loop_thread: Option<(futures::sync::oneshot::Sender<()>, thread::JoinHandle<()>)>,
 }
 
@@ -85,17 +85,17 @@ pub enum FabricError {
 }
 
 struct ReaderContext {
-    context: Arc<GlobalContext>,
+    context: Arc<SharedContext>,
     peer: NodeId,
 }
 
 struct WriterContext {
-    context: Arc<GlobalContext>,
+    context: Arc<SharedContext>,
     peer: NodeId,
     sender_chan_id: usize,
 }
 
-struct GlobalContext {
+struct SharedContext {
     node: NodeId,
     addr: SocketAddr,
     timeout: u32, // not currently used
@@ -107,7 +107,7 @@ struct GlobalContext {
     chan_id_gen: AtomicUsize,
 }
 
-impl GlobalContext {
+impl SharedContext {
     fn add_writer_chan(&self, peer: NodeId, sender: SenderChan) -> usize {
         let chan_id = self.chan_id_gen.fetch_add(1, Ordering::Relaxed);
         debug!("add_writer_chan peer: {}, chan_id: {:?}", peer, chan_id);
@@ -135,7 +135,7 @@ impl GlobalContext {
 }
 
 impl ReaderContext {
-    fn new(context: Arc<GlobalContext>, peer: NodeId) -> Self {
+    fn new(context: Arc<SharedContext>, peer: NodeId) -> Self {
         ReaderContext {
             context: context,
             peer: peer,
@@ -156,7 +156,7 @@ impl ReaderContext {
 }
 
 impl WriterContext {
-    fn new(context: Arc<GlobalContext>, peer: NodeId, sender: SenderChan) -> Self {
+    fn new(context: Arc<SharedContext>, peer: NodeId, sender: SenderChan) -> Self {
         let chan_id = context.add_writer_chan(peer, sender);
         WriterContext {
             context: context,
@@ -178,7 +178,7 @@ impl Drop for WriterContext {
 impl Fabric {
     fn listen(
         listener: tokio::net::TcpListener,
-        context: Arc<GlobalContext>,
+        context: Arc<SharedContext>,
         handle: tokio::reactor::Handle,
     ) -> Box<Future<Item = (), Error = ()>> {
         debug!("Starting fabric listener");
@@ -201,7 +201,7 @@ impl Fabric {
     fn connect(
         node: NodeId,
         addr: SocketAddr,
-        context: Arc<GlobalContext>,
+        context: Arc<SharedContext>,
         handle: tokio::reactor::Handle,
     ) -> Box<Future<Item = (), Error = ()>> {
         debug!("Connecting to node {:?}: {:?}", node, addr);
@@ -238,7 +238,7 @@ impl Fabric {
         socket: tokio::net::TcpStream,
         expected_node: Option<NodeId>,
         addr: SocketAddr,
-        context: Arc<GlobalContext>,
+        context: Arc<SharedContext>,
         handle: tokio::reactor::Handle,
     ) -> Box<Future<Item = (), Error = io::Error>> {
         socket.set_nodelay(true).expect("Failed to set nodelay");
@@ -274,7 +274,7 @@ impl Fabric {
         socket: tokio::net::TcpStream,
         peer: NodeId,
         _peer_addr: SocketAddr,
-        context: Arc<GlobalContext>,
+        context: Arc<SharedContext>,
         _handle: tokio::reactor::Handle,
     ) -> Box<Future<Item = (), Error = io::Error>> {
         let (socket_rx, socket_tx) = socket.split();
@@ -306,7 +306,7 @@ impl Fabric {
         let mut core = tokio::reactor::Core::new().unwrap();
         let handle = core.handle();
         let remote = core.remote();
-        let context = Arc::new(GlobalContext {
+        let context = Arc::new(SharedContext {
             node: node,
             addr: config.fabric_addr,
             timeout: config.fabric_timeout,
