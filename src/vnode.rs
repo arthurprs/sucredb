@@ -203,6 +203,14 @@ impl ReqState {
             token: token,
         }
     }
+
+    fn done(&self) -> bool {
+        self.satisfied() || self.replies == self.total
+    }
+
+    fn satisfied(&self) -> bool {
+        self.succesfull >= self.required
+    }
 }
 
 impl VNode {
@@ -511,16 +519,15 @@ impl VNode {
                     state.container.sync(container);
                     state.succesfull += 1;
                 }
-                if state.succesfull == state.required || state.replies == state.total {
-                    // return to client & remove state
-                    true
-                } else {
-                    false
-                }
+                state.done()
             };
             if done {
                 let state = o.remove();
-                db.respond_dcc(state.token, state.container);
+                if !state.satisfied() {
+                    db.respond_error(state.token, CommandError::Unavailable);
+                } else {
+                    db.respond_dcc(state.token, state.container);
+                }
             }
         } else {
             debug!("process_get cookie not found {:?}", cookie);
@@ -535,11 +542,13 @@ impl VNode {
                 if succesfull {
                     state.succesfull += 1;
                 }
-                state.succesfull == state.required || state.replies == state.total
+                state.done()
             };
             if done {
                 let state = o.remove();
-                if state.reply_result {
+                if !state.satisfied() {
+                    db.respond_error(state.token, CommandError::Unavailable);
+                } else if state.reply_result {
                     db.respond_dcc(state.token, state.container);
                 } else if state.is_delete {
                     db.respond_int(state.token, 1);

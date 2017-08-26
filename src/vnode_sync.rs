@@ -45,7 +45,6 @@ pub enum SyncDirection {
     Outgoing,
 }
 
-// TODO: take &mut buffers instead of returning them
 type IteratorFn = Box<
     FnMut(&VNodeState)
           -> Result<(Bytes, DottedCausalContainer<Bytes>), Result<(), ()>>
@@ -64,6 +63,9 @@ struct SyncKeysIterator {
     broken: bool,
 }
 
+// TODO: Refactor into trait objects
+// trait Synchronization { fn on_.., .. }
+// new_sync_sender -> Box<Synchronization>
 pub enum Synchronization {
     SyncSender {
         // bvv in peer at the time of sync start

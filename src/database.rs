@@ -28,7 +28,7 @@ struct Stats {
 // pruning old nodes from node clocks (is it possible?)
 // inner vnode parallelism
 // track bad peers with the fabric or gossip and use that info
-// avoid fill/strip altogether
+// avoid fill/strip altogether, it saves just a bit of storage but not much
 
 pub struct Database {
     pub dht: DHT<net::SocketAddr>,
@@ -509,7 +509,7 @@ mod tests {
     }
 
     fn test_reload_stub(shutdown: bool) {
-        let _ = fs::remove_dir_all("./t");
+        let _ = fs::remove_dir_all("t/");
         let _ = env_logger::init();
         let mut db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
         let prev_node = db.dht.node();
@@ -558,7 +558,7 @@ mod tests {
 
     #[test]
     fn test_one() {
-        let _ = fs::remove_dir_all("./t");
+        let _ = fs::remove_dir_all("t/");
         let _ = env_logger::init();
         let db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
         db.get(1, b"test", One);
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn test_two() {
-        let _ = fs::remove_dir_all("./t");
+        let _ = fs::remove_dir_all("t/");
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn test_join_migrate() {
-        let _ = fs::remove_dir_all("./t");
+        let _ = fs::remove_dir_all("t/");
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         for i in 0..TEST_JOIN_SIZE {
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn test_join_sync_recover() {
-        let _ = fs::remove_dir_all("./t");
+        let _ = fs::remove_dir_all("t/");
         let _ = env_logger::init();
         let mut db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
@@ -728,7 +728,7 @@ mod tests {
 
     #[test]
     fn test_join_sync_normal() {
-        let _ = fs::remove_dir_all("./t");
+        let _ = fs::remove_dir_all("t/");
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
@@ -790,4 +790,62 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_consistency_level() {
+        let _ = fs::remove_dir_all("t/");
+        let _ = env_logger::init();
+        let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let db3 = TestDatabase::new("127.0.0.1:9002".parse().unwrap(), "t/db3", false);
+        db1.dht.rebalance();
+
+        sleep_ms(1000);
+        while db1.syncs_inflight() + db2.syncs_inflight() + db3.syncs_inflight() > 0 {
+            warn!("waiting for syncs to finish");
+            sleep_ms(1000);
+        }
+
+        // test data
+        db1.set(0, b"key", Some(b"value"), VersionVector::new(), All, true);
+        assert!(db1.values_response(0).eq(&[b"value"]));
+
+        for &cl in &[One, Quorum, All] {
+            db1.get(0, b"key", cl);
+            assert!(db1.values_response(0).eq(&[b"value"]));
+            db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
+            db1.values_response(0);
+        }
+
+        drop(db3);
+        for &cl in &[One, Quorum] {
+            db1.get(0, b"key", cl);
+            assert!(db1.values_response(0).eq(&[b"value"]));
+            db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
+            db1.values_response(0);
+        }
+        for &cl in &[All] {
+            db1.get(0, b"key", cl);
+            assert_eq!(db1.resp_response(0), RespValue::Error("Unavailable".into()));
+            db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
+            assert_eq!(db1.resp_response(0), RespValue::Error("Unavailable".into()));
+        }
+
+
+        drop(db2);
+        for &cl in &[One] {
+            db1.get(0, b"key", cl);
+            assert!(db1.values_response(0).eq(&[b"value"]));
+            db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
+            db1.values_response(0);
+        }
+        for &cl in &[Quorum, All] {
+            db1.get(0, b"key", cl);
+            assert_eq!(db1.resp_response(0), RespValue::Error("Unavailable".into()));
+            db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
+            assert_eq!(db1.resp_response(0), RespValue::Error("Unavailable".into()));
+        }
+
+    }
+
 }
