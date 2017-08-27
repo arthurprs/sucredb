@@ -20,10 +20,7 @@ cache:
   directories:
     - apt
     - cargo
-    - ccache
-
-before_cache:
-  - find $TRAVIS_BUILD_DIR/target/debug -maxdepth 1 -type f -delete
+    - target
 
 before_script: >
   ulimit -n 8192 ;

@@ -22,6 +22,8 @@ const ZOMBIE_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum VNodeStatus {
+    /* TODO: consider adding an status for a node that just came back up and
+        is still part of the cluster, so it potentially has highly stale data */
     // steady state
     Ready,
     // streaming data from another node, can only accept replicated writes in this state
@@ -30,8 +32,7 @@ pub enum VNodeStatus {
     // and syncs are completed, etc.
     Zombie,
     // no actual data is present
-    Absent, /* TODO: consider adding an status for a node that just came back up and is still part of the cluster
-             *       so it potentially has highly stale data */
+    Absent,
 }
 
 pub struct VNode {
