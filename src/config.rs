@@ -201,7 +201,7 @@ pub fn setup_logging(config_value: &yaml::Value) {
     let raw_config: log4rs::file::RawConfig =
         yaml::from_value(config_value.clone()).expect("failed to parse logging config");
 
-    let (appenders, errors) = raw_config.appenders_lossy(&mut Default::default());
+    let (appenders, errors) = raw_config.appenders_lossy(&Default::default());
     if !errors.is_empty() {
         panic!("failed to configure logging: {:?}", errors);
     }

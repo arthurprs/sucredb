@@ -112,7 +112,7 @@ impl SharedContext {
         let chan_id = self.chan_id_gen.fetch_add(1, Ordering::Relaxed);
         debug!("add_writer_chan peer: {}, chan_id: {:?}", peer, chan_id);
         let mut locked = self.writer_chans.lock().unwrap();
-        locked.entry(peer).or_insert(Default::default()).push((
+        locked.entry(peer).or_insert_with(Default::default).push((
             chan_id,
             sender,
         ));
@@ -283,7 +283,7 @@ impl Fabric {
         let (chan_tx, chan_rx) = fmpsc::unbounded();
 
         let ctx_rx = ReaderContext::new(context.clone(), peer);
-        let fut_rx = socket_rx.for_each(move |msg| -> io::Result<_> {
+        let fut_rx = socket_rx.for_each(move |msg| {
             ctx_rx.dispatch(msg);
             Ok(())
         });
@@ -393,7 +393,7 @@ impl Fabric {
         let context = self.context.clone();
         {
             let mut writers = context.writer_chans.lock().unwrap();
-            writers.entry(node).or_insert(Default::default());
+            writers.entry(node).or_insert_with(Default::default);
         }
         let context_cloned = context.clone();
         context.loop_remote.spawn(move |h| {
@@ -416,7 +416,7 @@ impl Fabric {
                 let fabric_drop = ::std::env::var("FABRIC_DROP")
                     .ok()
                     .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
+                    .expect("Can't parse FABRIC_DROP");
                 if fabric_drop > 0.0 && thread_rng().gen::<f64>() < fabric_drop {
                     warn!("Fabric msg droped due to FABRIC_DROP: {:?}", msg);
                     return Ok(());
@@ -428,7 +428,7 @@ impl Fabric {
             HMEntry::Occupied(mut o) => {
                 if let Some(&mut (chan_id, ref mut chan)) = thread_rng().choose_mut(o.get_mut()) {
                     debug!("send_msg node:{}, chan:{}", node, chan_id);
-                    if let Err(e) = SenderChan::send(&chan, msg) {
+                    if let Err(e) = chan.unbounded_send(msg) {
                         warn!("Can't send to fabric {}-{} chan: {:?}", node, chan_id, e);
                     } else {
                         return Ok(());

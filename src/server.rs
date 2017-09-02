@@ -154,7 +154,7 @@ impl Server {
                         ctx_tx.borrow_mut().dispatch_next();
                         response
                     })
-                    .map_err(|_| -> io::Error { io::ErrorKind::Other.into() }),
+                    .map_err(|_| io::Error::from(io::ErrorKind::Other)),
             )
             .map(|_| ());
 
@@ -172,7 +172,7 @@ impl Server {
         let response_fn = Box::new(move |token, resp| if let Some(chan) =
             token_chans_cloned.lock().unwrap().get_mut(&token)
         {
-            if let Err(e) = fmpsc::UnboundedSender::send(&chan, resp) {
+            if let Err(e) = chan.unbounded_send(resp) {
                 warn!("Can't send to token {} chan: {:?}", token, e);
             }
         } else {

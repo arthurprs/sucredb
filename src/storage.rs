@@ -99,8 +99,8 @@ impl Drop for StorageManager {
     fn drop(&mut self) {
         let sc = Arc::strong_count(&self.db);
         let wc = Arc::weak_count(&self.db);
-        assert!(wc == 0);
-        assert!(sc == 1, "{} pending databases", sc - 1);
+        assert_eq!(wc, 0);
+        assert_eq!(sc, 1);
     }
 }
 

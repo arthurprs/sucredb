@@ -107,7 +107,7 @@ impl Database {
 
         info!("Metadata loaded! node_id:{} previous:{:?}", node, old_node);
 
-        let fabric = Fabric::new(node, &config).unwrap();
+        let fabric = Fabric::new(node, config).unwrap();
         let dht = DHT::new(
             node,
             config.fabric_addr,
@@ -295,7 +295,7 @@ impl Database {
             FabricMsg::SyncFin(m) => {
                 vnode!(self, m.vnode, |mut vn| vn.handler_sync_fin(self, from, m));
             }
-            msg @ _ => unreachable!("Can't handle {:?}", msg),
+            msg => unreachable!("Can't handle {:?}", msg),
         }
     }
 

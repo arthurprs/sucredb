@@ -256,7 +256,7 @@ impl VNode {
     pub fn syncs_inflight(&self) -> (usize, usize) {
         let pend = if self.state.pending_bootstrap { 1 } else { 0 };
         self.syncs.values().fold(
-            (0 + pend, 0),
+            (pend, 0),
             |(inc, out), s| match *s {
                 Synchronization::BootstrapReceiver { .. } |
                 Synchronization::SyncReceiver { .. } => (inc + 1, out),
@@ -740,7 +740,7 @@ impl VNode {
                         // go absent and wait for a dht callback to fix it
                         self.state.set_status(db, VNodeStatus::Absent);
                         warn!(
-                            "Can't retire node {} vnode {}: {}",
+                            "Can't promote node {} vnode {}: {}",
                             db.dht.node(),
                             self.state.num(),
                             e
@@ -913,12 +913,11 @@ impl VNodeState {
                 assert_eq!(self.sync_nodes.len(), 0);
                 self.clear();
             }
-            VNodeStatus::Ready => {}
             VNodeStatus::Absent => {
                 assert_eq!(self.sync_nodes.len(), 0);
                 self.clear();
             }
-            VNodeStatus::Zombie => {}
+            VNodeStatus::Ready | VNodeStatus::Zombie => {}
         }
 
         self.last_status_change = Instant::now();
@@ -1034,7 +1033,7 @@ impl VNodeState {
     // STORAGE
     pub fn storage_get(&self, key: &[u8]) -> DottedCausalContainer<Bytes> {
         let mut dcc = self.storage
-            .get(key, |bytes| bincode::deserialize(&bytes).unwrap())
+            .get(key, |bytes| bincode::deserialize(bytes).unwrap())
             .unwrap_or_else(DottedCausalContainer::new);
         dcc.fill(&self.clocks);
         dcc

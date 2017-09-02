@@ -33,13 +33,13 @@ pub enum FabricMsg {
 impl FabricMsg {
     pub fn get_type(&self) -> FabricMsgType {
         match *self {
-            FabricMsg::RemoteGet(..) => FabricMsgType::Crud,
-            FabricMsg::RemoteGetAck(..) => FabricMsgType::Crud,
-            FabricMsg::RemoteSet(..) => FabricMsgType::Crud,
+            FabricMsg::RemoteGet(..) |
+            FabricMsg::RemoteGetAck(..) |
+            FabricMsg::RemoteSet(..) |
             FabricMsg::RemoteSetAck(..) => FabricMsgType::Crud,
-            FabricMsg::SyncStart(..) => FabricMsgType::Synch,
-            FabricMsg::SyncSend(..) => FabricMsgType::Synch,
-            FabricMsg::SyncAck(..) => FabricMsgType::Synch,
+            FabricMsg::SyncStart(..) |
+            FabricMsg::SyncSend(..) |
+            FabricMsg::SyncAck(..) |
             FabricMsg::SyncFin(..) => FabricMsgType::Synch,
             _ => unreachable!(),
         }

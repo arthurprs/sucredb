@@ -187,7 +187,7 @@ impl Synchronization {
                 .map(|(k, v)| {
                     (
                         k.into(),
-                        bincode::deserialize::<DottedCausalContainer<_>>(&v).unwrap(),
+                        bincode::deserialize::<DottedCausalContainer<_>>(v).unwrap(),
                     )
                 })
                 .next()
@@ -282,7 +282,7 @@ impl Synchronization {
                 storage_iterator
                     .iter()
                     .filter_map(|(k, v)| {
-                        let mut dcc = bincode::deserialize::<DottedCausalContainer<_>>(&v).unwrap();
+                        let mut dcc = bincode::deserialize::<DottedCausalContainer<_>>(v).unwrap();
                         if !dcc.contained(&clocks_in_peer) {
                             // TODO: fill should be done in the remote?
                             dcc.fill(&clocks_snapshot);
@@ -468,7 +468,7 @@ impl Synchronization {
                 }
                 let mut error = false;
                 while inflight.len() < db.config.sync_msg_inflight as usize {
-                    match iterator(&state) {
+                    match iterator(state) {
                         Ok((k, dcc)) => {
                             let _ = stry!(db.fabric.send_msg(
                                 peer,
