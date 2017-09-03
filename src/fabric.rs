@@ -1,7 +1,7 @@
 use std::{str, io, thread};
 use std::net::SocketAddr;
 use std::time::Duration;
-use std::sync::{Mutex, Arc};
+use std::sync::{mpsc, Mutex, Arc};
 use std::sync::atomic::{Ordering, AtomicUsize};
 use std::collections::hash_map::Entry as HMEntry;
 
@@ -10,8 +10,9 @@ use bytes::{BufMut, BytesMut};
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
 use bincode;
 
-use futures::{self, Future, Stream, Sink};
+use futures::{Future, Stream, Sink};
 use futures::sync::mpsc as fmpsc;
+use futures::sync::oneshot as foneshot;
 use tokio_core as tokio;
 use tokio_io::{io as tokio_io, AsyncRead};
 use tokio_io::codec;
@@ -63,7 +64,7 @@ impl codec::Encoder for FramedBincodeCodec {
 
 pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
 type SenderChan = fmpsc::UnboundedSender<FabricMsg>;
-type InitType = Result<(Arc<SharedContext>, futures::sync::oneshot::Sender<()>), io::Error>;
+type InitType = io::Result<(Arc<SharedContext>, foneshot::Sender<()>)>;
 
 const FABRIC_KEEPALIVE_MS: u64 = 1000;
 const FABRIC_RECONNECT_INTERVAL_MS: u64 = 1000;
@@ -76,7 +77,7 @@ const FABRIC_RECONNECT_INTERVAL_MS: u64 = 1000;
 /// used to make better use of the socket buffers (is this a good idea though?).
 pub struct Fabric {
     context: Arc<SharedContext>,
-    loop_thread: Option<(futures::sync::oneshot::Sender<()>, thread::JoinHandle<()>)>,
+    loop_thread: Option<(foneshot::Sender<()>, thread::JoinHandle<Result<(), GenericError>>)>,
 }
 
 #[derive(Debug)]
@@ -100,9 +101,10 @@ struct SharedContext {
     addr: SocketAddr,
     timeout: u32, // not currently used
     loop_remote: tokio::reactor::Remote,
+    // FIXME: rwlock or make this immutable, removing the need for a lock
     msg_handlers: Mutex<IdHashMap<u8, FabricHandlerFn>>,
     nodes_addr: Mutex<IdHashMap<NodeId, SocketAddr>>,
-    // FIXME: remove mutex or at least change to RwLock
+    // FIXME: rwlock
     writer_chans: Arc<Mutex<IdHashMap<NodeId, Vec<(usize, SenderChan)>>>>,
     chan_id_gen: AtomicUsize,
 }
@@ -302,47 +304,43 @@ impl Fabric {
         Box::new(fut_rx.select(fut_tx).map(|_| ()).map_err(|(e, _)| e))
     }
 
-    fn run(node: NodeId, config: Config, init_tx: ::std::sync::mpsc::Sender<InitType>) {
-        let mut core = tokio::reactor::Core::new().unwrap();
-        let handle = core.handle();
-        let remote = core.remote();
+    fn init(
+        node: NodeId,
+        config: Config,
+        handle: tokio::reactor::Handle,
+    ) -> Result<Arc<SharedContext>, GenericError> {
         let context = Arc::new(SharedContext {
             node: node,
             addr: config.fabric_addr,
             timeout: config.fabric_timeout,
-            loop_remote: remote,
+            loop_remote: handle.remote().clone(),
             nodes_addr: Default::default(),
             msg_handlers: Default::default(),
             writer_chans: Default::default(),
             chan_id_gen: Default::default(),
         });
-        let init_result = tokio::net::TcpListener::bind(&context.addr, &handle).map(|listener| {
-            core.handle().spawn(Self::listen(
-                listener,
-                context.clone(),
-                core.handle(),
-            ))
-        });
 
-        match init_result {
-            Ok(_) => {
-                let (completer_tx, completer_rx) = futures::sync::oneshot::channel();
-                let _ = init_tx.send(Ok((context, completer_tx)));
-                core.run(completer_rx).unwrap();
-            }
-            Err(e) => {
-                let _ = init_tx.send(Err(e));
-            }
-        }
+        let listener = tokio::net::TcpListener::bind(&context.addr, &handle)?;
+        handle.spawn(Self::listen(listener, context.clone(), handle.clone()));
+
+        Ok(context)
     }
 
     pub fn new(node: NodeId, config: &Config) -> Result<Self, GenericError> {
-        // start event loop thread
         let config = config.clone();
-        let (init_tx, init_rx) = ::std::sync::mpsc::channel();
+        let (init_tx, init_rx) = mpsc::channel();
         let thread = thread::Builder::new()
             .name(format!("Fabric:{}", node))
-            .spawn(move || Self::run(node, config, init_tx))
+            .spawn(move || {
+                let mut core = tokio::reactor::Core::new().unwrap();
+                let (completer_tx, completer_rx) = foneshot::channel();
+                init_tx.send(
+                    Self::init(node, config, core.handle()).map(|c| {
+                        (c, completer_tx)
+                    }),
+                )?;
+                core.run(completer_rx).map_err(From::from)
+            })
             .unwrap();
         let (context, completer) = init_rx.recv()??;
         Ok(Fabric {
@@ -451,7 +449,7 @@ impl Drop for Fabric {
         warn!("droping fabric");
         if let Some((c, t)) = self.loop_thread.take() {
             let _ = c.send(());
-            t.join().unwrap();
+            let _ = t.join();
         }
     }
 }

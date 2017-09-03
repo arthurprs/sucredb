@@ -3,6 +3,10 @@
     fnbox,
     try_from)]
 #![allow(dead_code)]
+#![cfg_attr(feature = "cargo-clippy", allow(
+    cast_lossless,
+))]
+
 #[macro_use]
 extern crate log;
 extern crate log4rs;
