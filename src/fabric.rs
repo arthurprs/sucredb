@@ -413,8 +413,8 @@ impl Fabric {
             if droppable {
                 let fabric_drop = ::std::env::var("FABRIC_DROP")
                     .ok()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .expect("Can't parse FABRIC_DROP");
+                    .map(|s| s.parse::<f64>().expect("Can't parse FABRIC_DROP"))
+                    .unwrap_or(0.0);
                 if fabric_drop > 0.0 && thread_rng().gen::<f64>() < fabric_drop {
                     warn!("Fabric msg droped due to FABRIC_DROP: {:?}", msg);
                     return Ok(());
