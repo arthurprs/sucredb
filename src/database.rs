@@ -24,7 +24,6 @@ struct Stats {
 
 // TODO: some things to investigate
 // track deleted keys pending physical deletion (is this a good idea? maybe a compaction filter?)
-// persisted dot->key log (is this a good idea?)
 // pruning old nodes from node clocks (is it possible?)
 // inner vnode parallelism
 // track bad peers with the fabric or gossip and use that info
@@ -75,7 +74,7 @@ impl Database {
         }
 
         let storage_manager = StorageManager::new(&config.data_dir).unwrap();
-        let meta_storage = storage_manager.open(u16::max_value(), true).unwrap();
+        let meta_storage = storage_manager.open(u16::max_value()).unwrap();
 
         let (old_node, node) = if let Some(s_node) = meta_storage.get_vec(b"node") {
             let prev_node = String::from_utf8(s_node)

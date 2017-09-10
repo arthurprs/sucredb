@@ -1,11 +1,11 @@
 use std::{mem, str};
+use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::io::Write;
 use std::sync::Arc;
 use rocksdb::{self, Writable};
 use byteorder::{BigEndian, WriteBytesExt};
 use utils::*;
-use nodrop::NoDrop;
 
 struct U16BeSuffixTransform;
 
@@ -26,18 +26,19 @@ pub struct StorageManager {
 
 // TODO: support TTL
 // TODO: merge operator would be a huge win
-// This implementation goes to a lot of trouble to allow
-// safe-ish iterators that don't require a lifetime attached to them.
 pub struct Storage {
     db: Arc<rocksdb::DB>,
+    cf: &'static rocksdb::CFHandle,
     iterators_handle: Arc<()>,
     num: u16,
 }
 
+unsafe impl Sync for Storage {}
+unsafe impl Send for Storage {}
+
 pub struct StorageIterator {
     db: Arc<rocksdb::DB>,
-    snapshot: NoDrop<Box<rocksdb::rocksdb::Snapshot<'static>>>,
-    iterator: NoDrop<Box<rocksdb::rocksdb::DBIterator<'static>>>,
+    iterator: Box<rocksdb::rocksdb::DBIterator<'static>>,
     iterators_handle: Arc<()>,
     key_prefix: [u8; 2],
     first: bool,
@@ -50,11 +51,11 @@ impl StorageManager {
         let mut opts = rocksdb::DBOptions::new();
         opts.create_if_missing(true);
         opts.set_max_background_jobs(4);
-        let mut cf_opts = rocksdb::ColumnFamilyOptions::new();
-        cf_opts
+        let mut def_cf_opts = rocksdb::ColumnFamilyOptions::new();
+        def_cf_opts
             .set_prefix_extractor("U16BeSuffixTransform", Box::new(U16BeSuffixTransform))
             .unwrap();
-        cf_opts.compression_per_level(
+        def_cf_opts.compression_per_level(
             &[
                 rocksdb::DBCompressionType::No,
                 rocksdb::DBCompressionType::No,
@@ -65,30 +66,65 @@ impl StorageManager {
                 rocksdb::DBCompressionType::Lz4,
             ],
         );
-        cf_opts.set_write_buffer_size(32 * 1024 * 1024);
-        cf_opts.set_max_bytes_for_level_base(4 * 32 * 1024 * 1024);
-        cf_opts.set_max_write_buffer_number(4);
+        def_cf_opts.set_write_buffer_size(32 * 1024 * 1024);
+        def_cf_opts.set_max_bytes_for_level_base(4 * 32 * 1024 * 1024);
+        def_cf_opts.set_max_write_buffer_number(4);
+
         let mut block_opts = rocksdb::BlockBasedOptions::new();
         block_opts.set_bloom_filter(10, false);
         block_opts.set_lru_cache(4 * 32 * 1024 * 1024);
-        cf_opts.set_block_based_table_factory(&block_opts);
+        def_cf_opts.set_block_based_table_factory(&block_opts);
+
+        let mut log_cf_opts = rocksdb::ColumnFamilyOptions::new();
+        log_cf_opts.compression(rocksdb::DBCompressionType::No);
+        // TODO: add options to only keep it for X time
+        log_cf_opts.set_compaction_style(rocksdb::DBCompactionStyle::Fifo);
+        log_cf_opts.set_write_buffer_size(32 * 1024 * 1024);
+        log_cf_opts.set_max_write_buffer_number(4);
+
+        let mut block_opts = rocksdb::BlockBasedOptions::new();
+        block_opts.set_bloom_filter(10, false);
+        block_opts.set_lru_cache(2 * 32 * 1024 * 1024);
+        log_cf_opts.set_block_based_table_factory(&block_opts);
 
         // TODO: Rocksdb is complicated, we might want to tune some more options
+
         let db = rocksdb::DB::open_cf(
-            opts,
+            opts.clone(),
             path.as_ref().to_str().unwrap(),
-            vec!["default"],
-            vec![cf_opts],
-        ).unwrap();
+            vec!["default", "log"],
+            vec![def_cf_opts.clone(), log_cf_opts.clone()],
+        ).or_else(|_| -> Result<_, String> {
+            let mut db = rocksdb::DB::open_cf(
+                opts,
+                path.as_ref().to_str().unwrap(),
+                vec!["default"],
+                vec![def_cf_opts],
+            )?;
+
+            db.create_cf("log", log_cf_opts)?;
+            Ok(db)
+        })?;
+
         Ok(StorageManager {
             path: path.as_ref().into(),
             db: Arc::new(db),
         })
     }
 
-    pub fn open(&self, db_num: u16, _create: bool) -> Result<Storage, GenericError> {
+    pub fn open(&self, db_num: u16) -> Result<Storage, GenericError> {
         Ok(Storage {
             db: self.db.clone(),
+            cf: unsafe { mem::transmute(self.db.cf_handle("default")) },
+            num: db_num,
+            iterators_handle: Arc::new(()),
+        })
+    }
+
+    pub fn open_log(&self, db_num: u16) -> Result<Storage, GenericError> {
+        Ok(Storage {
+            db: self.db.clone(),
+            cf: unsafe { mem::transmute(self.db.cf_handle("log")) },
             num: db_num,
             iterators_handle: Arc::new(()),
         })
@@ -115,7 +151,7 @@ impl Storage {
     pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
         let mut buffer = [0u8; 512];
         let buffer = self.build_key(&mut buffer, key);
-        let r = self.db.get(buffer).unwrap();
+        let r = self.db.get_cf(self.cf, buffer).unwrap();
         trace!(
             "get {:?} ({:?} bytes)",
             str::from_utf8(key),
@@ -130,12 +166,10 @@ impl Storage {
             .write_u16::<BigEndian>(self.num)
             .unwrap();
         unsafe {
-            let snapshot = NoDrop::new(Box::new(self.db.snapshot()));
-            let mut iterator = NoDrop::new(Box::new(snapshot.iter()));
+            let mut iterator = ManuallyDrop::new(Box::new(self.db.iter_cf(self.cf)));
             iterator.seek(rocksdb::SeekKey::Key(&key_prefix[..]));
             let result = StorageIterator {
                 db: self.db.clone(),
-                snapshot: mem::transmute_copy(&snapshot),
                 iterator: mem::transmute_copy(&iterator),
                 iterators_handle: self.iterators_handle.clone(),
                 key_prefix: key_prefix,
@@ -153,14 +187,14 @@ impl Storage {
         trace!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
         let mut buffer = [0u8; 512];
         let buffer = self.build_key(&mut buffer, key);
-        self.db.put(buffer, value).unwrap();
+        self.db.put_cf(self.cf, buffer, value).unwrap();
     }
 
     pub fn del(&self, key: &[u8]) {
         trace!("del {:?}", str::from_utf8(key));
         let mut buffer = [0u8; 512];
         let buffer = self.build_key(&mut buffer, key);
-        self.db.delete(buffer).unwrap()
+        self.db.delete_cf(self.cf, buffer).unwrap()
     }
 
     pub fn clear(&self) {
@@ -196,6 +230,13 @@ impl Drop for Storage {
 }
 
 impl StorageIterator {
+    pub fn seek(&mut self, key: &[u8]) {
+        let mut buffer = [0u8; 512];
+        (&mut buffer[0..2]).write(&self.key_prefix[..]).unwrap();
+        (&mut buffer[2..]).write(key).unwrap();
+        self.iterator.seek(rocksdb::SeekKey::Key(&buffer[..2+key.len()]));
+    }
+
     pub fn iter<'a>(&'a mut self) -> StorageIter<'a> {
         StorageIter { it: self }
     }
@@ -227,19 +268,6 @@ impl<'a> Iterator for StorageIter<'a> {
     }
 }
 
-impl Drop for StorageIterator {
-    fn drop(&mut self) {
-        unsafe {
-            let iterator: NoDrop<Box<rocksdb::rocksdb::DBIterator>> =
-                mem::transmute_copy(&self.iterator);
-            let snapshot: NoDrop<Box<rocksdb::rocksdb::Snapshot>> =
-                mem::transmute_copy(&self.snapshot);
-            drop(iterator.into_inner());
-            drop(snapshot.into_inner());
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,33 +278,82 @@ mod tests {
     fn test_simple() {
         let _ = fs::remove_dir_all("t/test_simple");
         let sm = StorageManager::new("t/test_simple").unwrap();
-        let storage = sm.open(1, true).unwrap();
+        let storage = sm.open(1).unwrap();
         assert_eq!(storage.get_vec(b"sample"), None);
         storage.set(b"sample", b"sample_value");
         assert_eq!(storage.get_vec(b"sample").unwrap(), b"sample_value");
         storage.del(b"sample");
         assert_eq!(storage.get_vec(b"sample"), None);
-        drop(storage);
     }
 
     #[test]
-    fn test_iter2() {
-        let _ = fs::remove_dir_all("t/test_iter2");
-        let sm = StorageManager::new("t/test_iter2").unwrap();
+    fn test_simple_log() {
+        let _ = fs::remove_dir_all("t/test_simple_log");
+        let sm = StorageManager::new("t/test_simple_log").unwrap();
+        let storage = sm.open_log(1).unwrap();
+        assert_eq!(storage.get_vec(b"sample"), None);
+        storage.set(b"sample", b"sample_value");
+        assert_eq!(storage.get_vec(b"sample").unwrap(), b"sample_value");
+        storage.del(b"sample");
+        assert_eq!(storage.get_vec(b"sample"), None);
+    }
+
+    #[test]
+    fn test_iter() {
+        let _ = fs::remove_dir_all("t/test_iter");
+        let sm = StorageManager::new("t/test_iter").unwrap();
         for &i in &[0, 1, 2] {
-            let storage = sm.open(i, true).unwrap();
+            let storage = sm.open(i).unwrap();
             storage.set(b"1", i.to_string().as_bytes());
             storage.set(b"2", i.to_string().as_bytes());
             storage.set(b"3", i.to_string().as_bytes());
         }
         for &i in &[0, 1, 2] {
-            let storage = sm.open(i, true).unwrap();
+            let storage = sm.open(i).unwrap();
             let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
             assert_eq!(
                 results,
-                &[i.to_string().as_bytes(), i.to_string().as_bytes(), i.to_string().as_bytes()]
+                vec![i.to_string().as_bytes(); 3]
             );
         }
+    }
+
+    #[test]
+    fn test_iter_log() {
+        let _ = fs::remove_dir_all("t/test_iter_log");
+        let sm = StorageManager::new("t/test_iter_log").unwrap();
+        for &i in &[0, 1, 2] {
+            let storage = sm.open_log(i).unwrap();
+            storage.set(b"1", i.to_string().as_bytes());
+            storage.set(b"2", i.to_string().as_bytes());
+            storage.set(b"3", i.to_string().as_bytes());
+        }
+        for &i in &[0, 1, 2] {
+            let storage = sm.open_log(i).unwrap();
+            let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
+            assert_eq!(
+                results,
+                vec![i.to_string().as_bytes(); 3]
+            );
+        }
+    }
+
+    #[test]
+    fn test_iter_seek() {
+        let _ = fs::remove_dir_all("t/test_iter");
+        let sm = StorageManager::new("t/test_iter").unwrap();
+        let i = 1;
+        let storage = sm.open(i).unwrap();
+        storage.set(b"1", b"1");
+        storage.set(b"2", b"2");
+        storage.set(b"3", b"3");
+        let mut iterator = storage.iterator();
+        iterator.seek(b"2");
+        let results: Vec<Vec<u8>> = iterator.iter().map(|(k, v)| v.into()).collect();
+        assert_eq!(
+            results,
+            vec![b"2", b"3"]
+        );
     }
 
     #[test]
@@ -284,13 +361,13 @@ mod tests {
         let _ = fs::remove_dir_all("t/test_clear");
         let sm = StorageManager::new("t/test_clear").unwrap();
         for &i in &[0, 1, 2] {
-            let storage = sm.open(i, true).unwrap();
+            let storage = sm.open(i).unwrap();
             storage.set(b"1", i.to_string().as_bytes());
             storage.set(b"2", i.to_string().as_bytes());
             storage.set(b"3", i.to_string().as_bytes());
         }
         for &i in &[0, 1, 2] {
-            let storage = sm.open(i, true).unwrap();
+            let storage = sm.open(i).unwrap();
             let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
             assert_eq!(
                 results,
@@ -306,12 +383,12 @@ mod tests {
     fn test_open_all() {
         let _ = fs::remove_dir_all("t/test_open_all");
         let sm = StorageManager::new("t/test_open_all").unwrap();
-        sm.open(1, true).unwrap();
-        sm.open(2, true).unwrap();
-        sm.open(3, true).unwrap();
-        sm.open(1, false).unwrap();
-        sm.open(2, false).unwrap();
-        sm.open(3, false).unwrap();
+        sm.open(1).unwrap();
+        sm.open(2).unwrap();
+        sm.open(3).unwrap();
+        sm.open(1).unwrap();
+        sm.open(2).unwrap();
+        sm.open(3).unwrap();
     }
 
 }

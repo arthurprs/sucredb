@@ -22,7 +22,6 @@ extern crate bincode;
 extern crate rocksdb;
 extern crate byteorder;
 extern crate etcd;
-extern crate nodrop;
 extern crate clap;
 extern crate crc16;
 extern crate metrics as rust_metrics;

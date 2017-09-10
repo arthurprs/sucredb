@@ -150,6 +150,7 @@ impl ReaderContext {
             &(msg_type as u8),
         )
         {
+            debug!("recv from {:?} {:?}", self.peer, msg);
             handler(self.peer, msg);
         } else {
             panic!("No handler for msg type {:?}", msg_type);
@@ -425,7 +426,7 @@ impl Fabric {
         match writers.entry(node) {
             HMEntry::Occupied(mut o) => {
                 if let Some(&mut (chan_id, ref mut chan)) = thread_rng().choose_mut(o.get_mut()) {
-                    debug!("send_msg node:{}, chan:{}", node, chan_id);
+                    debug!("send_msg node:{}, chan:{} {:?}", node, chan_id, msg);
                     if let Err(e) = chan.unbounded_send(msg) {
                         warn!("Can't send to fabric {}-{} chan: {:?}", node, chan_id, e);
                     } else {

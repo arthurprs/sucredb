@@ -57,8 +57,10 @@ impl BitmappedVersion {
         self.norm();
     }
 
-    fn add(&mut self, version: Version) {
-        if version > self.base {
+    pub fn add(&mut self, version: Version) {
+        if version == self.base + 1 {
+            self.base += 1;
+        } else if version > self.base {
             self.bitmap.insert(version);
             self.norm();
         }
@@ -306,23 +308,6 @@ impl BitmappedVersionVector {
     pub fn contains(&self, id: Id, v: Version) -> bool {
         self.0.get(&id).map_or(false, |bv| bv.contains(v))
     }
-
-    // pub fn fast_foward(&mut self, id: Id, n: Version) {
-    //     match self.0.entry(id) {
-    //         Entry::Vacant(vac) => {
-    //             vac.insert(BitmappedVersion::new(n, 0));
-    //         }
-    //         Entry::Occupied(mut ocu) => {
-    //             let bv = ocu.get_mut();
-    //             debug_assert!(n > bv.bitmap.bit_length() as Version,
-    //                           "{} > {}",
-    //                           n,
-    //                           bv.bitmap.bit_length());
-    //             bv.bitmap = ramp::Int::zero();
-    //             bv.base += n;
-    //         }
-    //     }
-    // }
 
     pub fn iter_mut(&mut self) -> linear_map::IterMut<Id, BitmappedVersion> {
         self.0.iter_mut()

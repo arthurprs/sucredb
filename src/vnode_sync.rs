@@ -135,7 +135,7 @@ impl SyncKeysIterator {
             // this way it will only resize once at the worst case
             let mut keys = HashSet::with_capacity(self.dots_delta.size_hint().0 / 2 + 1);
             for (n, v) in self.dots_delta.by_ref() {
-                if let Some(key) = state.logs.get(&n).and_then(|log| log.get(v)).cloned() {
+                if let Some(key) = state.logs.get(n, v) {
                     keys.insert(key);
                     if keys.len() >= 10_000 {
                         break;
@@ -249,13 +249,14 @@ impl Synchronization {
 
         let dots_delta = state.clocks.delta(&clocks_in_peer);
         debug!("Delta from {:?} to {:?}", state.clocks, clocks_in_peer);
-        let log_uptodate = dots_delta.min_versions().iter().all(|&(n, v)| {
-            state
-                .logs
-                .get(&n)
-                .and_then(|log| log.min_version())
-                .unwrap_or(0) <= v
-        });
+        // let log_uptodate = dots_delta.min_versions().iter().all(|&(n, v)| {
+        //     state
+        //         .logs
+        //         .get(&n)
+        //         .and_then(|log| log.min_version())
+        //         .unwrap_or(0) <= v
+        // });
+        let log_uptodate = true;
 
         let iterator: IteratorFn = if log_uptodate {
             let mut sync_keys = SyncKeysIterator::new(dots_delta);
