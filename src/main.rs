@@ -1,6 +1,8 @@
+#![allow(stable_features)]
 #![feature(
     slice_patterns,
     fnbox,
+manually_drop, // keep CI happy
     try_from)]
 #![allow(dead_code)]
 #![cfg_attr(feature = "cargo-clippy", allow(
