@@ -234,7 +234,9 @@ impl StorageIterator {
         let mut buffer = [0u8; 512];
         (&mut buffer[0..2]).write(&self.key_prefix[..]).unwrap();
         (&mut buffer[2..]).write(key).unwrap();
-        self.iterator.seek(rocksdb::SeekKey::Key(&buffer[..2+key.len()]));
+        self.iterator.seek(
+            rocksdb::SeekKey::Key(&buffer[..2 + key.len()]),
+        );
     }
 
     pub fn iter<'a>(&'a mut self) -> StorageIter<'a> {
@@ -311,10 +313,7 @@ mod tests {
         for &i in &[0, 1, 2] {
             let storage = sm.open(i).unwrap();
             let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
-            assert_eq!(
-                results,
-                vec![i.to_string().as_bytes(); 3]
-            );
+            assert_eq!(results, vec![i.to_string().as_bytes(); 3]);
         }
     }
 
@@ -331,10 +330,7 @@ mod tests {
         for &i in &[0, 1, 2] {
             let storage = sm.open_log(i).unwrap();
             let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
-            assert_eq!(
-                results,
-                vec![i.to_string().as_bytes(); 3]
-            );
+            assert_eq!(results, vec![i.to_string().as_bytes(); 3]);
         }
     }
 
@@ -350,10 +346,7 @@ mod tests {
         let mut iterator = storage.iterator();
         iterator.seek(b"2");
         let results: Vec<Vec<u8>> = iterator.iter().map(|(k, v)| v.into()).collect();
-        assert_eq!(
-            results,
-            vec![b"2", b"3"]
-        );
+        assert_eq!(results, vec![b"2", b"3"]);
     }
 
     #[test]

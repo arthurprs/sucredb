@@ -604,19 +604,33 @@ impl<T: Metadata> DHT<T> {
         result
     }
 
-    pub fn write_members_for_vnode(&self, vn_no: VNodeId) -> Vec<(NodeId, (net::SocketAddr, T))> {
+    pub fn nodes_for_vnode_ex(
+        &self,
+        vn_no: VNodeId,
+        include_pending: bool,
+        include_retiring: bool,
+    ) -> Vec<(NodeId, (net::SocketAddr, T))> {
         // FIXME: this shouldn't alloc
-        let mut result = Vec::new();
+        let mut result = Vec::with_capacity(self.replication_factor + 1);
         let inner = self.inner.lock().unwrap();
-        let vn = &inner.ring.vnodes[vn_no as usize];
-        result.extend(vn.owners.iter().chain(&vn.pending).filter_map(|n| {
+
+        let filter_map = |n| {
             let node = inner.ring.nodes.get(n).unwrap();
             if node.leaving {
                 None
             } else {
                 Some((*n, (node.addr, node.meta.clone())))
             }
-        }));
+        };
+
+        let vn = &inner.ring.vnodes[vn_no as usize];
+        result.extend(vn.owners.iter().filter_map(&filter_map));
+        if include_pending {
+            result.extend(vn.pending.iter().filter_map(&filter_map));
+        }
+        if include_retiring {
+            result.extend(vn.retiring.iter().filter_map(&filter_map));
+        }
         result
     }
 

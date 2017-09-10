@@ -103,12 +103,14 @@ impl VNodeLogs {
         // self.gc();
     }
 
-    pub fn log(&mut self, node:NodeId, version: Version, key: &[u8]) {
+    pub fn log(&mut self, node: NodeId, version: Version, key: &[u8]) {
         let tail = self.tail.get(&node).cloned().unwrap_or(0);
         if version > tail {
             let mut buffer = [0u8; 16];
             (&mut buffer[0..8]).write_u64::<BigEndian>(node).unwrap();
-            (&mut buffer[8..16]).write_u64::<BigEndian>(version).unwrap();
+            (&mut buffer[8..16])
+                .write_u64::<BigEndian>(version)
+                .unwrap();
             self.storage.set(&buffer[..], key);
         }
     }
@@ -116,7 +118,9 @@ impl VNodeLogs {
     pub fn iter_log<F: FnMut(Version, &[u8])>(&mut self, node: NodeId, version: Version, mut f: F) {
         let mut buffer = [0u8; 16];
         (&mut buffer[0..8]).write_u64::<BigEndian>(node).unwrap();
-        (&mut buffer[8..16]).write_u64::<BigEndian>(version).unwrap();
+        (&mut buffer[8..16])
+            .write_u64::<BigEndian>(version)
+            .unwrap();
         let mut iterator = self.storage.iterator();
         // iterator.seek(&buffer[..]);
         for (k, dot_key) in iterator.iter() {
@@ -132,7 +136,9 @@ impl VNodeLogs {
     pub fn get(&self, node: NodeId, version: Version) -> Option<Bytes> {
         let mut buffer = [0u8; 16];
         (&mut buffer[0..8]).write_u64::<BigEndian>(node).unwrap();
-        (&mut buffer[8..16]).write_u64::<BigEndian>(version).unwrap();
+        (&mut buffer[8..16])
+            .write_u64::<BigEndian>(version)
+            .unwrap();
         self.storage.get(&buffer[..], |x| Bytes::from(x))
     }
 
@@ -441,7 +447,7 @@ impl VNode {
         status: VNodeStatus,
         key: &[u8],
     ) {
-        let mut nodes = db.dht.write_members_for_vnode(self.state.num());
+        let mut nodes = db.dht.nodes_for_vnode_ex(self.state.num(), true, false);
         thread_rng().shuffle(&mut nodes);
         for (node, (_, addr)) in nodes {
             if node != db.dht.node() {
@@ -877,8 +883,7 @@ impl VNodeState {
     pub fn update_peer_knowledge(&mut self, peer: NodeId, bvv: &BitmappedVersionVector) {
         debug!("update_peer_knowledge {} {:?}", peer, bvv);
         for (&node, bv) in bvv.iter() {
-            self.logs
-                .advance_knowledge(node, peer, bv.base());
+            self.logs.advance_knowledge(node, peer, bv.base());
         }
     }
 
@@ -984,9 +989,7 @@ impl VNodeState {
         if !clean_shutdown {
             info!("Unclean shutdown, recovering from the storage");
             for (&node, bv) in clocks.iter_mut() {
-                logs.iter_log(node, bv.base() + 1, |dot, _| {
-                    bv.add(dot);
-                });
+                logs.iter_log(node, bv.base() + 1, |dot, _| { bv.add(dot); });
             }
         }
 
@@ -1052,8 +1055,7 @@ impl VNodeState {
         }
 
         // this needs to go in a writebatch with the above
-        self.logs
-            .log(db.dht.node(), dot, key.into());
+        self.logs.log(db.dht.node(), dot, key.into());
 
         // FIXME: we striped above so we have to fill again :(
         dcc.fill(&self.clocks);
@@ -1081,11 +1083,7 @@ impl VNodeState {
 
         // these need to go in a writebatch with the above
         for (&(node, version), _) in new_dcc.iter() {
-            self.logs.log(
-                node,
-                version,
-                key.into(),
-            );
+            self.logs.log(node, version, key.into());
         }
     }
 }

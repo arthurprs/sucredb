@@ -23,11 +23,10 @@ const PACKET_SIZE: usize = 1400;
 const PING_PERIOD_MS: u64 = 250;
 const PING_TIMEOUT_MS: u64 = 500;
 const SUSPECT_TIMEOUT_MS: u64 = 5 * PING_TIMEOUT_MS;
-const PING_SYNC_CHANCE: f32 = 0.10f32;
+const PING_SYNC_CHANCE: f32 = 0.05f32;
 const PING_CANDIDATES: usize = 3;
 const PINGREQ_CANDIDATES: usize = 3;
 const TIMER_RESOLUTION_MS: u64 = 100;
-
 
 // quick implementation of SWIM
 // has various limitations
@@ -36,6 +35,10 @@ const TIMER_RESOLUTION_MS: u64 = 100;
 pub struct Gossiper<T: Metadata> {
     context: Arc<Mutex<Inner<T>>>,
     loop_thread: Option<(foneshot::Sender<()>, thread::JoinHandle<io::Result<()>>)>,
+}
+
+pub enum DHTMsg {
+
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
@@ -74,6 +77,7 @@ struct Inner<T: Metadata> {
     suspect_inflight: InFlightMap<SocketAddr, Instant, Instant>,
     send_queue: fmpsc::UnboundedSender<(SocketAddr, Message<T>)>,
     broadcast_queue: Vec<(u32, Message<T>)>,
+    // leaving: bool,
 }
 
 
@@ -632,6 +636,10 @@ impl<T: Metadata> Inner<T> {
             };
             self.on_message(sender, msg);
         }
+    }
+
+    pub fn update_meta(&mut self, meta: T) {
+
     }
 
     pub fn join(&mut self, seeds: &[SocketAddr]) {
