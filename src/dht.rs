@@ -9,7 +9,8 @@ use serde::de::DeserializeOwned;
 use serde_json;
 use hash::{hash_slot, HASH_SLOTS};
 use database::{NodeId, VNodeId};
-use etcd;
+use version_vector::VersionVector;
+use fabric::{Fabric, FabricMsg, FabricMsgType};
 use utils::{IdHashMap, IdHashSet, GenericError};
 
 pub type DHTChangeFn = Box<FnMut() + Send>;
@@ -23,8 +24,6 @@ impl<T: Clone + Serialize + DeserializeOwned + Send + fmt::Debug + 'static> Meta
 /// whose nodes hold data for each vnodes.
 /// Calls a callback on cluster changes so the database can execute logic to converge
 /// it's state to match the DHT.
-/// Consistency is achieved by using etcd in the background but it's only required for
-/// database startup and cluster changes.
 /// Only knows about NodeIds (and their fabric addresses), Vnodes and other high level info,
 /// Extra (static) information is attached to NodeId through a Metadata type.
 pub struct DHT<T: Metadata> {
@@ -35,8 +34,6 @@ pub struct DHT<T: Metadata> {
     replication_factor: usize,
     cluster: String,
     inner: Arc<Mutex<Inner<T>>>,
-    etcd_client: etcd::Client,
-    thread: Option<thread::JoinHandle<()>>,
 }
 
 struct Inner<T: Metadata> {
@@ -44,7 +41,7 @@ struct Inner<T: Metadata> {
     ring_version: u64,
     cluster: String,
     callback: Option<DHTChangeFn>,
-    running: bool,
+    fabric: Arc<Fabric>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -63,14 +60,17 @@ struct VNode {
     pending: LinearSet<NodeId>,
     // nodes giving up ownership, may include retiring nodes
     retiring: LinearSet<NodeId>,
+    // vv
+    version: VersionVector,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(bound = "T: DeserializeOwned")]
 pub struct Ring<T: Metadata> {
-    replication_factor: usize,
     vnodes: Vec<VNode>,
     nodes: IdHashMap<NodeId, Node<T>>,
+    replication_factor: usize,
+    version: VersionVector,
 }
 
 pub struct RingDescription {
@@ -84,14 +84,6 @@ impl RingDescription {
             replication_factor: replication_factor,
             partitions: partitions,
         }
-    }
-}
-
-fn squash_etcd_errors(mut errors: Vec<etcd::Error>) -> GenericError {
-    if errors.len() == 1 {
-        errors.pop().unwrap().into()
-    } else {
-        format!("{:?}", errors).into()
     }
 }
 
@@ -109,6 +101,7 @@ impl<T: Metadata> Ring<T> {
             ..Default::default()
         };
         Ring {
+            version: Default::default(),
             replication_factor: replication_factor as usize,
             vnodes: vec![vn; partitions as usize],
             nodes: vec![
@@ -373,116 +366,74 @@ impl<T: Metadata> Ring<T> {
 
 impl<T: Metadata> DHT<T> {
     pub fn new(
-        node: NodeId,
-        fabric_addr: net::SocketAddr,
+        fabric: Arc<Fabric>,
         cluster: &str,
-        etcd: &str,
         meta: T,
         initial: Option<RingDescription>,
         old_node: Option<NodeId>,
     ) -> DHT<T> {
-        let etcd_client1 = etcd::Client::new(&[etcd]).unwrap();
-        let etcd_client2 = etcd::Client::new(&[etcd]).unwrap();
+        let ring = if let Some(d) = initial {
+            Ring::new(
+                fabric.node(),
+                fabric.addr(),
+                meta,
+                d.partitions,
+                d.replication_factor,
+            )
+        } else {
+            Ring::new(fabric.node(), fabric.addr(), meta, 0, 0)
+        };
+
         let inner = Arc::new(Mutex::new(Inner {
-            ring: Ring {
-                replication_factor: Default::default(),
-                vnodes: Default::default(),
-                nodes: Default::default(),
-            },
+            ring: ring,
             ring_version: 0,
             cluster: cluster.into(),
             callback: None,
-            running: true,
+            fabric: fabric.clone(),
         }));
+
+        let w_inner = Arc::downgrade(&inner);
+        let fabric_cb = move |from, msg| if let Some(inner) = w_inner.upgrade() {
+            Self::on_message(&mut *inner.lock().unwrap(), from, msg);
+        };
+        fabric.register_msg_handler(FabricMsgType::DHT, Box::new(fabric_cb));
+
         let mut dht = DHT {
-            node: node,
-            addr: fabric_addr,
+            node: fabric.node(),
+            addr: fabric.addr(),
             cluster: cluster.into(),
             inner: inner.clone(),
-            thread: None,
             slots_per_partition: 0,
             partitions: 0,
             replication_factor: 0,
-            etcd_client: etcd_client1,
         };
-        if let Some(description) = initial {
-            dht.reset(meta, description.replication_factor, description.partitions)
-                .expect("Failed to init cluster");
-        } else if let Some(old) = old_node {
-            dht.replace(old, meta).expect("Failed to replace node");
-        } else {
-            dht.join(meta).expect("Failed join cluster");
-        }
+        // if let Some(d) = initial {
+        //     dht.reset(meta, d.replication_factor, d.partitions).expect(
+        //         "Failed to init cluster",
+        //     );
+        // } else if let Some(old) = old_node {
+        //     dht.replace(old, meta).expect("Failed to replace node");
+        // } else {
+        //     dht.join(meta).expect("Failed join cluster");
+        // }
         dht.partitions = inner.lock().unwrap().ring.vnodes.len();
         dht.slots_per_partition = HASH_SLOTS / dht.partitions as u16;
         dht.replication_factor = inner.lock().unwrap().ring.replication_factor;
-        dht.thread = Some(
-            thread::Builder::new()
-                .name(format!("DHT:{}", node))
-                .spawn(move || Self::run(inner, etcd_client2))
-                .unwrap(),
-        );
         dht
     }
 
-    fn run(inner: Arc<Mutex<Inner<T>>>, etcd: etcd::Client) {
-        let cluster_key = format!("/sucredb/{}/dht", inner.lock().unwrap().cluster);
-        loop {
-            let watch_version = {
-                let inner = inner.lock().unwrap();
-                if !inner.running {
-                    break;
-                }
-                inner.ring_version + 1
-            };
-            // listen for changes
-            let watch_r = etcd.watch(&cluster_key, Some(watch_version), false);
-            // FIXME: we have no way of canceling the watch right now
-            // so before anything make sure the dht is still marked as running
-            if !inner.lock().unwrap().running {
-                return;
-            }
-            let node = match watch_r {
-                Ok(r) => r.node.unwrap(),
-                Err(e) => {
-                    warn!("etcd.watch error: {:?}", e);
-                    continue;
-                }
-            };
-
-            // deserialize
-            let ring = Self::deserialize(&node.value.unwrap()).unwrap();
-            let ring_version = node.modified_index.unwrap();
-            info!("New ring version {}", ring_version);
-            debug!("Callback with new ring {:?} version {}", ring, ring_version);
-            // update state
-            {
-                let mut inner = inner.lock().unwrap();
-                if !inner.running {
-                    break;
-                }
-                if ring_version > inner.ring_version {
-                    inner.ring = ring;
-                    inner.ring_version = ring_version;
-                }
-            }
-
-            // call callback
-            inner.lock().unwrap().callback.as_mut().unwrap()();
-            trace!("dht callback returned");
-        }
-        debug!("exiting dht thread");
+    fn on_message(inner: &mut Inner<T>, from: NodeId, msg: FabricMsg) {
+        unimplemented!()
     }
 
     fn refresh_ring(&self) -> Result<(), GenericError> {
-        let cluster_key = format!("/sucredb/{}/dht", self.cluster);
-        let r = self.etcd_client
-            .get(&cluster_key, false, false, false)
-            .map_err(squash_etcd_errors)?;
-        let node = r.node.unwrap();
-        let mut inner = self.inner.lock().unwrap();
-        inner.ring = Self::deserialize(&node.value.unwrap()).unwrap();
-        inner.ring_version = node.modified_index.unwrap();
+        // let r = self.etcd_client
+        //     .get(&cluster_key, false, false, false)
+        //     .map_err(squash_etcd_errors)?;
+        // let node = r.node.unwrap();
+        // let mut inner = self.inner.lock().unwrap();
+        // inner.ring = Self::deserialize(&node.value.unwrap()).unwrap();
+        // inner.ring_version = node.modified_index.unwrap();
         Ok(())
     }
 
@@ -520,14 +471,13 @@ impl<T: Metadata> DHT<T> {
         assert!(replication_factor >= 1, "Replication factor must be >= 1");
         assert!(replication_factor <= 6, "Replication factor must be <= 6");
 
-        let cluster_key = format!("/sucredb/{}/dht", self.cluster);
         let mut inner = self.inner.lock().unwrap();
         inner.ring = Ring::new(self.node, self.addr, meta, partitions, replication_factor);
         let new = Self::serialize(&inner.ring).unwrap();
-        let r = self.etcd_client.set(&cluster_key, &new, None).map_err(
-            squash_etcd_errors,
-        )?;
-        inner.ring_version = r.node.unwrap().modified_index.unwrap();
+        // let r = self.etcd_client.set(&cluster_key, &new, None).map_err(
+        //     squash_etcd_errors,
+        // )?;
+        // inner.ring_version = r.node.unwrap().modified_index.unwrap();
         Ok(())
     }
 
@@ -734,23 +684,22 @@ impl<T: Metadata> DHT<T> {
         old_version: u64,
         new_ring: Ring<T>,
         update: bool,
-    ) -> Result<(), etcd::Error> {
+    ) -> Result<(), GenericError> {
         debug!("Proposing new ring against version {}", old_version);
-        let cluster_key = format!("/sucredb/{}/dht", self.cluster);
         let new = Self::serialize(&new_ring).unwrap();
-        let r = self.etcd_client
-            .compare_and_swap(&cluster_key, &new, None, None, Some(old_version))
-            .map_err(|mut e| e.pop().unwrap())?;
-        if update {
-            let mut inner = self.inner.lock().unwrap();
-            inner.ring = new_ring;
-            inner.ring_version = r.node.unwrap().modified_index.unwrap();
-            debug!(
-                "Updated ring to {:?} version {}",
-                inner.ring,
-                inner.ring_version
-            );
-        }
+        // let r = self.etcd_client
+        //     .compare_and_swap(&cluster_key, &new, None, None, Some(old_version))
+        //     .map_err(|mut e| e.pop().unwrap())?;
+        // if update {
+        //     let mut inner = self.inner.lock().unwrap();
+        //     inner.ring = new_ring;
+        //     inner.ring_version = r.node.unwrap().modified_index.unwrap();
+        //     debug!(
+        //         "Updated ring to {:?} version {}",
+        //         inner.ring,
+        //         inner.ring_version
+        //     );
+        // }
         Ok(())
     }
 
@@ -763,10 +712,10 @@ impl<T: Metadata> DHT<T> {
             info!("Proposing new ring using version {}", ring_version);
             match self.propose(ring_version, new_ring, update) {
                 Ok(()) => break,
-                Err(etcd::Error::Api(ref e)) if e.error_code == 101 => {
-                    warn!("Proposing new ring conflicted at version {}", ring_version);
-                    self.wait_new_version(ring_version);
-                }
+                // Err(etcd::Error::Api(ref e)) if e.error_code == 101 => {
+                //     warn!("Proposing new ring conflicted at version {}", ring_version);
+                //     self.wait_new_version(ring_version);
+                // }
                 Err(e) => {
                     error!("Proposing new ring failed with: {}", e);
                     return Err(e.into());
@@ -782,12 +731,6 @@ impl<T: Metadata> DHT<T> {
 
     fn deserialize(json_ring: &str) -> serde_json::Result<Ring<T>> {
         serde_json::from_str(json_ring)
-    }
-}
-
-impl<T: Metadata> Drop for DHT<T> {
-    fn drop(&mut self) {
-        let _ = self.inner.lock().map(|mut inner| inner.running = false);
     }
 }
 

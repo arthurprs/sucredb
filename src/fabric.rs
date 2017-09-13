@@ -1,6 +1,6 @@
 use std::{str, io, thread};
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Instant, Duration};
 use std::sync::{mpsc, Mutex, Arc};
 use std::sync::atomic::{Ordering, AtomicUsize};
 use std::collections::hash_map::Entry as HMEntry;
@@ -11,6 +11,7 @@ use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
 use bincode;
 
 use futures::{Future, Stream, Sink};
+use futures::future::Either;
 use futures::sync::mpsc as fmpsc;
 use futures::sync::oneshot as foneshot;
 use tokio_core as tokio;
@@ -18,6 +19,8 @@ use tokio_io::{io as tokio_io, AsyncRead};
 use tokio_io::codec;
 
 pub use fabric_msg::*;
+use types::Cookie;
+use inflightmap::InFlightMap;
 use config::Config;
 use utils::{GenericError, IdHashMap, into_io_error};
 use database::NodeId;
@@ -105,11 +108,16 @@ struct SharedContext {
     msg_handlers: Mutex<IdHashMap<u8, FabricHandlerFn>>,
     nodes_addr: Mutex<IdHashMap<NodeId, SocketAddr>>,
     // FIXME: rwlock
-    writer_chans: Arc<Mutex<IdHashMap<NodeId, Vec<(usize, SenderChan)>>>>,
+    writer_chans: Mutex<IdHashMap<NodeId, Vec<(usize, SenderChan)>>>,
+    tracked_callbacks: Mutex<InFlightMap<Cookie, (), Instant>>,
     chan_id_gen: AtomicUsize,
 }
 
 impl SharedContext {
+    fn register_node(&self, peer: NodeId, peer_addr: SocketAddr) -> Option<SocketAddr> {
+        self.nodes_addr.lock().unwrap().insert(peer, peer_addr)
+    }
+
     fn add_writer_chan(&self, peer: NodeId, sender: SenderChan) -> usize {
         let chan_id = self.chan_id_gen.fetch_add(1, Ordering::Relaxed);
         debug!("add_writer_chan peer: {}, chan_id: {:?}", peer, chan_id);
@@ -125,7 +133,10 @@ impl SharedContext {
         debug!("remove_writer_chan peer: {}, chan_id: {:?}", peer, chan_id);
         let mut locked = self.writer_chans.lock().unwrap();
         if let HMEntry::Occupied(mut o) = locked.entry(peer) {
-            o.get_mut().retain(|&(i, _)| i != chan_id);
+            let p = o.get().iter().position(|x| x.0 == chan_id).expect(
+                "chan_id not found",
+            );
+            o.get_mut().swap_remove(p);
             // cleanup entry if empty
             if o.get().is_empty() {
                 o.remove();
@@ -153,13 +164,14 @@ impl ReaderContext {
             debug!("recv from {:?} {:?}", self.peer, msg);
             handler(self.peer, msg);
         } else {
-            panic!("No handler for msg type {:?}", msg_type);
+            error!("No handler for msg type {:?}", msg_type);
         }
     }
 }
 
 impl WriterContext {
-    fn new(context: Arc<SharedContext>, peer: NodeId, sender: SenderChan) -> Self {
+    fn new(context: Arc<SharedContext>, peer: NodeId, peer_addr:SocketAddr, sender: SenderChan) -> Self {
+        context.register_node(peer, peer_addr);
         let chan_id = context.add_writer_chan(peer, sender);
         WriterContext {
             context: context,
@@ -189,12 +201,12 @@ impl Fabric {
             .incoming()
             .for_each(move |(socket, addr)| {
                 debug!("Accepting connection from {:?}", addr);
-                let handle_cloned = handle.clone();
                 let context_cloned = context.clone();
-                handle.spawn(
-                    Self::connection(socket, None, addr, context_cloned, handle_cloned)
-                        .map_err(|_| ()),
-                );
+                handle.spawn(Self::handshake(socket, None, addr, context_cloned).then(
+                    |_| {
+                        Ok(())
+                    },
+                ));
                 Ok(())
             })
             .map_err(|_| ());
@@ -202,48 +214,72 @@ impl Fabric {
     }
 
     fn connect(
-        node: NodeId,
+        expected_node: Option<NodeId>,
         addr: SocketAddr,
         context: Arc<SharedContext>,
         handle: tokio::reactor::Handle,
     ) -> Box<Future<Item = (), Error = ()>> {
-        debug!("Connecting to node {:?}: {:?}", node, addr);
-        let context_cloned = context.clone();
+        debug!("Connecting to node {:?}: {:?}", expected_node, addr);
+        let context1 = context.clone();
         let handle1 = handle.clone();
         let handle2 = handle.clone();
+
         let fut = tokio::net::TcpStream::connect(&addr, &handle)
+            .select2(
+                tokio::reactor::Timeout::new(
+                    Duration::from_millis(FABRIC_RECONNECT_INTERVAL_MS),
+                    &handle,
+                ).expect("Can't create connect timeout"),
+            )
+            .then(|r| match r {
+                Ok(Either::A((s, _))) => Ok(s),
+                Ok(Either::B(_)) => Err(io::ErrorKind::TimedOut.into()),
+                Err(either) => Err(either.split().0),
+            })
             .and_then(move |s| {
-                debug!("Stablished connection with {:?}: {:?}", node, addr);
-                Self::connection(s, Some(node), addr, context_cloned, handle)
+                Self::handshake(s, expected_node, addr, context)
+            })
+            .and_then(move |(s, peer_id, addr, context)| {
+                Self::steady_connection(s, peer_id, addr, context)
             })
             .then(move |_| {
                 tokio::reactor::Timeout::new(
                     Duration::from_millis(FABRIC_RECONNECT_INTERVAL_MS),
                     &handle1,
-                )
+                ).expect("Can't create reconnect timeout")
             })
-            .and_then(|t| t)
             .and_then(move |_| {
+                let node = expected_node.ok_or(io::ErrorKind::NotFound)?;
                 let addr_opt = {
-                    let locked = context.nodes_addr.lock().unwrap();
+                    let locked = context1.nodes_addr.lock().unwrap();
                     locked.get(&node).cloned()
                 };
                 if let Some(addr) = addr_opt {
                     debug!("Reconnecting fabric connection to {:?}", addr);
-                    handle2.spawn(Self::connect(node, addr, context, handle2.clone()));
+                    handle2.spawn(Self::connect(
+                        expected_node,
+                        addr,
+                        context1,
+                        handle2.clone(),
+                    ));
                 }
                 Ok(())
             });
         Box::new(fut.map_err(|_| ()))
     }
 
-    fn connection(
+    fn handshake(
         socket: tokio::net::TcpStream,
         expected_node: Option<NodeId>,
         addr: SocketAddr,
         context: Arc<SharedContext>,
-        handle: tokio::reactor::Handle,
-    ) -> Box<Future<Item = (), Error = io::Error>> {
+    ) -> Box<
+        Future<
+            Item = (tokio::net::TcpStream, NodeId, SocketAddr, Arc<SharedContext>),
+            Error = io::Error,
+        >,
+    > {
+        debug!("Stablished connection with {:?}: {:?}", expected_node, addr);
         socket.set_nodelay(true).expect("Failed to set nodelay");
         socket
             .set_keepalive(Some(Duration::from_millis(FABRIC_KEEPALIVE_MS)))
@@ -256,18 +292,12 @@ impl Fabric {
             .and_then(|(s, b)| tokio_io::read_exact(s, b))
             .and_then(move |(s, b)| {
                 let peer_id = (&b[..]).read_u64::<LittleEndian>().unwrap();
+                debug!("Identified connection to node {}", peer_id);
                 if expected_node.unwrap_or(peer_id) == peer_id {
-                    Ok((s, peer_id))
+                    Ok((s, peer_id, addr, context))
                 } else {
                     Err(io::Error::new(io::ErrorKind::Other, "Unexpected NodeId"))
                 }
-            })
-            .and_then(move |(s, peer_id)| {
-                debug!("Identified connection to node {}", peer_id);
-                Self::steady_connection(s, peer_id, addr, context, handle).then(move |r| {
-                    debug!("Connection to node {} disconnected {:?}", peer_id, r);
-                    r
-                })
             });
 
         Box::new(fut)
@@ -276,9 +306,8 @@ impl Fabric {
     fn steady_connection(
         socket: tokio::net::TcpStream,
         peer: NodeId,
-        _peer_addr: SocketAddr,
+        peer_addr: SocketAddr,
         context: Arc<SharedContext>,
-        _handle: tokio::reactor::Handle,
     ) -> Box<Future<Item = (), Error = io::Error>> {
         let (socket_rx, socket_tx) = socket.split();
         let socket_tx = codec::FramedWrite::new(socket_tx, FramedBincodeCodec);
@@ -291,7 +320,7 @@ impl Fabric {
             Ok(())
         });
 
-        let ctx_tx = WriterContext::new(context, peer, chan_tx);
+        let ctx_tx = WriterContext::new(context, peer, peer_addr, chan_tx);
         let fut_tx = socket_tx
             .send_all(chan_rx.map_err(
                 |_| -> io::Error { io::ErrorKind::Other.into() },
@@ -318,6 +347,7 @@ impl Fabric {
             nodes_addr: Default::default(),
             msg_handlers: Default::default(),
             writer_chans: Default::default(),
+            tracked_callbacks: Mutex::new(InFlightMap::new()),
             chan_id_gen: Default::default(),
         });
 
@@ -325,6 +355,14 @@ impl Fabric {
         handle.spawn(Self::listen(listener, context.clone(), handle.clone()));
 
         Ok(context)
+    }
+
+    pub fn node(&self) -> NodeId {
+        self.context.node
+    }
+
+    pub fn addr(&self) -> SocketAddr {
+        self.context.addr
     }
 
     pub fn new(node: NodeId, config: &Config) -> Result<Self, GenericError> {
@@ -357,10 +395,14 @@ impl Fabric {
         );
     }
 
+    pub fn connect_node(&self, addr: SocketAddr) {
+        self.start_connect(None, addr)
+    }
+
     pub fn register_node(&self, node: NodeId, addr: SocketAddr) {
-        let prev = self.context.nodes_addr.lock().unwrap().insert(node, addr);
-        if prev.is_none() || prev.unwrap() != addr {
-            self.start_connect(node, addr);
+        let prev = self.context.register_node(node, addr);
+        if prev != Some(addr) {
+            self.start_connect(Some(node), addr);
         }
     }
 
@@ -379,7 +421,7 @@ impl Fabric {
                 x_nodes.remove(&node);
                 let prev = nodes.insert(node, addr);
                 if prev.is_none() || prev.unwrap() != addr {
-                    self.start_connect(node, addr);
+                    self.start_connect(Some(node), addr);
                 }
             }
         }
@@ -388,15 +430,15 @@ impl Fabric {
         }
     }
 
-    fn start_connect(&self, node: NodeId, addr: SocketAddr) {
+    fn start_connect(&self, expected_node: Option<NodeId>, addr: SocketAddr) {
         let context = self.context.clone();
-        {
+        if let Some(node) = expected_node {
             let mut writers = context.writer_chans.lock().unwrap();
             writers.entry(node).or_insert_with(Default::default);
         }
         let context_cloned = context.clone();
         context.loop_remote.spawn(move |h| {
-            Self::connect(node, addr, context_cloned, h.clone())
+            Self::connect(expected_node, addr, context_cloned, h.clone())
         });
     }
 

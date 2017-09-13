@@ -16,7 +16,6 @@ use types::ConsistencyLevel;
 // Remember to update defaults in sucredb.yaml!
 pub const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:6379";
 pub const DEFAULT_FABRIC_ADDR: &str = "127.0.0.1:16379";
-pub const DEFAULT_ETCD_ADDR: &str = "http://127.0.0.1:2379";
 pub const DEFAULT_CLUSTER_NAME: &str = "default";
 pub const DEFAULT_DATA_DIR: &str = "./data";
 pub const DEFAULT_REPLICATION_FACTOR: &str = "3";
@@ -28,7 +27,6 @@ pub struct Config {
     pub cluster_name: String,
     pub listen_addr: SocketAddr,
     pub fabric_addr: SocketAddr,
-    pub etcd_addr: String,
     pub cmd_init: Option<InitCommand>,
     pub worker_timer: u32,
     pub worker_count: u16,
@@ -55,7 +53,6 @@ impl Default for Config {
             cluster_name: DEFAULT_CLUSTER_NAME.into(),
             listen_addr: DEFAULT_LISTEN_ADDR.parse().unwrap(),
             fabric_addr: DEFAULT_FABRIC_ADDR.parse().unwrap(),
-            etcd_addr: DEFAULT_ETCD_ADDR.into(),
             cmd_init: None,
             worker_timer: 500,
             worker_count: max(4, num_cpus::get() as u16 * 2),
@@ -154,7 +151,6 @@ pub fn read_config_file(path: &Path, config: &mut Config) {
     cfg!(yaml, config, cluster_name, as_str);
     cfg!(yaml, config, listen_addr, as_str, try_into);
     cfg!(yaml, config, fabric_addr, as_str, try_into);
-    cfg!(yaml, config, etcd_addr, as_str, try_into);
     // pub cmd_init: Option<InitCommand>,
     cfg!(yaml, config, worker_timer, as_str, parse_duration, try_into);
     cfg!(yaml, config, worker_count, as_u64, try_into);

@@ -31,7 +31,7 @@ struct Stats {
 
 pub struct Database {
     pub dht: DHT<net::SocketAddr>,
-    pub fabric: Fabric,
+    pub fabric: Arc<Fabric>,
     pub meta_storage: Storage,
     pub storage_manager: StorageManager,
     pub response_fn: DatabaseResponseFn,
@@ -106,21 +106,20 @@ impl Database {
 
         info!("Metadata loaded! node_id:{} previous:{:?}", node, old_node);
 
-        let fabric = Fabric::new(node, config).unwrap();
+        let fabric = Arc::new(Fabric::new(node, config).unwrap());
+        let dht_initial = if let Some(init) = config.cmd_init.as_ref() {
+            Some(dht::RingDescription::new(
+                init.replication_factor,
+                init.partitions,
+            ))
+        } else {
+            None
+        };
         let dht = DHT::new(
-            node,
-            config.fabric_addr,
+            fabric.clone(),
             &config.cluster_name,
-            &config.etcd_addr,
             config.listen_addr,
-            if let Some(init) = config.cmd_init.as_ref() {
-                Some(dht::RingDescription::new(
-                    init.replication_factor,
-                    init.partitions,
-                ))
-            } else {
-                None
-            },
+            dht_initial,
             old_node,
         );
         let workers = WorkerManager::new(

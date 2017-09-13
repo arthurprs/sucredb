@@ -7,7 +7,7 @@ use serde;
 pub type Version = u64;
 pub type Id = u64;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VersionVector(LinearMap<Id, Version>);
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -375,6 +375,16 @@ impl VersionVector {
         }
     }
 
+    pub fn dominates(&self, other: &Self) -> bool {
+        self.descends(other) && !other.descends(self)
+    }
+
+    pub fn descends(&self, other: &Self) -> bool {
+        other.0.iter().all(|(k, ov)| {
+            self.0.get(k).map(|v| v >= ov).unwrap_or(false)
+        })
+    }
+
     pub fn add(&mut self, id: Id, version: Version) {
         match self.0.entry(id) {
             Entry::Vacant(vac) => {
@@ -388,11 +398,16 @@ impl VersionVector {
         }
     }
 
-    // pub fn reset(&mut self) {
-    //     for (_, v) in &mut self.0 {
-    //         *v = 0;
-    //     }
-    // }
+    pub fn event(&mut self, id: Id) {
+        match self.0.entry(id) {
+            Entry::Vacant(vac) => {
+                vac.insert(1);
+            }
+            Entry::Occupied(mut ocu) => {
+                *ocu.get_mut() += 1;
+            }
+        }
+    }
 
     pub fn iter(&self) -> linear_map::Iter<Id, Version> {
         self.0.iter()

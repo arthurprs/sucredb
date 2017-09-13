@@ -6,6 +6,7 @@ use bytes::Bytes;
 pub enum FabricMsgType {
     Crud,
     Synch,
+    DHT,
     Unknown,
 }
 
@@ -27,6 +28,8 @@ pub enum FabricMsg {
     SyncSend(MsgSyncSend),
     SyncAck(MsgSyncAck),
     SyncFin(MsgSyncFin),
+    DHTSync(Bytes),
+    Tracked(Cookie, Box<FabricMsg>),
     Unknown,
 }
 

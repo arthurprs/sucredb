@@ -23,7 +23,6 @@ extern crate serde_derive;
 extern crate bincode;
 extern crate rocksdb;
 extern crate byteorder;
-extern crate etcd;
 extern crate clap;
 extern crate crc16;
 extern crate metrics as rust_metrics;
@@ -42,7 +41,7 @@ extern crate env_logger;
 mod utils;
 mod types;
 mod version_vector;
-// mod gossip;
+mod gossip;
 mod inflightmap;
 mod dht;
 mod fabric_msg;
@@ -87,13 +86,6 @@ fn configure() -> config::Config {
                 .long("data")
                 .takes_value(true)
                 .help("Data directory"),
-        )
-        .arg(
-            Arg::with_name("etcd_addr")
-                .short("e")
-                .long("etcd")
-                .help("etcd addres")
-                .takes_value(true),
         )
         .arg(
             Arg::with_name("cluster_name")
@@ -161,10 +153,6 @@ fn configure() -> config::Config {
 
     if let Some(v) = matches.value_of("fabric_addr") {
         config.fabric_addr = v.parse().unwrap();
-    }
-
-    if let Some(v) = matches.value_of("etcd_addr") {
-        config.etcd_addr = v.parse().unwrap();
     }
 
     if let Some(sub) = matches.subcommand_matches("init") {

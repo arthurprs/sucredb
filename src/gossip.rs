@@ -6,40 +6,42 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::collections::HashMap;
 
 use rand::{thread_rng, Rng};
-use inflightmap::InFlightMap;
-
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json;
-
+use bincode;
 use futures::{Future, Stream, Sink};
 use futures::sync::mpsc as fmpsc;
 use futures::sync::oneshot as foneshot;
 use tokio_core as tokio;
 
+use inflightmap::InFlightMap;
 use utils::into_io_error;
 
 const PACKET_SIZE: usize = 1400;
-const PING_PERIOD_MS: u64 = 250;
-const PING_TIMEOUT_MS: u64 = 500;
+const PING_PERIOD_MS: u64 = 500;
+const PING_TIMEOUT_MS: u64 = 1000;
 const SUSPECT_TIMEOUT_MS: u64 = 5 * PING_TIMEOUT_MS;
 const PING_SYNC_CHANCE: f32 = 0.05f32;
 const PING_CANDIDATES: usize = 3;
 const PINGREQ_CANDIDATES: usize = 3;
-const TIMER_RESOLUTION_MS: u64 = 100;
+const TIMER_RESOLUTION_MS: u64 = 150;
 
 // quick implementation of SWIM
 // has various limitations
 // TODO: piggyback
-// TODO: plenty of callbacks
 pub struct Gossiper<T: Metadata> {
     context: Arc<Mutex<Inner<T>>>,
     loop_thread: Option<(foneshot::Sender<()>, thread::JoinHandle<io::Result<()>>)>,
 }
 
-pub enum DHTMsg {
-
+pub enum GossiperMsg<T: Metadata> {
+    New(SocketAddr, T),
+    Alive(SocketAddr, T),
+    Dead(SocketAddr),
+    // Left(SocketAddr),
 }
+
+pub type GossiperCallback<T> = Box<FnMut(GossiperMsg<T>) + Send>;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
 enum NodeStatus {
@@ -51,10 +53,13 @@ enum NodeStatus {
 type Seq = u32;
 
 pub trait Metadata
-    : Serialize + DeserializeOwned + Clone + Send + fmt::Debug + 'static {
+    : Serialize + DeserializeOwned + Clone + PartialEq + Send + fmt::Debug + 'static
+    {
 }
 
-impl<T: Serialize + DeserializeOwned + Clone + Send + fmt::Debug + 'static> Metadata for T {}
+impl<T: Serialize + DeserializeOwned + Clone + PartialEq + Send + fmt::Debug + 'static> Metadata
+    for T {
+}
 
 #[derive(Debug)]
 struct Node<T: Metadata> {
@@ -77,9 +82,10 @@ struct Inner<T: Metadata> {
     suspect_inflight: InFlightMap<SocketAddr, Instant, Instant>,
     send_queue: fmpsc::UnboundedSender<(SocketAddr, Message<T>)>,
     broadcast_queue: Vec<(u32, Message<T>)>,
-    // leaving: bool,
+    callback: GossiperCallback<T>,
+    leaving: bool,
+    bootstraping: bool,
 }
-
 
 type State<T> = (SocketAddr, Seq, NodeStatus, T);
 
@@ -117,11 +123,11 @@ impl<T: Metadata> tokio::net::UdpCodec for UdpCodec<T> {
 
     fn decode(&mut self, addr: &SocketAddr, buf: &[u8]) -> io::Result<Self::In> {
         trace!("decoding {:?}", buf);
-        match serde_json::from_slice(buf) {
+        match bincode::deserialize(buf) {
             Ok(msg) => Ok((*addr, msg)),
             Err(err) => {
-                warn!("json decode err: {:?}", err);
-                Err(err.into())
+                warn!("decode err: {:?}", err);
+                Err(into_io_error(err))
             }
         }
     }
@@ -129,34 +135,10 @@ impl<T: Metadata> tokio::net::UdpCodec for UdpCodec<T> {
     fn encode(&mut self, addr_msg: Self::Out, buf: &mut Vec<u8>) -> SocketAddr {
         let (addr, msg) = addr_msg;
         trace!("encoding {:?}", msg);
-        match serde_json::to_writer(buf, &msg) {
+        match bincode::serialize_into(buf, &msg, bincode::Infinite) {
             Ok(_) => addr,
             Err(err) => {
-                panic!("json encode err: {:?}", err);
-            }
-        }
-    }
-}
-
-impl<T: Metadata> Message<T> {
-    fn encode(&self, mut buffer: &mut [u8]) -> Result<usize, serde_json::Error> {
-        let buffer_len = buffer.len();
-        match serde_json::to_writer(&mut buffer, &self) {
-            Ok(_) => Ok(buffer_len - buffer.len()),
-            Err(err) => {
-                warn!("json encode err: {:?}", err);
-                Err(err)
-            }
-        }
-    }
-
-    fn decode(buffer: &[u8]) -> Result<Message<T>, serde_json::Error> {
-        trace!("decoding {:?}", buffer);
-        match serde_json::from_slice(buffer) {
-            Ok(msg) => Ok(msg),
-            Err(err) => {
-                warn!("json decode err: {:?}", err);
-                Err(err)
+                panic!("encode err: {:?}", err);
             }
         }
     }
@@ -194,6 +176,7 @@ impl<T: Metadata> Inner<T> {
         handle: tokio::reactor::Handle,
         addr: SocketAddr,
         meta: T,
+        callback: GossiperCallback<T>,
     ) -> io::Result<Arc<Mutex<Inner<T>>>> {
         let (chan_tx, chan_rx) = fmpsc::unbounded::<(SocketAddr, Message<T>)>();
 
@@ -210,6 +193,9 @@ impl<T: Metadata> Inner<T> {
             suspect_inflight: InFlightMap::new(),
             send_queue: chan_tx,
             broadcast_queue: Default::default(),
+            callback: callback,
+            leaving: false,
+            bootstraping: false,
         }));
 
         let socket = tokio::net::UdpSocket::bind(&addr, &handle)?;
@@ -302,7 +288,7 @@ impl<T: Metadata> Inner<T> {
 
         // drain broadcast queue
         if !self.broadcast_queue.is_empty() {
-            let candidates = self.get_candidates(true, !0 as usize);
+            let candidates = self.get_candidates(true, !0);
             let mut messages = Vec::new();
             let mut counter = 0;
             for &mut (ref mut rem, ref msg) in &mut self.broadcast_queue {
@@ -320,20 +306,14 @@ impl<T: Metadata> Inner<T> {
         }
     }
 
-    fn send(&mut self, to: SocketAddr, msg: Message<T>) {
-        let _ = self.send_queue.unbounded_send((to, msg));
-    }
-
-    fn broadcast(&mut self, msg: Message<T>) {
-        // self.nodes dont include self, so + 2
-        let n = ((self.nodes.len() + 2) as f32).log10().ceil() as u32 * 4;
-        self.broadcast_queue.push((n, msg));
-    }
-
-    fn generate_ping_msg(&mut self) -> (Seq, Message<T>) {
-        let seq = self.seq;
-        self.seq += 1;
-        (seq, Message::Ping { seq: seq })
+    fn refute(&mut self, incarnation: Seq) {
+        self.incarnation = cmp::max(self.incarnation, incarnation) + 1;
+        let msg = Message::Alive {
+            incarnation: self.incarnation,
+            node: self.addr,
+            meta: self.meta.clone(),
+        };
+        self.broadcast(msg);
     }
 
     fn get_candidates(&self, alive: bool, limit: usize) -> Vec<SocketAddr> {
@@ -422,6 +402,7 @@ impl<T: Metadata> Inner<T> {
     }
 
     fn maybe_gossip_dead(&mut self, now: Instant) -> usize {
+        // TODO: maybe sync instead
         if now < self.next_dead_probe {
             return 0;
         }
@@ -468,20 +449,27 @@ impl<T: Metadata> Inner<T> {
                 };
             }
             Message::Alive {
-                mut incarnation,
+                incarnation,
                 node,
-                mut meta,
+                meta,
             } => {
                 if node == self.addr {
-                    if incarnation <= self.incarnation {
+                    if incarnation < self.incarnation ||
+                        (incarnation == self.incarnation && meta == self.meta)
+                    {
+                        return;
+                    }
+                    if self.leaving {
+                        // TODO!
                         return;
                     }
                     // refute
                     debug!("node {:?} REFUTE ALIVE", node);
-                    self.incarnation = cmp::max(self.incarnation, incarnation) + 1;
-                    incarnation = self.incarnation;
-                    meta = self.meta.clone();
-                } else {
+                    self.refute(incarnation);
+                    return;
+                }
+
+                {
                     let mut existing = true;
                     let n = self.nodes.entry(node).or_insert_with(|| {
                         existing = false;
@@ -491,6 +479,11 @@ impl<T: Metadata> Inner<T> {
                         return;
                     }
                     debug!("{:?} node {:?} IS ALIVE", self.addr, node);
+                    if existing {
+                        (self.callback)(GossiperMsg::Alive(node, meta.clone()));
+                    } else {
+                        (self.callback)(GossiperMsg::New(node, meta.clone()));
+                    }
                     n.set_status(NodeStatus::Alive, incarnation);
                 }
 
@@ -513,15 +506,11 @@ impl<T: Metadata> Inner<T> {
                     }
                     // refute & broadcast
                     debug!("node {:?} REFUTE SUSPECT", node);
-                    self.incarnation = cmp::max(self.incarnation, incarnation) + 1;
-                    let msg = Message::Alive {
-                        incarnation: self.incarnation,
-                        node: node,
-                        meta: self.meta.clone(),
-                    };
-                    self.broadcast(msg);
+                    self.refute(incarnation);
                     return;
-                } else if let Some(n) = self.nodes.get_mut(&node) {
+                }
+
+                if let Some(n) = self.nodes.get_mut(&node) {
                     // ignore old info or irrelevant
                     if incarnation < n.incarnation || n.status != NodeStatus::Alive {
                         return;
@@ -556,22 +545,23 @@ impl<T: Metadata> Inner<T> {
                     if incarnation < self.incarnation {
                         return;
                     }
+                    if self.leaving {
+                        // TODO!
+                        return;
+                    }
                     // refute & broadcast
                     debug!("node {:?} REFUTE DEAD", node);
-                    self.incarnation = cmp::max(self.incarnation, incarnation) + 1;
-                    let msg = Message::Alive {
-                        incarnation: self.incarnation,
-                        node: node,
-                        meta: self.meta.clone(),
-                    };
-                    self.broadcast(msg);
+                    self.refute(incarnation);
                     return;
-                } else if let Some(n) = self.nodes.get_mut(&node) {
+                }
+
+                if let Some(n) = self.nodes.get_mut(&node) {
                     // ignore old info or irrelevant
                     if incarnation < n.incarnation || n.status == NodeStatus::Dead {
                         return;
                     }
                     debug!("{:?} node {:?} IS DEAD", self.addr, node);
+                    (self.callback)(GossiperMsg::Dead(node));
                     n.set_status(NodeStatus::Dead, incarnation);
                 } else {
                     // about an unknown node!?
@@ -607,6 +597,7 @@ impl<T: Metadata> Inner<T> {
             NodeStatus::Alive,
             self.meta.clone(),
         ));
+        // TODO: worry about size
         if state.len() > 20 {
             thread_rng().shuffle(&mut state);
             state.truncate(20);
@@ -638,8 +629,31 @@ impl<T: Metadata> Inner<T> {
         }
     }
 
-    pub fn update_meta(&mut self, meta: T) {
+    fn send(&mut self, to: SocketAddr, msg: Message<T>) {
+        let _ = self.send_queue.unbounded_send((to, msg));
+    }
 
+    fn broadcast(&mut self, msg: Message<T>) {
+        // self.nodes dont include self, so + 2
+        let n = ((self.nodes.len() + 2) as f32).log10().ceil() as u32 * 4;
+        self.broadcast_queue.push((n, msg));
+    }
+
+    fn generate_ping_msg(&mut self) -> (Seq, Message<T>) {
+        let seq = self.seq;
+        self.seq += 1;
+        (seq, Message::Ping { seq: seq })
+    }
+
+    pub fn update_meta(&mut self, meta: T) {
+        self.incarnation += 1;
+        self.meta = meta;
+        let msg = Message::Alive {
+            node: self.addr,
+            incarnation: self.incarnation,
+            meta: self.meta.clone(),
+        };
+        self.broadcast(msg);
     }
 
     pub fn join(&mut self, seeds: &[SocketAddr]) {
@@ -651,7 +665,11 @@ impl<T: Metadata> Inner<T> {
 }
 
 impl<T: Metadata> Gossiper<T> {
-    pub fn new(listen_addr: SocketAddr, meta: T) -> io::Result<Gossiper<T>> {
+    pub fn new(
+        listen_addr: SocketAddr,
+        meta: T,
+        callback: GossiperCallback<T>,
+    ) -> io::Result<Gossiper<T>> {
         let (init_tx, init_rx) = mpsc::channel();
         let thread = thread::Builder::new()
             .name(format!("Gossiper:{}", listen_addr))
@@ -659,9 +677,10 @@ impl<T: Metadata> Gossiper<T> {
                 let mut core = tokio::reactor::Core::new().unwrap();
                 let (completer_tx, completer_rx) = foneshot::channel();
                 init_tx
-                    .send(Inner::init(core.handle(), listen_addr, meta).map(|c| {
-                        (c, completer_tx)
-                    }))
+                    .send(
+                        Inner::init(core.handle(), listen_addr, meta, callback)
+                            .map(|c| (c, completer_tx)),
+                    )
                     .map_err(into_io_error)?;
                 core.run(completer_rx).map_err(into_io_error)
             })?;
