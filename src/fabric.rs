@@ -1,10 +1,11 @@
-use std::{str, io, thread};
+use std::{io, thread};
 use std::net::SocketAddr;
-use std::time::{Instant, Duration};
+use std::time::Duration;
 use std::sync::{mpsc, Mutex, Arc};
 use std::sync::atomic::{Ordering, AtomicUsize};
 use std::collections::hash_map::Entry as HMEntry;
 
+use linear_map::LinearMap;
 use rand::{thread_rng, Rng};
 use bytes::{BufMut, BytesMut};
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
@@ -19,8 +20,6 @@ use tokio_io::{io as tokio_io, AsyncRead};
 use tokio_io::codec;
 
 pub use fabric_msg::*;
-use types::Cookie;
-use inflightmap::InFlightMap;
 use config::Config;
 use utils::{GenericError, IdHashMap, into_io_error};
 use database::NodeId;
@@ -65,7 +64,8 @@ impl codec::Encoder for FramedBincodeCodec {
     }
 }
 
-pub type FabricHandlerFn = Box<FnMut(NodeId, FabricMsg) + Send>;
+pub type FabricMsgFn = Box<Fn(NodeId, FabricMsg) + Send>;
+pub type FabricConFn = Box<Fn(NodeId) + Send>;
 type SenderChan = fmpsc::UnboundedSender<FabricMsg>;
 type InitType = io::Result<(Arc<SharedContext>, foneshot::Sender<()>)>;
 
@@ -96,7 +96,7 @@ struct ReaderContext {
 struct WriterContext {
     context: Arc<SharedContext>,
     peer: NodeId,
-    sender_chan_id: usize,
+    connection_id: usize,
 }
 
 struct SharedContext {
@@ -105,12 +105,12 @@ struct SharedContext {
     timeout: u32, // not currently used
     loop_remote: tokio::reactor::Remote,
     // FIXME: rwlock or make this immutable, removing the need for a lock
-    msg_handlers: Mutex<IdHashMap<u8, FabricHandlerFn>>,
+    msg_handlers: Mutex<LinearMap<u8, FabricMsgFn>>,
+    con_handlers: Mutex<Vec<FabricConFn>>,
     nodes_addr: Mutex<IdHashMap<NodeId, SocketAddr>>,
     // FIXME: rwlock
-    writer_chans: Mutex<IdHashMap<NodeId, Vec<(usize, SenderChan)>>>,
-    tracked_callbacks: Mutex<InFlightMap<Cookie, (), Instant>>,
-    chan_id_gen: AtomicUsize,
+    connections: Mutex<IdHashMap<NodeId, Vec<(usize, SenderChan)>>>,
+    connection_gen: AtomicUsize,
 }
 
 impl SharedContext {
@@ -118,23 +118,34 @@ impl SharedContext {
         self.nodes_addr.lock().unwrap().insert(peer, peer_addr)
     }
 
-    fn add_writer_chan(&self, peer: NodeId, sender: SenderChan) -> usize {
-        let chan_id = self.chan_id_gen.fetch_add(1, Ordering::Relaxed);
-        debug!("add_writer_chan peer: {}, chan_id: {:?}", peer, chan_id);
-        let mut locked = self.writer_chans.lock().unwrap();
-        locked.entry(peer).or_insert_with(Default::default).push((
-            chan_id,
-            sender,
-        ));
-        chan_id
+    fn remove_node(&self, peer: NodeId) -> Option<SocketAddr> {
+        self.nodes_addr.lock().unwrap().remove(&peer)
     }
 
-    fn remove_writer_chan(&self, peer: NodeId, chan_id: usize) {
-        debug!("remove_writer_chan peer: {}, chan_id: {:?}", peer, chan_id);
-        let mut locked = self.writer_chans.lock().unwrap();
+    fn register_connection(&self, peer: NodeId, sender: SenderChan) -> usize {
+        let connection_id = self.connection_gen.fetch_add(1, Ordering::Relaxed);
+        debug!("register_connectionpeer: {}, connection_id: {:?}", peer, connection_id);
+        let is_new = {
+            let mut locked = self.connections.lock().unwrap();
+            let entry = locked.entry(peer).or_insert_with(Default::default);
+            let is_new = entry.is_empty();
+            entry.push((connection_id, sender));
+            is_new
+        };
+        if is_new {
+            for handler in &mut *self.con_handlers.lock().unwrap() {
+                handler(peer);
+            }
+        }
+        connection_id
+    }
+
+    fn remove_connection(&self, peer: NodeId, connection_id: usize) {
+        debug!("remove_connectionpeer: {}, connection_id: {:?}", peer, connection_id);
+        let mut locked = self.connections.lock().unwrap();
         if let HMEntry::Occupied(mut o) = locked.entry(peer) {
-            let p = o.get().iter().position(|x| x.0 == chan_id).expect(
-                "chan_id not found",
+            let p = o.get().iter().position(|x| x.0 == connection_id).expect(
+                "connection_id not found",
             );
             o.get_mut().swap_remove(p);
             // cleanup entry if empty
@@ -142,7 +153,7 @@ impl SharedContext {
                 o.remove();
             }
         } else {
-            panic!("peer not found in writer_chans");
+            panic!("peer not found in connections");
         }
     }
 }
@@ -170,23 +181,25 @@ impl ReaderContext {
 }
 
 impl WriterContext {
-    fn new(context: Arc<SharedContext>, peer: NodeId, peer_addr:SocketAddr, sender: SenderChan) -> Self {
+    fn new(
+        context: Arc<SharedContext>,
+        peer: NodeId,
+        peer_addr: SocketAddr,
+        sender: SenderChan,
+    ) -> Self {
         context.register_node(peer, peer_addr);
-        let chan_id = context.add_writer_chan(peer, sender);
+        let connection_id = context.register_connection(peer, sender);
         WriterContext {
             context: context,
             peer: peer,
-            sender_chan_id: chan_id,
+            connection_id: connection_id,
         }
     }
 }
 
 impl Drop for WriterContext {
     fn drop(&mut self) {
-        self.context.remove_writer_chan(
-            self.peer,
-            self.sender_chan_id,
-        );
+        self.context.remove_connection(self.peer, self.connection_id);
     }
 }
 
@@ -236,9 +249,7 @@ impl Fabric {
                 Ok(Either::B(_)) => Err(io::ErrorKind::TimedOut.into()),
                 Err(either) => Err(either.split().0),
             })
-            .and_then(move |s| {
-                Self::handshake(s, expected_node, addr, context)
-            })
+            .and_then(move |s| Self::handshake(s, expected_node, addr, context))
             .and_then(move |(s, peer_id, addr, context)| {
                 Self::steady_connection(s, peer_id, addr, context)
             })
@@ -346,9 +357,9 @@ impl Fabric {
             loop_remote: handle.remote().clone(),
             nodes_addr: Default::default(),
             msg_handlers: Default::default(),
-            writer_chans: Default::default(),
-            tracked_callbacks: Mutex::new(InFlightMap::new()),
-            chan_id_gen: Default::default(),
+            con_handlers: Default::default(),
+            connections: Default::default(),
+            connection_gen: Default::default(),
         });
 
         let listener = tokio::net::TcpListener::bind(&context.addr, &handle)?;
@@ -388,14 +399,18 @@ impl Fabric {
         })
     }
 
-    pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: FabricHandlerFn) {
+    pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: FabricMsgFn) {
         self.context.msg_handlers.lock().unwrap().insert(
             msg_type as u8,
             handler,
         );
     }
 
-    pub fn connect_node(&self, addr: SocketAddr) {
+    pub fn register_con_handler(&self, handler: FabricConFn) {
+        self.context.con_handlers.lock().unwrap().push(handler);
+    }
+
+    pub fn register_seed(&self, addr: SocketAddr) {
         self.start_connect(None, addr)
     }
 
@@ -407,7 +422,16 @@ impl Fabric {
     }
 
     pub fn remove_node(&self, node: NodeId) {
-        self.context.nodes_addr.lock().unwrap().remove(&node);
+        self.context.remove_node(node);
+    }
+
+    pub fn connections(&self) -> Vec<NodeId> {
+        let writers = self.context.connections.lock().unwrap();
+        writers
+            .iter()
+            .filter(|&(_, c)| !c.is_empty())
+            .map(|(&n, _)| n)
+            .collect()
     }
 
     pub fn set_nodes<I>(&self, it: I)
@@ -419,8 +443,7 @@ impl Fabric {
         for (node, addr) in it {
             if node != self.context.node {
                 x_nodes.remove(&node);
-                let prev = nodes.insert(node, addr);
-                if prev.is_none() || prev.unwrap() != addr {
+                if nodes.insert(node, addr) != Some(addr) {
                     self.start_connect(Some(node), addr);
                 }
             }
@@ -432,10 +455,6 @@ impl Fabric {
 
     fn start_connect(&self, expected_node: Option<NodeId>, addr: SocketAddr) {
         let context = self.context.clone();
-        if let Some(node) = expected_node {
-            let mut writers = context.writer_chans.lock().unwrap();
-            writers.entry(node).or_insert_with(Default::default);
-        }
         let context_cloned = context.clone();
         context.loop_remote.spawn(move |h| {
             Self::connect(expected_node, addr, context_cloned, h.clone())
@@ -464,13 +483,13 @@ impl Fabric {
                 }
             }
         }
-        let mut writers = self.context.writer_chans.lock().unwrap();
+        let mut writers = self.context.connections.lock().unwrap();
         match writers.entry(node) {
             HMEntry::Occupied(mut o) => {
-                if let Some(&mut (chan_id, ref mut chan)) = thread_rng().choose_mut(o.get_mut()) {
-                    debug!("send_msg node:{}, chan:{} {:?}", node, chan_id, msg);
+                if let Some(&mut (connection_id, ref mut chan)) = thread_rng().choose_mut(o.get_mut()) {
+                    debug!("send_msg node:{}, chan:{} {:?}", node, connection_id, msg);
                     if let Err(e) = chan.unbounded_send(msg) {
-                        warn!("Can't send to fabric {}-{} chan: {:?}", node, chan_id, e);
+                        warn!("Can't send to fabric {}-{} chan: {:?}", node, connection_id, e);
                     } else {
                         return Ok(());
                     }

@@ -1,4 +1,5 @@
-use std::{str, time, net};
+use std::{time, net};
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex, RwLock};
 use dht::{self, DHT};
 use version_vector::*;
@@ -115,13 +116,7 @@ impl Database {
         } else {
             None
         };
-        let dht = DHT::new(
-            fabric.clone(),
-            &config.cluster_name,
-            config.listen_addr,
-            dht_initial,
-            old_node,
-        );
+        let dht = DHT::new(fabric.clone(), &config.cluster_name);
         let workers = WorkerManager::new(
             node,
             config.worker_count as _,
@@ -165,28 +160,25 @@ impl Database {
             })
         });
 
-        let mut dht_change_sender = db.sender();
-        db.dht.set_callback(Box::new(
-            move || { dht_change_sender.send(WorkerMsg::DHTChange); },
-        ));
+        let sender = RefCell::new(db.sender());
+        let callback = move || { sender.borrow_mut().send(WorkerMsg::DHTChange); };
+        db.dht.set_callback(Box::new(callback));
 
         // register nodes into fabric
         db.fabric.set_nodes(db.dht.members().into_iter());
-        // FIXME: fabric should have a start method that receives the callbacks
-        // set fabric callbacks
         for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch] {
-            let mut sender = db.sender();
-            let callback = Box::new(move |f, m| {
+            let sender = RefCell::new(db.sender());
+            let callback = move |f, m| {
                 // trace!("fabric callback {:?} {:?}", msg_type, m);
-                sender.send(WorkerMsg::Fabric(f, m));
-            });
-            db.fabric.register_msg_handler(msg_type, callback);
+                sender.borrow_mut().send(WorkerMsg::Fabric(f, m));
+            };
+            db.fabric.register_msg_handler(msg_type, Box::new(callback));
         }
 
         {
             // acquire exclusive lock to vnodes to initialize them
             let mut vnodes = db.vnodes.write().unwrap();
-            let (ready_vnodes, pending_vnodes) = db.dht.vnodes_for_node(db.dht.node());
+            let [ready_vnodes, pending_vnodes, _] = db.dht.vnodes_for_node(db.dht.node());
             // create vnodes
             // TODO: this can be done in parallel
             *vnodes = (0..db.dht.partitions() as VNodeId)
@@ -239,6 +231,8 @@ impl Database {
     }
 
     fn handler_tick(&self, time: time::Instant) {
+        self.dht.handler_tick(time);
+
         let mut incomming_syncs = 0usize;
         let vnodes = self.vnodes.read().unwrap();
         for vn in vnodes.values() {

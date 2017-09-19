@@ -1,5 +1,5 @@
 use std::num::ParseIntError;
-use std::{str, net};
+use std::net;
 use std::convert::TryInto;
 use resp::RespValue;
 use database::Database;

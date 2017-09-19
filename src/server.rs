@@ -1,4 +1,3 @@
-use std::str;
 use std::io;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -163,8 +162,6 @@ impl Server {
 
     pub fn run(self) {
         let mut core = tokio::reactor::Core::new().unwrap();
-        let listener = tokio::net::TcpListener::bind(&self.config.listen_addr, &core.handle())
-            .unwrap();
 
         let token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<_>>>> =
             Default::default();
@@ -189,6 +186,8 @@ impl Server {
 
         let mut next_token = 0;
         let handle = core.handle();
+        let listener = tokio::net::TcpListener::bind(&self.config.listen_addr, &core.handle())
+            .unwrap();
         let listener_fut = listener.incoming().for_each(|(socket, addr)| {
             if context.token_chans.lock().unwrap().len() >=
                 context.database.config.client_connection_max as usize

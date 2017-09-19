@@ -375,10 +375,6 @@ impl VersionVector {
         }
     }
 
-    pub fn dominates(&self, other: &Self) -> bool {
-        self.descends(other) && !other.descends(self)
-    }
-
     pub fn descends(&self, other: &Self) -> bool {
         other.0.iter().all(|(k, ov)| {
             self.0.get(k).map(|v| v >= ov).unwrap_or(false)

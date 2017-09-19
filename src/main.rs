@@ -41,7 +41,7 @@ extern crate env_logger;
 mod utils;
 mod types;
 mod version_vector;
-mod gossip;
+// mod gossip;
 mod inflightmap;
 mod dht;
 mod fabric_msg;
