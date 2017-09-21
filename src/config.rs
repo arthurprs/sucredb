@@ -81,9 +81,10 @@ pub struct InitCommand {
 }
 
 fn split_number_suffix(s: &str) -> Result<(i64, &str), GenericError> {
-    let digits_end = s.trim().chars().position(|c| !c.is_digit(10)).unwrap_or(
-        s.len(),
-    );
+    let digits_end = s.trim()
+        .chars()
+        .position(|c| !c.is_digit(10))
+        .unwrap_or(s.len());
     let (digits, suffix) = s.split_at(digits_end);
     Ok((digits.parse::<i64>()?, suffix.trim_left()))
 }
@@ -233,9 +234,7 @@ pub fn setup_default_logging() {
                 .appender("console")
                 .build("sucredb", log::LogLevelFilter::Info),
         )
-        .build(log4rs::config::Root::builder().build(
-            log::LogLevelFilter::Off,
-        ))
+        .build(log4rs::config::Root::builder().build(log::LogLevelFilter::Off))
         .expect("failed to setup default logging");
 
     log4rs::init_config(config).expect("failed to init logging");

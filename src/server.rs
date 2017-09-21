@@ -1,12 +1,12 @@
 use std::io;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Mutex, Arc};
+use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
 
 use database::{Database, Token};
 use workers::{WorkerMsg, WorkerSender};
-use futures::{Future, Stream, Sink};
+use futures::{Future, Sink, Stream};
 use futures::sync::mpsc as fmpsc;
 use tokio_core as tokio;
 use tokio_io::{codec, AsyncRead};
@@ -44,9 +44,8 @@ impl codec::Encoder for RespCodec {
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> io::Result<()> {
         dst.reserve(item.serialized_size());
-        item.serialize_into(&mut dst.writer()).expect(
-            "Failed to serialize into reserved space",
-        );
+        item.serialize_into(&mut dst.writer())
+            .expect("Failed to serialize into reserved space");
         Ok(())
     }
 }
@@ -90,12 +89,10 @@ impl Context {
             self.requests.push_back(req);
         } else {
             debug!("Dispatched request ({}) {:?}", self.token, req);
-            self.context.db_sender.borrow_mut().send(
-                WorkerMsg::Command(
-                    self.token,
-                    req,
-                ),
-            );
+            self.context
+                .db_sender
+                .borrow_mut()
+                .send(WorkerMsg::Command(self.token, req));
             self.inflight = true;
         }
     }
@@ -104,12 +101,10 @@ impl Context {
         assert!(self.inflight, "can't cycle if there's nothing inflight");
         if let Some(req) = self.requests.pop_front() {
             debug!("Dispatched request ({}) {:?}", self.token, req);
-            self.context.db_sender.borrow_mut().send(
-                WorkerMsg::Command(
-                    self.token,
-                    req,
-                ),
-            );
+            self.context
+                .db_sender
+                .borrow_mut()
+                .send(WorkerMsg::Command(self.token, req));
         } else {
             self.inflight = false;
         }
@@ -166,14 +161,14 @@ impl Server {
         let token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<_>>>> =
             Default::default();
         let token_chans_cloned = token_chans.clone();
-        let response_fn = Box::new(move |token, resp| if let Some(chan) =
-            token_chans_cloned.lock().unwrap().get_mut(&token)
-        {
-            if let Err(e) = chan.unbounded_send(resp) {
-                warn!("Can't send to token {} chan: {:?}", token, e);
+        let response_fn = Box::new(move |token, resp| {
+            if let Some(chan) = token_chans_cloned.lock().unwrap().get_mut(&token) {
+                if let Err(e) = chan.unbounded_send(resp) {
+                    warn!("Can't send to token {} chan: {:?}", token, e);
+                }
+            } else {
+                debug!("Can't find response channel for token {:?}", token);
             }
-        } else {
-            debug!("Can't find response channel for token {:?}", token);
         });
 
         let database = Database::new(&self.config, response_fn);
@@ -186,11 +181,11 @@ impl Server {
 
         let mut next_token = 0;
         let handle = core.handle();
-        let listener = tokio::net::TcpListener::bind(&self.config.listen_addr, &core.handle())
-            .unwrap();
+        let listener =
+            tokio::net::TcpListener::bind(&self.config.listen_addr, &core.handle()).unwrap();
         let listener_fut = listener.incoming().for_each(|(socket, addr)| {
-            if context.token_chans.lock().unwrap().len() >=
-                context.database.config.client_connection_max as usize
+            if context.token_chans.lock().unwrap().len()
+                >= context.database.config.client_connection_max as usize
             {
                 info!(
                     "Refusing connection from {:?}, connection limit reached",

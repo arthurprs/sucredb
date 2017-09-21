@@ -1,4 +1,4 @@
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 use std::collections::hash_map::Entry as HMEntry;
 use version_vector::*;
 use storage::*;
@@ -9,10 +9,10 @@ use inflightmap::InFlightMap;
 use fabric::*;
 use vnode_sync::*;
 use hash::hash_slot;
-use rand::{Rng, thread_rng};
-use byteorder::{WriteBytesExt, ReadBytesExt, BigEndian};
+use rand::{thread_rng, Rng};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use bytes::Bytes;
-use utils::{IdHashMap, IdHasherBuilder, IdHashSet};
+use utils::{IdHashMap, IdHashSet, IdHasherBuilder};
 
 const ZOMBIE_TIMEOUT_MS: u64 = 30_000;
 
@@ -275,15 +275,15 @@ impl VNode {
 
     pub fn syncs_inflight(&self) -> (usize, usize) {
         let pend = if self.state.pending_bootstrap { 1 } else { 0 };
-        self.syncs.values().fold(
-            (pend, 0),
-            |(inc, out), s| match *s {
+        self.syncs
+            .values()
+            .fold((pend, 0), |(inc, out), s| match *s {
                 Synchronization::BootstrapReceiver { .. } |
                 Synchronization::SyncReceiver { .. } => (inc + 1, out),
-                Synchronization::BootstrapSender { .. } |
-                Synchronization::SyncSender { .. } => (inc, out + 1),
-            },
-        )
+                Synchronization::BootstrapSender { .. } | Synchronization::SyncSender { .. } => {
+                    (inc, out + 1)
+                }
+            })
     }
 
     fn gen_cookie(&self) -> Cookie {
@@ -306,13 +306,13 @@ impl VNode {
                     let state = &mut self.state;
                     let canceled = self.syncs
                         .iter_mut()
-                        .filter_map(|(&cookie, m)| if let SyncDirection::Incomming =
-                            m.direction()
-                        {
-                            m.on_cancel(db, state);
-                            Some(cookie)
-                        } else {
-                            None
+                        .filter_map(|(&cookie, m)| {
+                            if let SyncDirection::Incomming = m.direction() {
+                                m.on_cancel(db, state);
+                                Some(cookie)
+                            } else {
+                                None
+                            }
                         })
                         .collect::<Vec<_>>();
                     for cookie in canceled {
@@ -369,10 +369,10 @@ impl VNode {
                 .collect::<Vec<_>>()
         };
         for (cookie, result) in terminated_syncs {
-            self.syncs.remove(&cookie).unwrap().on_remove(
-                db,
-                &mut self.state,
-            );
+            self.syncs
+                .remove(&cookie)
+                .unwrap()
+                .on_remove(db, &mut self.state);
             if self.status() == VNodeStatus::Bootstrap {
                 self.handle_bootstrap_result(db, result);
             }
@@ -387,10 +387,9 @@ impl VNode {
         if self.state.pending_bootstrap {
             // check if there's a pending bootstrap we need to start
             self.start_bootstrap(db);
-        } else if self.status() == VNodeStatus::Zombie && self.requests.is_empty() &&
-                   self.syncs.is_empty() &&
-                   self.state.last_status_change.elapsed() >
-                       Duration::from_millis(ZOMBIE_TIMEOUT_MS)
+        } else if self.status() == VNodeStatus::Zombie && self.requests.is_empty()
+            && self.syncs.is_empty()
+            && self.state.last_status_change.elapsed() > Duration::from_millis(ZOMBIE_TIMEOUT_MS)
         {
             // go absent when zombie timeout
             self.state.set_status(db, VNodeStatus::Absent);
@@ -646,10 +645,10 @@ impl VNode {
 
     // SYNC
     pub fn handler_sync_start(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
-        if !(self.state.status == VNodeStatus::Ready ||
-                 (self.state.status == VNodeStatus::Zombie &&
-                      self.state.last_status_change.elapsed() <
-                          Duration::from_millis(ZOMBIE_TIMEOUT_MS)))
+        if !(self.state.status == VNodeStatus::Ready
+            || (self.state.status == VNodeStatus::Zombie
+                && self.state.last_status_change.elapsed()
+                    < Duration::from_millis(ZOMBIE_TIMEOUT_MS)))
         {
             debug!("Can't start sync when {:?}", self.state.status);
             let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::BadVNodeStatus);
@@ -989,7 +988,9 @@ impl VNodeState {
         if !clean_shutdown {
             info!("Unclean shutdown, recovering from the storage");
             for (&node, bv) in clocks.iter_mut() {
-                logs.iter_log(node, bv.base() + 1, |dot, _| { bv.add(dot); });
+                logs.iter_log(node, bv.base() + 1, |dot, _| {
+                    bv.add(dot);
+                });
             }
         }
 
@@ -1012,10 +1013,8 @@ impl VNodeState {
         };
         debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
         let serialized_saved_state = bincode::serialize(&saved_state, bincode::Infinite).unwrap();
-        db.meta_storage.set(
-            self.num.to_string().as_bytes(),
-            &serialized_saved_state,
-        );
+        db.meta_storage
+            .set(self.num.to_string().as_bytes(), &serialized_saved_state);
     }
 
     // STORAGE

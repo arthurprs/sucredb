@@ -1,17 +1,17 @@
 use std::{io, thread};
 use std::net::SocketAddr;
 use std::time::Duration;
-use std::sync::{mpsc, Mutex, Arc};
-use std::sync::atomic::{Ordering, AtomicUsize};
+use std::sync::{mpsc, Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::hash_map::Entry as HMEntry;
 
 use linear_map::LinearMap;
 use rand::{thread_rng, Rng};
 use bytes::{BufMut, BytesMut};
-use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use bincode;
 
-use futures::{Future, Stream, Sink};
+use futures::{Future, Sink, Stream};
 use futures::future::Either;
 use futures::sync::mpsc as fmpsc;
 use futures::sync::oneshot as foneshot;
@@ -21,7 +21,7 @@ use tokio_io::codec;
 
 pub use fabric_msg::*;
 use config::Config;
-use utils::{GenericError, IdHashMap, into_io_error};
+use utils::{into_io_error, GenericError, IdHashMap};
 use database::NodeId;
 
 struct FramedBincodeCodec;
@@ -80,7 +80,12 @@ const FABRIC_RECONNECT_INTERVAL_MS: u64 = 1000;
 /// used to make better use of the socket buffers (is this a good idea though?).
 pub struct Fabric {
     context: Arc<SharedContext>,
-    loop_thread: Option<(foneshot::Sender<()>, thread::JoinHandle<Result<(), GenericError>>)>,
+    loop_thread: Option<
+        (
+            foneshot::Sender<()>,
+            thread::JoinHandle<Result<(), GenericError>>,
+        ),
+    >,
 }
 
 #[derive(Debug)]
@@ -152,9 +157,10 @@ impl SharedContext {
         );
         let mut locked = self.connections.lock().unwrap();
         if let HMEntry::Occupied(mut o) = locked.entry(peer) {
-            let p = o.get().iter().position(|x| x.0 == connection_id).expect(
-                "connection_id not found",
-            );
+            let p = o.get()
+                .iter()
+                .position(|x| x.0 == connection_id)
+                .expect("connection_id not found");
             o.get_mut().swap_remove(p);
             // cleanup entry if empty
             if o.get().is_empty() {
@@ -176,9 +182,11 @@ impl ReaderContext {
 
     fn dispatch(&self, msg: FabricMsg) {
         let msg_type = msg.get_type();
-        if let Some(handler) = self.context.msg_handlers.lock().unwrap().get_mut(
-            &(msg_type as u8),
-        )
+        if let Some(handler) = self.context
+            .msg_handlers
+            .lock()
+            .unwrap()
+            .get_mut(&(msg_type as u8))
         {
             debug!("recv from {:?} {:?}", self.peer, msg);
             handler(self.peer, msg);
@@ -207,10 +215,8 @@ impl WriterContext {
 
 impl Drop for WriterContext {
     fn drop(&mut self) {
-        self.context.remove_connection(
-            self.peer,
-            self.connection_id,
-        );
+        self.context
+            .remove_connection(self.peer, self.connection_id);
     }
 }
 
@@ -226,11 +232,7 @@ impl Fabric {
             .for_each(move |(socket, addr)| {
                 debug!("Accepting connection from {:?}", addr);
                 let context_cloned = context.clone();
-                handle.spawn(Self::handshake(socket, None, addr, context_cloned).then(
-                    |_| {
-                        Ok(())
-                    },
-                ));
+                handle.spawn(Self::handshake(socket, None, addr, context_cloned).then(|_| Ok(())));
                 Ok(())
             })
             .map_err(|_| ());
@@ -297,7 +299,12 @@ impl Fabric {
         context: Arc<SharedContext>,
     ) -> Box<
         Future<
-            Item = (tokio::net::TcpStream, NodeId, SocketAddr, Arc<SharedContext>),
+            Item = (
+                tokio::net::TcpStream,
+                NodeId,
+                SocketAddr,
+                Arc<SharedContext>,
+            ),
             Error = io::Error,
         >,
     > {
@@ -344,9 +351,7 @@ impl Fabric {
 
         let ctx_tx = WriterContext::new(context, peer, peer_addr, chan_tx);
         let fut_tx = socket_tx
-            .send_all(chan_rx.map_err(
-                |_| -> io::Error { io::ErrorKind::Other.into() },
-            ))
+            .send_all(chan_rx.map_err(|_| -> io::Error { io::ErrorKind::Other.into() }))
             .then(move |r| {
                 // hold onto ctx_tx until the stream is done
                 drop(ctx_tx);
@@ -395,11 +400,7 @@ impl Fabric {
             .spawn(move || {
                 let mut core = tokio::reactor::Core::new().unwrap();
                 let (completer_tx, completer_rx) = foneshot::channel();
-                init_tx.send(
-                    Self::init(node, config, core.handle()).map(|c| {
-                        (c, completer_tx)
-                    }),
-                )?;
+                init_tx.send(Self::init(node, config, core.handle()).map(|c| (c, completer_tx)))?;
                 core.run(completer_rx).map_err(From::from)
             })
             .unwrap();
@@ -411,10 +412,11 @@ impl Fabric {
     }
 
     pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: FabricMsgFn) {
-        self.context.msg_handlers.lock().unwrap().insert(
-            msg_type as u8,
-            handler,
-        );
+        self.context
+            .msg_handlers
+            .lock()
+            .unwrap()
+            .insert(msg_type as u8, handler);
     }
 
     pub fn register_con_handler(&self, handler: FabricConFn) {
@@ -496,25 +498,23 @@ impl Fabric {
         }
         let mut writers = self.context.connections.lock().unwrap();
         match writers.entry(node) {
-            HMEntry::Occupied(mut o) => {
-                if let Some(&mut (connection_id, ref mut chan)) =
-                    thread_rng().choose_mut(o.get_mut())
-                {
-                    debug!("send_msg node:{}, chan:{} {:?}", node, connection_id, msg);
-                    if let Err(e) = chan.unbounded_send(msg) {
-                        warn!(
-                            "Can't send to fabric {}-{} chan: {:?}",
-                            node,
-                            connection_id,
-                            e
-                        );
-                    } else {
-                        return Ok(());
-                    }
+            HMEntry::Occupied(mut o) => if let Some(&mut (connection_id, ref mut chan)) =
+                thread_rng().choose_mut(o.get_mut())
+            {
+                debug!("send_msg node:{}, chan:{} {:?}", node, connection_id, msg);
+                if let Err(e) = chan.unbounded_send(msg) {
+                    warn!(
+                        "Can't send to fabric {}-{} chan: {:?}",
+                        node,
+                        connection_id,
+                        e
+                    );
                 } else {
-                    warn!("DROPING MSG - No channel available for {:?}", node);
+                    return Ok(());
                 }
-            }
+            } else {
+                warn!("DROPING MSG - No channel available for {:?}", node);
+            },
             HMEntry::Vacant(_v) => {
                 warn!("DROPING MSG - No entry for node {:?}", node);
             }
@@ -538,10 +538,10 @@ impl Drop for Fabric {
 mod tests {
     use super::*;
     use config::Config;
-    use std::{thread, net};
+    use std::{net, thread};
     use std::time::Duration;
     use env_logger;
-    use std::sync::{Arc, atomic};
+    use std::sync::{atomic, Arc};
 
     #[test]
     fn test() {

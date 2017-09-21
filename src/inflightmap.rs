@@ -1,6 +1,6 @@
-use std::collections::{HashMap, BinaryHeap};
+use std::collections::{BinaryHeap, HashMap};
 use std::collections::hash_map::{Entry, RandomState};
-use std::hash::{Hash, BuildHasher};
+use std::hash::{BuildHasher, Hash};
 use std::cmp::Ordering;
 use std::ops::{Deref, DerefMut};
 

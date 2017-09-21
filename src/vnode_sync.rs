@@ -1,4 +1,4 @@
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 use std::collections::{hash_set, HashSet};
 use vnode::VNodeState;
 use fabric::*;
@@ -47,7 +47,7 @@ pub enum SyncDirection {
 
 type IteratorFn = Box<
     FnMut(&VNodeState)
-          -> Result<(Bytes, DottedCausalContainer<Bytes>), Result<(), ()>>
+        -> Result<(Bytes, DottedCausalContainer<Bytes>), Result<(), ()>>
         + Send,
 >;
 type InFlightSyncMsgMap = InFlightMap<
@@ -513,8 +513,7 @@ impl Synchronization {
     // only valid for Receivers right now
     pub fn on_cancel(&mut self, db: &Database, state: &mut VNodeState) {
         match *self {
-            BootstrapReceiver { .. } |
-            SyncReceiver { .. } => {
+            BootstrapReceiver { .. } | SyncReceiver { .. } => {
                 let _ = self.send_error_fin(db, state, FabricMsgError::BadVNodeStatus);
             }
             _ => unreachable!(),
@@ -535,15 +534,17 @@ impl Synchronization {
 
     pub fn on_tick(&mut self, db: &Database, state: &mut VNodeState) -> SyncResult {
         match *self {
-            SyncSender { last_recv, cookie, .. } |
-            BootstrapSender { last_recv, cookie, .. } => {
-                if last_recv.elapsed() > Duration::from_millis(db.config.sync_timeout as _) {
-                    warn!("sync/boostrap sender timed out {:?}", cookie);
-                    SyncResult::Error
-                } else {
-                    self.send_next(db, state)
-                }
-            }
+            SyncSender {
+                last_recv, cookie, ..
+            } |
+            BootstrapSender {
+                last_recv, cookie, ..
+            } => if last_recv.elapsed() > Duration::from_millis(db.config.sync_timeout as _) {
+                warn!("sync/boostrap sender timed out {:?}", cookie);
+                SyncResult::Error
+            } else {
+                self.send_next(db, state)
+            },
             SyncReceiver {
                 last_recv,
                 recv_count,
@@ -557,29 +558,24 @@ impl Synchronization {
                 last_send,
                 cookie,
                 ..
-            } => {
-                if last_recv.elapsed() > Duration::from_millis(db.config.sync_timeout as _) {
-                    warn!("sync/boostrap receiver timed out {:?}", cookie);
-                    SyncResult::Error
-                } else if recv_count == 0 &&
-                           last_send.elapsed() >
-                               Duration::from_millis(db.config.sync_msg_timeout as _)
-                {
-                    self.send_start(db, state)
-                } else {
-                    SyncResult::Continue
-                }
-            }
+            } => if last_recv.elapsed() > Duration::from_millis(db.config.sync_timeout as _) {
+                warn!("sync/boostrap receiver timed out {:?}", cookie);
+                SyncResult::Error
+            } else if recv_count == 0
+                && last_send.elapsed() > Duration::from_millis(db.config.sync_msg_timeout as _)
+            {
+                self.send_start(db, state)
+            } else {
+                SyncResult::Continue
+            },
         }
     }
 
     // called by vnode as soon as the sync is registered (after creation)
     pub fn on_start(&mut self, db: &Database, state: &mut VNodeState) {
         let _ = match *self {
-            SyncReceiver { .. } |
-            BootstrapReceiver { .. } => self.send_start(db, state),
-            SyncSender { .. } |
-            BootstrapSender { .. } => self.send_next(db, state),
+            SyncReceiver { .. } | BootstrapReceiver { .. } => self.send_start(db, state),
+            SyncSender { .. } | BootstrapSender { .. } => self.send_next(db, state),
         };
     }
 
@@ -696,10 +692,8 @@ impl Synchronization {
 
     pub fn direction(&self) -> SyncDirection {
         match *self {
-            BootstrapReceiver { .. } |
-            SyncReceiver { .. } => SyncDirection::Incomming,
-            BootstrapSender { .. } |
-            SyncSender { .. } => SyncDirection::Outgoing,
+            BootstrapReceiver { .. } | SyncReceiver { .. } => SyncDirection::Incomming,
+            BootstrapSender { .. } | SyncSender { .. } => SyncDirection::Outgoing,
         }
     }
 }

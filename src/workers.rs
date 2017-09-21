@@ -1,4 +1,4 @@
-use std::{time, thread};
+use std::{thread, time};
 use std::sync::mpsc;
 use std::boxed::FnBox;
 use fabric::FabricMsg;
@@ -49,7 +49,8 @@ impl WorkerManager {
 
     pub fn start<F>(&mut self, mut worker_fn_gen: F)
     where
-        F: FnMut() -> Box<FnBox(mpsc::Receiver<WorkerMsg>) + Send>,
+        F: FnMut()
+            -> Box<FnBox(mpsc::Receiver<WorkerMsg>) + Send>,
     {
         assert!(self.channels.is_empty());
         for i in 0..self.thread_count {

@@ -55,17 +55,15 @@ impl StorageManager {
         def_cf_opts
             .set_prefix_extractor("U16BeSuffixTransform", Box::new(U16BeSuffixTransform))
             .unwrap();
-        def_cf_opts.compression_per_level(
-            &[
-                rocksdb::DBCompressionType::No,
-                rocksdb::DBCompressionType::No,
-                rocksdb::DBCompressionType::Lz4,
-                rocksdb::DBCompressionType::Lz4,
-                rocksdb::DBCompressionType::Lz4,
-                rocksdb::DBCompressionType::Lz4,
-                rocksdb::DBCompressionType::Lz4,
-            ],
-        );
+        def_cf_opts.compression_per_level(&[
+            rocksdb::DBCompressionType::No,
+            rocksdb::DBCompressionType::No,
+            rocksdb::DBCompressionType::Lz4,
+            rocksdb::DBCompressionType::Lz4,
+            rocksdb::DBCompressionType::Lz4,
+            rocksdb::DBCompressionType::Lz4,
+            rocksdb::DBCompressionType::Lz4,
+        ]);
         def_cf_opts.set_write_buffer_size(32 * 1024 * 1024);
         def_cf_opts.set_max_bytes_for_level_base(4 * 32 * 1024 * 1024);
         def_cf_opts.set_max_write_buffer_number(4);
@@ -234,9 +232,8 @@ impl StorageIterator {
         let mut buffer = [0u8; 512];
         (&mut buffer[0..2]).write(&self.key_prefix[..]).unwrap();
         (&mut buffer[2..]).write(key).unwrap();
-        self.iterator.seek(
-            rocksdb::SeekKey::Key(&buffer[..2 + key.len()]),
-        );
+        self.iterator
+            .seek(rocksdb::SeekKey::Key(&buffer[..2 + key.len()]));
     }
 
     pub fn iter<'a>(&'a mut self) -> StorageIter<'a> {

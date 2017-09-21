@@ -5,34 +5,32 @@
 manually_drop, // keep CI happy
     try_from)]
 #![allow(dead_code)]
-#![cfg_attr(feature = "cargo-clippy", allow(
-    cast_lossless,
-))]
+#![cfg_attr(feature = "cargo-clippy", allow(cast_lossless))]
 
-#[macro_use]
-extern crate log;
-extern crate log4rs;
-extern crate rand;
-extern crate roaring;
-extern crate linear_map;
-extern crate serde;
-extern crate serde_json;
-extern crate serde_yaml;
-#[macro_use]
-extern crate serde_derive;
 extern crate bincode;
-extern crate rocksdb;
 extern crate byteorder;
+extern crate bytes;
 extern crate clap;
 extern crate crc16;
-extern crate metrics as rust_metrics;
+extern crate futures;
 #[macro_use]
 extern crate lazy_static;
-extern crate futures;
+extern crate linear_map;
+extern crate log4rs;
+#[macro_use]
+extern crate log;
+extern crate metrics as rust_metrics;
+extern crate num_cpus;
+extern crate rand;
+extern crate roaring;
+extern crate rocksdb;
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
+extern crate serde_json;
+extern crate serde_yaml;
 extern crate tokio_core;
 extern crate tokio_io;
-extern crate bytes;
-extern crate num_cpus;
 
 #[cfg(test)]
 extern crate env_logger;
@@ -61,7 +59,7 @@ mod metrics;
 
 fn configure() -> config::Config {
     use config::*;
-    use clap::{Arg, App, SubCommand};
+    use clap::{App, Arg, SubCommand};
     use std::path::Path;
 
     let matches = App::new("SucreDB")
@@ -75,8 +73,8 @@ fn configure() -> config::Config {
                 .help(".yaml config file")
                 .long_help(
                     "Path to the .yaml config file. Note that configuration \
-                    set through the command line will take precedence \
-                    over the config file.",
+                     set through the command line will take precedence \
+                     over the config file.",
                 )
                 .display_order(0),
         )
@@ -123,7 +121,7 @@ fn configure() -> config::Config {
                         .help("Number of partitions")
                         .long_help(
                             "Number of partitions, the recommended value is \
-                            `expected node count * 10` rounded up to the next power of 2.",
+                             `expected node count * 10` rounded up to the next power of 2.",
                         )
                         .default_value(DEFAULT_PARTITIONS),
                 )

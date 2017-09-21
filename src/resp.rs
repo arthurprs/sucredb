@@ -1,4 +1,4 @@
-use std::{str, fmt};
+use std::{fmt, str};
 use std::io::{self, Write};
 use std::error::Error;
 use bytes::Bytes;
@@ -37,8 +37,9 @@ impl RespValue {
             RespValue::Array(ref a) => {
                 "*4294967296\r\n".len() + a.iter().map(Self::serialized_size).sum::<usize>()
             }
-            RespValue::Status(ref v) |
-            RespValue::Error(ref v) => "+".len() + v.len() + "\r\n".len(),
+            RespValue::Status(ref v) | RespValue::Error(ref v) => {
+                "+".len() + v.len() + "\r\n".len()
+            }
         }
     }
 
@@ -297,7 +298,7 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
-    use super::{RespResult, RespError, Parser, RespValue};
+    use super::{Parser, RespError, RespResult, RespValue};
 
     fn parse(slice: &[u8]) -> RespResult<RespValue> {
         Parser::new(slice)?.parse()
@@ -338,8 +339,7 @@ mod tests {
     #[test]
     fn parser_multiple2() {
         let mut parser = Parser::new(
-            b"*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n"
-                .as_ref(),
+            b"*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n*2\r\n$3\r\nfoo\r\n$4\r\nbarz\r\n".as_ref(),
         ).unwrap();
         for _ in 0..2 {
             let r = parser.parse();

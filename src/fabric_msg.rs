@@ -44,8 +44,7 @@ impl FabricMsg {
             FabricMsg::SyncSend(..) |
             FabricMsg::SyncAck(..) |
             FabricMsg::SyncFin(..) => FabricMsgType::Synch,
-            FabricMsg::DHTSync(..) |
-            FabricMsg::DHTSyncReq(..) => FabricMsgType::DHT,
+            FabricMsg::DHTSync(..) | FabricMsg::DHTSyncReq(..) => FabricMsgType::DHT,
             _ => unreachable!(),
         }
     }

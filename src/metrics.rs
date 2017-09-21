@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use rust_metrics::metrics::{StdMeter, StdGauge};
+use rust_metrics::metrics::{StdGauge, StdMeter};
 pub use rust_metrics::metrics::{Counter, Gauge, Meter, Metric};
 
 // TODO: Expose these metrics

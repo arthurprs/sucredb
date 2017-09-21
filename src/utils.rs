@@ -1,6 +1,6 @@
-use std::hash::{Hasher, BuildHasherDefault};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::collections::{HashMap, HashSet};
-use std::{io, path, fs};
+use std::{fs, io, path};
 use std::error::Error;
 
 pub type GenericError = Box<Error + Send + Sync + 'static>;
@@ -25,7 +25,6 @@ impl Hasher for IdHasher {
 
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-
         #[inline]
         fn mix(mut x: u64) -> u64 {
             // Seahash diffuse method

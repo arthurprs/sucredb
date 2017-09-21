@@ -1,4 +1,4 @@
-use std::{time, net};
+use std::{net, time};
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex, RwLock};
 use dht::{self, DHT};
@@ -7,9 +7,9 @@ use fabric::*;
 use vnode::*;
 use workers::*;
 use resp::RespValue;
-use storage::{StorageManager, Storage};
+use storage::{Storage, StorageManager};
 use rand::{thread_rng, Rng};
-use utils::{IdHashMap, split_u64, join_u64, assume_str, is_dir_empty_or_absent};
+use utils::{assume_str, is_dir_empty_or_absent, IdHashMap, join_u64, split_u64};
 pub use types::*;
 use config::Config;
 use metrics::{self, Gauge};
@@ -68,8 +68,8 @@ macro_rules! vnode {
 
 impl Database {
     pub fn new(config: &Config, response_fn: DatabaseResponseFn) -> Arc<Database> {
-        if config.cmd_init.is_some() &&
-            !is_dir_empty_or_absent(&config.data_dir).expect("failed to open data dir")
+        if config.cmd_init.is_some()
+            && !is_dir_empty_or_absent(&config.data_dir).expect("failed to open data dir")
         {
             panic!("can't init cluster when data directory isn't clean");
         }
@@ -165,7 +165,9 @@ impl Database {
         });
 
         let sender = RefCell::new(db.sender());
-        let callback = move || { sender.borrow_mut().send(WorkerMsg::DHTChange); };
+        let callback = move || {
+            sender.borrow_mut().send(WorkerMsg::DHTChange);
+        };
         db.dht.set_callback(Box::new(callback));
 
         // register nodes into fabric
@@ -222,9 +224,9 @@ impl Database {
         self.fabric.set_nodes(self.dht.members().into_iter());
 
         for (&i, vn) in self.vnodes.read().unwrap().iter() {
-            let final_status = if self.dht.nodes_for_vnode(i, true, true).contains(
-                &self.dht.node(),
-            )
+            let final_status = if self.dht
+                .nodes_for_vnode(i, true, true)
+                .contains(&self.dht.node())
             {
                 VNodeStatus::Ready
             } else {
@@ -317,24 +319,20 @@ impl Database {
     pub fn signal_sync_start(&self, direction: SyncDirection) -> bool {
         let mut stats = self.stats.lock().unwrap();
         match direction {
-            SyncDirection::Incomming => {
-                if stats.incomming_syncs < self.config.sync_incomming_max {
-                    stats.incomming_syncs += 1;
-                    metrics::SYNC_INCOMING.inc();
-                    true
-                } else {
-                    false
-                }
-            }
-            SyncDirection::Outgoing => {
-                if stats.outgoing_syncs < self.config.sync_outgoing_max {
-                    stats.outgoing_syncs += 1;
-                    metrics::SYNC_OUTGOING.inc();
-                    true
-                } else {
-                    false
-                }
-            }
+            SyncDirection::Incomming => if stats.incomming_syncs < self.config.sync_incomming_max {
+                stats.incomming_syncs += 1;
+                metrics::SYNC_INCOMING.inc();
+                true
+            } else {
+                false
+            },
+            SyncDirection::Outgoing => if stats.outgoing_syncs < self.config.sync_outgoing_max {
+                stats.outgoing_syncs += 1;
+                metrics::SYNC_OUTGOING.inc();
+                true
+            } else {
+                false
+            },
         }
     }
 
@@ -386,8 +384,8 @@ impl Drop for Database {
 
 #[cfg(test)]
 mod tests {
-    use std::{thread, net, fs, ops};
-    use std::sync::{Mutex, Arc};
+    use std::{fs, net, ops, thread};
+    use std::sync::{Arc, Mutex};
     use std::collections::HashMap;
     use super::*;
     use version_vector::VersionVector;
@@ -842,7 +840,6 @@ mod tests {
             db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
             assert_eq!(db1.resp_response(0), RespValue::Error("Unavailable".into()));
         }
-
     }
 
 }

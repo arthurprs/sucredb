@@ -1,12 +1,12 @@
 use std::{fmt, thread};
 use std::net::SocketAddr;
 use std::cmp::min;
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry as HMEntry;
 
-use linear_map::{LinearMap, Entry as LMEntry};
+use linear_map::{Entry as LMEntry, LinearMap};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use bincode;
@@ -16,7 +16,7 @@ use hash::{hash_slot, HASH_SLOTS};
 use database::{NodeId, VNodeId};
 use version_vector::VersionVector;
 use fabric::{Fabric, FabricMsg, FabricMsgType};
-use utils::{IdHashMap, IdHashSet, GenericError};
+use utils::{GenericError, IdHashMap, IdHashSet};
 
 pub type DHTChangeFn = Box<Fn() + Send>;
 pub trait Metadata
@@ -202,9 +202,7 @@ impl<T: Metadata> Ring<T> {
                 vn.version.event(this);
             }
         } else {
-            return Err(
-                format!("{} is not part of vnodes[{}]", promoted, vn_no).into(),
-            );
+            return Err(format!("{} is not part of vnodes[{}]", promoted, vn_no).into());
         }
         Ok(())
     }
@@ -274,8 +272,7 @@ impl<T: Metadata> Ring<T> {
                 ).into(),
             );
         }
-        if self.vnodes.len() != other.vnodes.len() && !self.vnodes.is_empty()
-        {
+        if self.vnodes.len() != other.vnodes.len() && !self.vnodes.is_empty() {
             return Err(
                 format!(
                     "Incompatible partition count {:?} != {:?}",
@@ -417,8 +414,7 @@ impl<T: Metadata> Ring<T> {
         }
 
         // partitions per node
-        let vnpn = ((self.vnodes.len() * self.replication_factor) as f64 /
-                        node_map.len() as f64)
+        let vnpn = ((self.vnodes.len() * self.replication_factor) as f64 / node_map.len() as f64)
             .ceil() as usize;
 
         // 1. robin-hood
@@ -449,11 +445,10 @@ impl<T: Metadata> Ring<T> {
             let replicas = vn.owners.values().filter(|&&s| s != Retiring).count();
             for _ in replicas..self.replication_factor {
                 // try to find a candidate that is doing less work
-                if let Some((&node, vns)) =
-                    node_map
-                        .iter_mut()
-                        .filter(|&(n, _)| !vn.owners.contains_key(n))
-                        .min_by_key(|&(_, ref p)| p.len())
+                if let Some((&node, vns)) = node_map
+                    .iter_mut()
+                    .filter(|&(n, _)| !vn.owners.contains_key(n))
+                    .min_by_key(|&(_, ref p)| p.len())
                 {
                     println!("lw ({}) {}", vn_no, node);
                     assert!(vns.insert(vn_no));
@@ -508,8 +503,7 @@ impl<T: Metadata> Ring<T> {
     fn is_valid(&self) -> Result<(), GenericError> {
         let valid_nodes_count = self.valid_nodes_count();
         let desired_replicas = min(valid_nodes_count, self.replication_factor);
-        let vnpn = ((self.vnodes.len() * self.replication_factor) as f64 /
-                        valid_nodes_count as f64)
+        let vnpn = ((self.vnodes.len() * self.replication_factor) as f64 / valid_nodes_count as f64)
             .ceil() as usize;
         let vnpn_rest = self.vnodes.len() * self.replication_factor % valid_nodes_count;
         let mut node_map = IdHashMap::default();
@@ -694,26 +688,20 @@ impl<T: Metadata> DHT<T> {
 
     fn on_message(inner: &mut Inner<T>, from: NodeId, msg: FabricMsg) {
         match msg {
-            FabricMsg::DHTSyncReq(version) => {
-                if inner.ring.vnodes.is_empty() {
-                    error!("Can't reply DHTSyncReq while starting up");
-                } else if inner.ring.version != version {
-                    let _ = inner.fabric.send_msg(
-                        from,
-                        FabricMsg::DHTSync(
-                            Self::serialize(&inner.ring).unwrap().into(),
-                        ),
-                    );
-                }
-            }
+            FabricMsg::DHTSyncReq(version) => if inner.ring.vnodes.is_empty() {
+                error!("Can't reply DHTSyncReq while starting up");
+            } else if inner.ring.version != version {
+                let _ = inner.fabric.send_msg(
+                    from,
+                    FabricMsg::DHTSync(Self::serialize(&inner.ring).unwrap().into()),
+                );
+            },
             FabricMsg::DHTSync(bytes) => {
                 let sync_res = Self::deserialize(&bytes).and_then(|new| inner.ring.merge(new));
                 match sync_res {
-                    Ok(true) => {
-                        if let Some(callback) = inner.callback.as_ref() {
-                            callback();
-                        }
-                    }
+                    Ok(true) => if let Some(callback) = inner.callback.as_ref() {
+                        callback();
+                    },
                     Ok(false) => (),
                     Err(e) => error!("Failed to process DHTSync {:?}", e),
                 };
@@ -728,10 +716,9 @@ impl<T: Metadata> DHT<T> {
             if node == inner.node {
                 continue;
             }
-            let _ = inner.fabric.send_msg(
-                node,
-                FabricMsg::DHTSync(serialized_ring.clone()),
-            );
+            let _ = inner
+                .fabric
+                .send_msg(node, FabricMsg::DHTSync(serialized_ring.clone()));
         }
         if let Some(callback) = inner.callback.as_ref() {
             callback();
@@ -743,12 +730,9 @@ impl<T: Metadata> DHT<T> {
             if node == inner.node {
                 continue;
             }
-            let _ = inner.fabric.send_msg(
-                node,
-                FabricMsg::DHTSyncReq(
-                    inner.ring.version.clone(),
-                ),
-            );
+            let _ = inner
+                .fabric
+                .send_msg(node, FabricMsg::DHTSyncReq(inner.ring.version.clone()));
         }
     }
 
@@ -965,7 +949,7 @@ mod tests {
     use super::*;
     use std::net;
     use config;
-    use rand::{self, Rng, thread_rng};
+    use rand::{self, thread_rng, Rng};
     use env_logger;
     //
     // #[test]
