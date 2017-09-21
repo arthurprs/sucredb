@@ -99,6 +99,7 @@ impl WorkerSender {
         let _ = self.try_send(msg);
     }
     pub fn try_send(&mut self, msg: WorkerMsg) -> Result<(), mpsc::SendError<WorkerMsg>> {
+        debug!("try_send {:?}", msg);
         let i = self.cursor;
         self.cursor = self.cursor.wrapping_add(1);
         self.channels[i % self.channels.len()].send(msg)

@@ -857,6 +857,7 @@ impl VNode {
 
 impl Drop for VNode {
     fn drop(&mut self) {
+        info!("droping vnode {:?}", self.state.num);
         // clean up any references to the storage
         self.requests.clear();
         self.syncs.clear();

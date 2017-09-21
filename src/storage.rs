@@ -1,5 +1,4 @@
 use std::{mem, str};
-use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::io::Write;
 use std::sync::Arc;
@@ -113,7 +112,7 @@ impl StorageManager {
     pub fn open(&self, db_num: u16) -> Result<Storage, GenericError> {
         Ok(Storage {
             db: self.db.clone(),
-            cf: unsafe { mem::transmute(self.db.cf_handle("default")) },
+            cf: unsafe { mem::transmute(self.db.cf_handle("default").unwrap()) },
             num: db_num,
             iterators_handle: Arc::new(()),
         })
@@ -122,7 +121,7 @@ impl StorageManager {
     pub fn open_log(&self, db_num: u16) -> Result<Storage, GenericError> {
         Ok(Storage {
             db: self.db.clone(),
-            cf: unsafe { mem::transmute(self.db.cf_handle("log")) },
+            cf: unsafe { mem::transmute(self.db.cf_handle("log").unwrap()) },
             num: db_num,
             iterators_handle: Arc::new(()),
         })
@@ -164,11 +163,11 @@ impl Storage {
             .write_u16::<BigEndian>(self.num)
             .unwrap();
         unsafe {
-            let mut iterator = ManuallyDrop::new(Box::new(self.db.iter_cf(self.cf)));
+            let mut iterator = Box::new(self.db.iter_cf(self.cf));
             iterator.seek(rocksdb::SeekKey::Key(&key_prefix[..]));
             let result = StorageIterator {
                 db: self.db.clone(),
-                iterator: mem::transmute_copy(&iterator),
+                iterator: mem::transmute(iterator),
                 iterators_handle: self.iterators_handle.clone(),
                 key_prefix: key_prefix,
                 first: true,
@@ -217,7 +216,7 @@ impl Storage {
         let sc = Arc::strong_count(&self.iterators_handle);
         let wc = Arc::weak_count(&self.iterators_handle);
         assert!(wc == 0);
-        assert!(sc == 1, "{} pending databases", sc - 1);
+        assert!(sc == 1, "{} pending iterators", sc - 1);
     }
 }
 

@@ -656,16 +656,16 @@ impl<T: Metadata> DHT<T> {
         }));
 
         // TODO: move this to Database
-        // let w_inner1 = Arc::downgrade(&inner);
-        // let w_inner2 = Arc::downgrade(&inner);
-        // let msg_cb = move |from, msg| if let Some(inner) = w_inner1.upgrade() {
-        //     Self::on_message(&mut *inner.lock().unwrap(), from, msg);
-        // };
-        // let con_cb = move |peer| if let Some(inner) = w_inner2.upgrade() {
-        //     Self::on_connection(&mut *inner.lock().unwrap(), peer);
-        // };
-        // fabric.register_msg_handler(FabricMsgType::DHT, Box::new(msg_cb));
-        // fabric.register_con_handler(Box::new(con_cb));
+        let w_inner1 = Arc::downgrade(&inner);
+        let w_inner2 = Arc::downgrade(&inner);
+        let msg_cb = move |from, msg| if let Some(inner) = w_inner1.upgrade() {
+            Self::on_message(&mut *inner.lock().unwrap(), from, msg);
+        };
+        let con_cb = move |peer| if let Some(inner) = w_inner2.upgrade() {
+            Self::on_connection(&mut *inner.lock().unwrap(), peer);
+        };
+        fabric.register_msg_handler(FabricMsgType::DHT, Box::new(msg_cb));
+        fabric.register_con_handler(Box::new(con_cb));
 
         DHT {
             node: fabric.node(),
