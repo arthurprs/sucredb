@@ -785,9 +785,9 @@ impl VNode {
         self.state.pending_bootstrap = false;
         let cookie = self.gen_cookie();
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
-        if nodes.is_empty() || nodes[0] == db.dht.node() {
+        if nodes.is_empty() || nodes == &[db.dht.node()] {
             // nothing to boostrap from
-            self.state.set_status(db, VNodeStatus::Ready);
+            self.handle_bootstrap_result(db, SyncResult::Done);
             return;
         }
 

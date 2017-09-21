@@ -1,6 +1,7 @@
-use std::{fmt, thread, net};
+use std::{fmt, thread};
+use std::net::SocketAddr;
 use std::cmp::min;
-use std::time::Duration;
+use std::time::{Instant, Duration};
 use std::sync::{Arc, Mutex};
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry as HMEntry;
@@ -19,10 +20,15 @@ use utils::{IdHashMap, IdHashSet, GenericError};
 
 pub type DHTChangeFn = Box<Fn() + Send>;
 pub trait Metadata
-    : Clone + Serialize + DeserializeOwned + Send + fmt::Debug + 'static {
+    : Clone + PartialEq + Serialize + DeserializeOwned + Send + fmt::Debug + 'static
+    {
 }
 
-impl<T: Clone + Serialize + DeserializeOwned + Send + fmt::Debug + 'static> Metadata for T {}
+impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Send + fmt::Debug + 'static> Metadata
+    for T {
+}
+
+const BROADCAST_REQ_INTERVAL_MS: u64 = 30000;
 
 /// The Cluster controller, it knows how to map keys to their vnodes and
 /// whose nodes hold data for each vnodes.
@@ -32,7 +38,6 @@ impl<T: Clone + Serialize + DeserializeOwned + Send + fmt::Debug + 'static> Meta
 /// Extra (static) information is attached to NodeId through a Metadata type.
 pub struct DHT<T: Metadata> {
     node: NodeId,
-    addr: net::SocketAddr,
     slots_per_partition: u16,
     partitions: usize,
     replication_factor: usize,
@@ -41,11 +46,11 @@ pub struct DHT<T: Metadata> {
 }
 
 struct Inner<T: Metadata> {
+    node: NodeId,
     ring: Ring<T>,
-    ring_version: u64,
-    cluster: String,
     callback: Option<DHTChangeFn>,
     fabric: Arc<Fabric>,
+    next_req_broadcast: Instant,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
@@ -69,7 +74,7 @@ use self::VNodeNodeStatus::*;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(bound = "T: DeserializeOwned")]
 struct Node<T: Metadata> {
-    addr: net::SocketAddr,
+    addr: SocketAddr,
     status: NodeStatus,
     meta: T,
     version: VersionVector,
@@ -90,6 +95,7 @@ pub struct Ring<T: Metadata> {
     nodes: IdHashMap<NodeId, Node<T>>,
     replication_factor: usize,
     version: VersionVector,
+    cluster: String,
 }
 
 pub struct RingDescription {
@@ -107,12 +113,13 @@ impl RingDescription {
 }
 
 impl<T: Metadata> Ring<T> {
-    fn new(partitions: u16, replication_factor: u8) -> Self {
+    fn new(cluster: &str, partitions: u16, replication_factor: u8) -> Self {
         Ring {
             version: Default::default(),
             replication_factor: replication_factor as usize,
             vnodes: vec![Default::default(); partitions as usize],
             nodes: Default::default(),
+            cluster: cluster.into(),
         }
     }
 
@@ -142,7 +149,7 @@ impl<T: Metadata> Ring<T> {
         &mut self,
         this: NodeId,
         node: NodeId,
-        addr: net::SocketAddr,
+        addr: SocketAddr,
         meta: T,
     ) -> Result<(), GenericError> {
         self.version.event(this);
@@ -207,7 +214,7 @@ impl<T: Metadata> Ring<T> {
         this: NodeId,
         old: NodeId,
         new: NodeId,
-        addr: net::SocketAddr,
+        addr: SocketAddr,
         meta: T,
     ) -> Result<(), GenericError> {
         self.version.event(this);
@@ -241,15 +248,44 @@ impl<T: Metadata> Ring<T> {
         Ok(())
     }
 
+    fn set_meta(&mut self, this: NodeId, node: NodeId, meta: T) -> Result<(), GenericError> {
+        if let Some(node) = self.nodes.get_mut(&node) {
+            if node.meta != meta {
+                node.meta = meta;
+                node.version.event(this);
+            } else {
+                return Ok(());
+            }
+        } else {
+            return Err(format!("Node {} not found in ring nodes", node).into());
+        }
+        self.version.event(this);
+        Ok(())
+    }
+
     fn merge(&mut self, mut other: Self) -> Result<bool, GenericError> {
         // sanity checks
-        // if self.cluster != other.cluster {
-        //     return Err("Cluster name differs".into());
-        // }
-        if self.vnodes.len() != self.vnodes.len() && !self.vnodes.is_empty() &&
-            !self.vnodes.is_empty()
+        if self.cluster != other.cluster {
+            return Err(
+                format!(
+                    "Cluster name differs {:?} != {:?}",
+                    self.cluster,
+                    other.cluster
+                ).into(),
+            );
+        }
+        if self.vnodes.len() != other.vnodes.len() && !self.vnodes.is_empty()
         {
-            return Err("Incompatible partiton count".into());
+            return Err(
+                format!(
+                    "Incompatible partition count {:?} != {:?}",
+                    self.vnodes.len(),
+                    other.vnodes.len()
+                ).into(),
+            );
+        }
+        if other.vnodes.is_empty() {
+            return Err("other ring isn't valid".into());
         }
 
         if self.version.descends(&other.version) {
@@ -281,9 +317,7 @@ impl<T: Metadata> Ring<T> {
                     node.version.merge(&other_node.version);
 
                     match (other_node.status, other_node.status) {
-                        (Valid, Valid) => {
-                            // FIXME: what meta, addr?
-                        }
+                        (Valid, Valid) => (),
                         (Leaving, _) | (_, Leaving) => {
                             node.status = Leaving;
                         }
@@ -324,9 +358,7 @@ impl<T: Metadata> Ring<T> {
                                 (Pending, _) | (_, Pending) => {
                                     *status = Pending;
                                 }
-                                (Retiring, Retiring) => {
-                                    *status = Retiring;
-                                }
+                                (Retiring, Retiring) => (),
                             }
                         }
                     }
@@ -533,15 +565,20 @@ impl<T: Metadata> Ring<T> {
 }
 
 impl<T: Metadata> DHT<T> {
-    pub fn init(fabric: Arc<Fabric>, cluster: &str, meta: T, ring: RingDescription) -> DHT<T> {
+    pub fn init(
+        fabric: Arc<Fabric>,
+        cluster: &str,
+        meta: T,
+        ring: RingDescription,
+    ) -> Result<DHT<T>, GenericError> {
         let mut dht = Self::new(fabric, cluster);
-        dht.reset(meta, ring.partitions, ring.replication_factor)
+        dht.reset(cluster, meta, ring.partitions, ring.replication_factor)
             .unwrap();
 
         dht.partitions = ring.partitions as usize;
         dht.replication_factor = ring.replication_factor as usize;
         dht.slots_per_partition = HASH_SLOTS / dht.partitions as u16;
-        dht
+        Ok(dht)
     }
 
     pub fn restore(
@@ -550,12 +587,12 @@ impl<T: Metadata> DHT<T> {
         meta: T,
         mut ring: Ring<T>,
         old_node: Option<NodeId>,
-    ) -> DHT<T> {
+    ) -> Result<DHT<T>, GenericError> {
         if let Some(old_node) = old_node {
             ring.replace(fabric.node(), old_node, fabric.node(), fabric.addr(), meta)
                 .unwrap();
         } else {
-
+            ring.set_meta(fabric.node(), fabric.node(), meta).unwrap();
         }
         ring.is_valid().unwrap();
 
@@ -564,21 +601,21 @@ impl<T: Metadata> DHT<T> {
         dht.replication_factor = ring.replication_factor;
         dht.slots_per_partition = HASH_SLOTS / dht.partitions as u16;
         dht.inner.lock().unwrap().ring = ring;
-        dht
+        Ok(dht)
     }
 
     pub fn join_cluster(
         fabric: Arc<Fabric>,
         cluster: &str,
         meta: T,
-        seeds: &[net::SocketAddr],
+        seeds: &[SocketAddr],
     ) -> Result<DHT<T>, GenericError> {
         let dht = Self::new(fabric.clone(), cluster);
         dht.inner
             .lock()
             .unwrap()
             .ring
-            .join_node(dht.node, dht.node, dht.addr, meta)
+            .join_node(fabric.node(), fabric.node(), fabric.addr(), meta)
             .unwrap();
 
         info!("registering seeds {:?}", seeds);
@@ -588,22 +625,22 @@ impl<T: Metadata> DHT<T> {
 
         info!("connecting to seeds");
         let mut connections = Vec::new();
-        for _ in 0..5 {
-            thread::sleep(Duration::from_millis(1000));
+        for _ in 0..10 {
+            thread::sleep(Duration::from_millis(500));
             connections = fabric.connections();
-            if connections.len() >= seeds.len() {
+            if connections.len() >= seeds.len() / 2 + 1 {
                 break;
             }
         }
         if connections.is_empty() {
-            return Err(format!("Cannot contact seed nodes").into());
+            return Err("Cannot contact seed nodes".into());
         }
         info!("requesting ring from seeds");
         for node in connections {
             let _ = fabric.send_msg(node, FabricMsg::DHTSyncReq(Default::default()));
         }
-        for _ in 0..3 {
-            thread::sleep(Duration::from_millis(1000));
+        for _ in 0..10 {
+            thread::sleep(Duration::from_millis(500));
             if dht.partitions() != 0 {
                 break;
             }
@@ -611,34 +648,33 @@ impl<T: Metadata> DHT<T> {
         if dht.partitions() != 0 {
             Ok(dht)
         } else {
-            Err(format!("Didn't receive seed ring").into())
+            Err("Didn't receive seed ring".into())
         }
     }
 
-    pub fn new(fabric: Arc<Fabric>, cluster: &str) -> DHT<T> {
+    fn new(fabric: Arc<Fabric>, cluster: &str) -> DHT<T> {
         let inner = Arc::new(Mutex::new(Inner {
-            ring: Ring::new(0, 0),
-            ring_version: 0,
-            cluster: cluster.into(),
+            node: fabric.node(),
+            ring: Ring::new(cluster, 0, 0),
             callback: None,
             fabric: fabric.clone(),
+            next_req_broadcast: Instant::now(),
         }));
 
-        // TODO: move this to Datbase
-        let w_inner1 = Arc::downgrade(&inner);
-        let w_inner2 = Arc::downgrade(&inner);
-        let msg_cb = move |from, msg| if let Some(inner) = w_inner1.upgrade() {
-            Self::on_message(&mut *inner.lock().unwrap(), from, msg);
-        };
-        let con_cb = move |peer| if let Some(inner) = w_inner2.upgrade() {
-            Self::on_connection(&mut *inner.lock().unwrap(), peer);
-        };
-        fabric.register_msg_handler(FabricMsgType::DHT, Box::new(msg_cb));
-        fabric.register_con_handler(Box::new(con_cb));
+        // TODO: move this to Database
+        // let w_inner1 = Arc::downgrade(&inner);
+        // let w_inner2 = Arc::downgrade(&inner);
+        // let msg_cb = move |from, msg| if let Some(inner) = w_inner1.upgrade() {
+        //     Self::on_message(&mut *inner.lock().unwrap(), from, msg);
+        // };
+        // let con_cb = move |peer| if let Some(inner) = w_inner2.upgrade() {
+        //     Self::on_connection(&mut *inner.lock().unwrap(), peer);
+        // };
+        // fabric.register_msg_handler(FabricMsgType::DHT, Box::new(msg_cb));
+        // fabric.register_con_handler(Box::new(con_cb));
 
         DHT {
             node: fabric.node(),
-            addr: fabric.addr(),
             cluster: cluster.into(),
             inner: inner,
             slots_per_partition: 0,
@@ -651,9 +687,7 @@ impl<T: Metadata> DHT<T> {
         if !inner.ring.vnodes.is_empty() {
             let _ = inner.fabric.send_msg(
                 from,
-                FabricMsg::DHTSync(
-                    Self::serialize(&inner.ring).unwrap().into(),
-                ),
+                FabricMsg::DHTSync(Self::serialize(&inner.ring).unwrap().into()),
             );
         }
     }
@@ -691,14 +725,40 @@ impl<T: Metadata> DHT<T> {
     fn broadcast(inner: &mut Inner<T>) {
         let serialized_ring: Bytes = Self::serialize(&inner.ring).unwrap().into();
         for &node in inner.ring.nodes.keys() {
-            let _ = inner.fabric.send_msg(node, FabricMsg::DHTSync(serialized_ring.clone()));
+            if node == inner.node {
+                continue;
+            }
+            let _ = inner.fabric.send_msg(
+                node,
+                FabricMsg::DHTSync(serialized_ring.clone()),
+            );
         }
         if let Some(callback) = inner.callback.as_ref() {
             callback();
         }
     }
 
-    fn reset(&self, meta: T, partitions: u16, replication_factor: u8) -> Result<(), GenericError> {
+    fn broadcast_req(inner: &mut Inner<T>) {
+        for &node in inner.ring.nodes.keys() {
+            if node == inner.node {
+                continue;
+            }
+            let _ = inner.fabric.send_msg(
+                node,
+                FabricMsg::DHTSyncReq(
+                    inner.ring.version.clone(),
+                ),
+            );
+        }
+    }
+
+    fn reset(
+        &self,
+        cluster: &str,
+        meta: T,
+        partitions: u16,
+        replication_factor: u8,
+    ) -> Result<(), GenericError> {
         assert!(
             partitions.is_power_of_two(),
             "Partition count must be a power of 2"
@@ -709,12 +769,22 @@ impl<T: Metadata> DHT<T> {
         assert!(replication_factor <= 6, "Replication factor must be <= 6");
 
         let mut inner = self.inner.lock().unwrap();
-        inner.ring = Ring::new(partitions, replication_factor);
+        let addr = inner.fabric.addr();
+        inner.ring = Ring::new(cluster, partitions, replication_factor);
         inner
             .ring
-            .join_node(self.node, self.node, self.addr, meta)
+            .join_node(self.node, self.node, addr, meta)
             .unwrap();
+        inner.ring.rebalance(self.node).unwrap();
         Ok(())
+    }
+
+    pub fn handler_tick(&self, time: Instant) {
+        let mut inner = self.inner.lock().unwrap();
+        if time >= inner.next_req_broadcast {
+            inner.next_req_broadcast += Duration::from_millis(BROADCAST_REQ_INTERVAL_MS);
+            Self::broadcast_req(&mut *inner);
+        }
     }
 
     pub fn set_callback(&self, callback: DHTChangeFn) {
@@ -780,7 +850,7 @@ impl<T: Metadata> DHT<T> {
         vn_no: VNodeId,
         include_pending: bool,
         include_retiring: bool,
-    ) -> Vec<(NodeId, (net::SocketAddr, T))> {
+    ) -> Vec<(NodeId, (SocketAddr, T))> {
         // FIXME: this shouldn't alloc
         let mut result = Vec::with_capacity(self.replication_factor + 1);
         let inner = self.inner.lock().unwrap();
@@ -797,7 +867,7 @@ impl<T: Metadata> DHT<T> {
         result
     }
 
-    pub fn members(&self) -> IdHashMap<NodeId, net::SocketAddr> {
+    pub fn members(&self) -> IdHashMap<NodeId, SocketAddr> {
         let inner = self.inner.lock().unwrap();
         inner
             .ring
@@ -807,7 +877,7 @@ impl<T: Metadata> DHT<T> {
             .collect()
     }
 
-    pub fn slots(&self) -> BTreeMap<(u16, u16), Vec<(NodeId, (net::SocketAddr, T))>> {
+    pub fn slots(&self) -> BTreeMap<(u16, u16), Vec<(NodeId, (SocketAddr, T))>> {
         let slots_per_partition = HASH_SLOTS / self.partitions() as u16;
         let mut result = BTreeMap::new();
         let inner = self.inner.lock().unwrap();
@@ -925,7 +995,7 @@ mod tests {
         let addr = "0.0.0.0:0".parse().unwrap();
         for i in 0..1_000 {
             let partitions = 32;
-            let mut ring = Ring::new(partitions as u16, 1 + thread_rng().gen::<u8>() % 4);
+            let mut ring = Ring::new("", partitions as u16, 1 + thread_rng().gen::<u8>() % 4);
             for i in 0..1 + thread_rng().gen::<u64>() % partitions as u64 {
                 ring.join_node(i, i, addr, ()).unwrap();
             }
@@ -948,7 +1018,7 @@ mod tests {
         let addr = "0.0.0.0:0".parse().unwrap();
         for i in 0..1_000 {
             let partitions = 32;
-            let mut ring = Ring::new(partitions as u16, 1 + thread_rng().gen::<u8>() % 4);
+            let mut ring = Ring::new("", partitions as u16, 1 + thread_rng().gen::<u8>() % 4);
             for i in 0..1 + thread_rng().gen::<u64>() % partitions as u64 {
                 ring.join_node(i, i, addr, ()).unwrap();
             }

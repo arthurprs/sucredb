@@ -40,6 +40,7 @@ pub struct Config {
     pub request_timeout: u32,
     pub client_connection_max: u32,
     pub value_version_max: u16,
+    pub seed_nodes: Vec<SocketAddr>,
     // TODO: these should be in the cluster config instead
     pub consistency_read: ConsistencyLevel,
     pub consistency_write: ConsistencyLevel,
@@ -66,6 +67,7 @@ impl Default for Config {
             request_timeout: 1000,
             client_connection_max: 100,
             value_version_max: 100,
+            seed_nodes: Vec::new(),
             consistency_read: ConsistencyLevel::One,
             consistency_write: ConsistencyLevel::One,
         }

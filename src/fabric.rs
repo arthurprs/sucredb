@@ -124,7 +124,11 @@ impl SharedContext {
 
     fn register_connection(&self, peer: NodeId, sender: SenderChan) -> usize {
         let connection_id = self.connection_gen.fetch_add(1, Ordering::Relaxed);
-        debug!("register_connectionpeer: {}, connection_id: {:?}", peer, connection_id);
+        debug!(
+            "register_connectionpeer: {}, connection_id: {:?}",
+            peer,
+            connection_id
+        );
         let is_new = {
             let mut locked = self.connections.lock().unwrap();
             let entry = locked.entry(peer).or_insert_with(Default::default);
@@ -141,7 +145,11 @@ impl SharedContext {
     }
 
     fn remove_connection(&self, peer: NodeId, connection_id: usize) {
-        debug!("remove_connectionpeer: {}, connection_id: {:?}", peer, connection_id);
+        debug!(
+            "remove_connectionpeer: {}, connection_id: {:?}",
+            peer,
+            connection_id
+        );
         let mut locked = self.connections.lock().unwrap();
         if let HMEntry::Occupied(mut o) = locked.entry(peer) {
             let p = o.get().iter().position(|x| x.0 == connection_id).expect(
@@ -199,7 +207,10 @@ impl WriterContext {
 
 impl Drop for WriterContext {
     fn drop(&mut self) {
-        self.context.remove_connection(self.peer, self.connection_id);
+        self.context.remove_connection(
+            self.peer,
+            self.connection_id,
+        );
     }
 }
 
@@ -486,10 +497,17 @@ impl Fabric {
         let mut writers = self.context.connections.lock().unwrap();
         match writers.entry(node) {
             HMEntry::Occupied(mut o) => {
-                if let Some(&mut (connection_id, ref mut chan)) = thread_rng().choose_mut(o.get_mut()) {
+                if let Some(&mut (connection_id, ref mut chan)) =
+                    thread_rng().choose_mut(o.get_mut())
+                {
                     debug!("send_msg node:{}, chan:{} {:?}", node, connection_id, msg);
                     if let Err(e) = chan.unbounded_send(msg) {
-                        warn!("Can't send to fabric {}-{} chan: {:?}", node, connection_id, e);
+                        warn!(
+                            "Can't send to fabric {}-{} chan: {:?}",
+                            node,
+                            connection_id,
+                            e
+                        );
                     } else {
                         return Ok(());
                     }

@@ -100,23 +100,32 @@ impl Database {
                 );
             };
         }
+        meta_storage.del(b"clean_shutdown");
         meta_storage.set(b"cluster", config.cluster_name.as_bytes());
         meta_storage.set(b"node", node.to_string().as_bytes());
-        meta_storage.del(b"clean_shutdown");
         meta_storage.sync();
 
         info!("Metadata loaded! node_id:{} previous:{:?}", node, old_node);
 
         let fabric = Arc::new(Fabric::new(node, config).unwrap());
-        let dht_initial = if let Some(init) = config.cmd_init.as_ref() {
-            Some(dht::RingDescription::new(
-                init.replication_factor,
-                init.partitions,
-            ))
+
+        let dht = if let Some(init) = config.cmd_init.as_ref() {
+            let desc = dht::RingDescription::new(init.replication_factor, init.partitions);
+            DHT::init(
+                fabric.clone(),
+                &config.cluster_name,
+                config.listen_addr,
+                desc,
+            ).expect("can't init cluster")
         } else {
-            None
+            DHT::join_cluster(
+                fabric.clone(),
+                &config.cluster_name,
+                config.listen_addr,
+                &config.seed_nodes,
+            ).expect("can't join cluster")
         };
-        let dht = DHT::new(fabric.clone(), &config.cluster_name);
+
         let workers = WorkerManager::new(
             node,
             config.worker_count as _,
@@ -143,11 +152,6 @@ impl Database {
                     } else {
                         break;
                     };
-                    trace!(
-                        "worker {} got msg {:?}",
-                        ::std::thread::current().name().unwrap(),
-                        wm
-                    );
                     match wm {
                         WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
                         WorkerMsg::Tick(time) => db.handler_tick(time),
@@ -374,6 +378,7 @@ impl Database {
 
 impl Drop for Database {
     fn drop(&mut self) {
+        info!("droping database");
         // force dropping vnodes before other components
         let _ = self.vnodes.write().map(|mut vns| vns.clear());
     }
