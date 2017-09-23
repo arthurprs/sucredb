@@ -412,6 +412,10 @@ impl VNode {
         );
         // TODO: lots of optimizations to be done here
         let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
+        if nodes.is_empty() {
+            return db.respond_error(token, CommandError::Unavailable);
+        }
+
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(db.config.request_timeout as _);
         let req = ReqState::new(token, nodes.len(), consistency, false, true);

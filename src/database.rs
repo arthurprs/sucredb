@@ -1,7 +1,7 @@
 use std::{net, time};
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex, RwLock};
-use dht::{self, DHT};
+use dht::{RingDescription, DHT};
 use version_vector::*;
 use fabric::*;
 use vnode::*;
@@ -100,6 +100,7 @@ impl Database {
                 );
             };
         }
+        // save init (1 of 2)
         meta_storage.del(b"clean_shutdown");
         meta_storage.set(b"cluster", config.cluster_name.as_bytes());
         meta_storage.set(b"node", node.to_string().as_bytes());
@@ -110,27 +111,41 @@ impl Database {
         let fabric = Arc::new(Fabric::new(node, config).unwrap());
 
         let dht = if let Some(init) = config.cmd_init.as_ref() {
-            let desc = dht::RingDescription::new(init.replication_factor, init.partitions);
             DHT::init(
                 fabric.clone(),
                 &config.cluster_name,
                 config.listen_addr,
-                desc,
+                RingDescription::new(init.replication_factor, init.partitions),
+                old_node,
             ).expect("can't init cluster")
+        } else if let Some(saved_ring) = meta_storage.get_vec(b"ring") {
+            DHT::restore(
+                fabric.clone(),
+                &config.cluster_name,
+                config.listen_addr,
+                &saved_ring,
+                old_node,
+            ).expect("can't restore cluster")
         } else {
             DHT::join_cluster(
                 fabric.clone(),
                 &config.cluster_name,
                 config.listen_addr,
                 &config.seed_nodes,
+                old_node,
             ).expect("can't join cluster")
         };
+
+        // save init (1 of 2)
+        meta_storage.set(b"ring", &dht.save_ring().unwrap());
+        meta_storage.sync();
 
         let workers = WorkerManager::new(
             node,
             config.worker_count as _,
             time::Duration::from_millis(config.worker_timer as _),
         );
+
         let db = Arc::new(Database {
             fabric: fabric,
             dht: dht,
@@ -160,18 +175,19 @@ impl Database {
                         WorkerMsg::Exit => break,
                     }
                 }
-                info!("Exiting worker")
             })
         });
 
+        // register dht nodes into fabric
+        db.fabric.set_nodes(db.dht.members().into_iter());
+
+        // setup dht change callback
         let sender = RefCell::new(db.sender());
         let callback = move || {
             sender.borrow_mut().send(WorkerMsg::DHTChange);
         };
         db.dht.set_callback(Box::new(callback));
 
-        // register nodes into fabric
-        db.fabric.set_nodes(db.dht.members().into_iter());
         for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch] {
             let sender = RefCell::new(db.sender());
             let callback = move |f, m| {
@@ -181,11 +197,11 @@ impl Database {
             db.fabric.register_msg_handler(msg_type, Box::new(callback));
         }
 
+        // create vnodes
         {
             // acquire exclusive lock to vnodes to initialize them
             let mut vnodes = db.vnodes.write().unwrap();
-            let [ready_vnodes, pending_vnodes, _] = db.dht.vnodes_for_node(db.dht.node());
-            // create vnodes
+            let (ready_vnodes, pending_vnodes) = db.dht.vnodes_for_node(db.dht.node());
             // TODO: this can be done in parallel
             *vnodes = (0..db.dht.partitions() as VNodeId)
                 .map(|i| {
@@ -220,6 +236,10 @@ impl Database {
     }
 
     fn handler_dht_change(&self) {
+        // save dht
+        self.meta_storage
+            .set(b"ring", &self.dht.save_ring().unwrap());
+
         // register nodes
         self.fabric.set_nodes(self.dht.members().into_iter());
 
@@ -424,6 +444,7 @@ mod tests {
                 } else {
                     None
                 },
+                seed_nodes: vec!["127.0.0.1:9000".parse().unwrap()],
                 ..Default::default()
             };
             let db = Database::new(
@@ -556,38 +577,35 @@ mod tests {
         let _ = fs::remove_dir_all("t/");
         let _ = env_logger::init();
         let db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
-        // db.get(1, b"test", One);
-        // assert!(db.values_response(1).len() == 0);
-        //
-        // db.set(1, b"test", Some(b"value1"), VersionVector::new(), One, true);
-        // assert!(db.values_response(1).len() == 1);
-        //
-        // db.get(1, b"test", One);
-        // assert!(db.values_response(1).eq(&[b"value1"]));
-        //
-        // db.set(1, b"test", Some(b"value2"), VersionVector::new(), One, true);
-        // assert!(db.values_response(1).len() == 2);
-        //
-        // db.get(1, b"test", One);
-        // let (values, vv) = db.response(1);
-        // assert!(values.eq(&[b"value1", b"value2"]));
-        //
-        // db.set(1, b"test", Some(b"value12"), vv, One, true);
-        // assert!(db.values_response(1).len() == 1);
-        //
-        // db.get(1, b"test", One);
-        // let (values, vv) = db.response(1);
-        // assert!(values.eq(&[b"value12"]));
-        //
-        // db.set(1, b"test", None, vv, One, true);
-        // assert!(db.values_response(1).len() == 0);
-        //
-        // db.get(1, b"test", One);
-        // assert!(db.values_response(1).len() == 0);
-        sleep_ms(500);
-        drop(db);
-        sleep_ms(500);
-        // ::std::mem::forget(db);
+
+        db.get(1, b"test", One);
+        assert!(db.values_response(1).len() == 0);
+
+        db.set(1, b"test", Some(b"value1"), VersionVector::new(), One, true);
+        assert!(db.values_response(1).len() == 1);
+
+        db.get(1, b"test", One);
+        assert!(db.values_response(1).eq(&[b"value1"]));
+
+        db.set(1, b"test", Some(b"value2"), VersionVector::new(), One, true);
+        assert!(db.values_response(1).len() == 2);
+
+        db.get(1, b"test", One);
+        let (values, vv) = db.response(1);
+        assert!(values.eq(&[b"value1", b"value2"]));
+
+        db.set(1, b"test", Some(b"value12"), vv, One, true);
+        assert!(db.values_response(1).len() == 1);
+
+        db.get(1, b"test", One);
+        let (values, vv) = db.response(1);
+        assert!(values.eq(&[b"value12"]));
+
+        db.set(1, b"test", None, vv, One, true);
+        assert!(db.values_response(1).len() == 0);
+
+        db.get(1, b"test", One);
+        assert!(db.values_response(1).len() == 0);
     }
 
     #[test]
@@ -598,11 +616,8 @@ mod tests {
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.rebalance();
 
-        sleep_ms(1000);
-        while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
-            warn!("waiting for syncs to finish");
-            sleep_ms(1000);
-        }
+        db1.wait_syncs();
+        db2.wait_syncs();
 
         db1.get(1, b"test", One);
         assert!(db1.values_response(1).len() == 0);
@@ -667,77 +682,15 @@ mod tests {
     }
 
     #[test]
-    fn test_join_sync_recover() {
-        let _ = fs::remove_dir_all("t/");
-        let _ = env_logger::init();
-        let mut db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
-        let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        db2.dht.rebalance();
-
-        warn!("wait for rebalance");
-        db1.wait_syncs();
-        db2.wait_syncs();
-
-        warn!("inserting test data");
-        for i in 0..TEST_JOIN_SIZE {
-            db1.set(
-                i,
-                i.to_string().as_bytes(),
-                Some(i.to_string().as_bytes()),
-                VersionVector::new(),
-                One,
-                true,
-            );
-            db1.values_response(i);
-        }
-        // wait for all writes to be replicated
-        sleep_ms(5);
-        warn!("check before sync");
-        for i in 0..TEST_JOIN_SIZE {
-            for &db in &[&db1, &db2] {
-                db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
-            }
-        }
-
-        // sim unclean shutdown
-        warn!("killing db1");
-        drop(db1);
-        db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", false);
-
-        // {
-        //     // during recover ASK is expected
-        //     db1.set(0, b"k", None, VersionVector::new(), One, true);
-        //     let response = format!("{:?}", db1.resp_response(0));
-        //     assert!(response.starts_with("Error(\"ASK"), "{} is not an Error(\"ASK", response);
-        // }
-
-        // force some syncs
-        warn!("starting syncs");
-        db1.force_syncs();
-
-        warn!("will check after sync");
-        for i in 0..TEST_JOIN_SIZE {
-            for &db in &[&db1, &db2] {
-                db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
-            }
-        }
-    }
-
-    #[test]
-    fn test_join_sync_normal() {
+    fn test_join_sync() {
         let _ = fs::remove_dir_all("t/");
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.rebalance();
 
-        sleep_ms(1000);
-        while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
-            warn!("waiting for syncs to finish");
-            sleep_ms(1000);
-        }
+        db1.wait_syncs();
+        db2.wait_syncs();
 
         // sim partition
         warn!("droping db2");
@@ -775,11 +728,8 @@ mod tests {
         warn!("starting syncs");
         db2.force_syncs();
 
-        sleep_ms(1000);
-        while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
-            warn!("waiting for syncs to finish");
-            sleep_ms(1000);
-        }
+        db1.wait_syncs();
+        db2.wait_syncs();
 
         warn!("will check after balancing");
         for i in 0..TEST_JOIN_SIZE {

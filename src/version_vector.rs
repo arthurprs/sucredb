@@ -63,8 +63,8 @@ impl BitmappedVersion {
             self.base += 1;
         } else if version > self.base {
             self.bitmap.insert(version);
-            self.norm();
         }
+        self.norm();
     }
 
     fn norm(&mut self) {

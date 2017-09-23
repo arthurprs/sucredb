@@ -50,6 +50,7 @@ type IteratorFn = Box<
         -> Result<(Bytes, DottedCausalContainer<Bytes>), Result<(), ()>>
         + Send,
 >;
+
 type InFlightSyncMsgMap = InFlightMap<
     u64,
     (Bytes, DottedCausalContainer<Bytes>),
@@ -181,7 +182,7 @@ impl Synchronization {
         msg: MsgSyncStart,
     ) -> Self {
         let mut storage_iterator = state.storage.iterator();
-        let iterator: IteratorFn = Box::new(move |_| {
+        let iterator_fn: IteratorFn = Box::new(move |_| {
             storage_iterator
                 .iter()
                 .map(|(k, v)| {
@@ -197,7 +198,7 @@ impl Synchronization {
         BootstrapSender {
             cookie: msg.cookie,
             clocks_snapshot: state.clocks.clone(),
-            iterator: iterator,
+            iterator: iterator_fn,
             inflight: InFlightMap::new(),
             peer: peer,
             count: 0,
@@ -249,58 +250,29 @@ impl Synchronization {
 
         let dots_delta = state.clocks.delta(&clocks_in_peer);
         debug!("Delta from {:?} to {:?}", state.clocks, clocks_in_peer);
-        // let log_uptodate = dots_delta.min_versions().iter().all(|&(n, v)| {
-        //     state
-        //         .logs
-        //         .get(&n)
-        //         .and_then(|log| log.min_version())
-        //         .unwrap_or(0) <= v
-        // });
-        let log_uptodate = true;
 
-        let iterator: IteratorFn = if log_uptodate {
-            let mut sync_keys = SyncKeysIterator::new(dots_delta);
-            Box::new(move |state| {
-                loop {
-                    match sync_keys.next(state) {
-                        Ok(k) => {
-                            if let Some(v) = state.storage.get(&k, |v| Bytes::from(v)) {
-                                let mut dcc: DottedCausalContainer<_> = bincode::deserialize(&v)
-                                    .unwrap();
-                                // TODO: fill should be done in the remote?
-                                dcc.fill(&clocks_snapshot);
-                                return Ok((k, dcc));
-                            }
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-            })
-        } else {
-            warn!("SyncSender {:?} using a scan", cookie);
-            let mut storage_iterator = state.storage.iterator();
-            Box::new(move |_| {
-                storage_iterator
-                    .iter()
-                    .filter_map(|(k, v)| {
-                        let mut dcc = bincode::deserialize::<DottedCausalContainer<_>>(v).unwrap();
-                        if !dcc.contained(&clocks_in_peer) {
+        let mut sync_keys = SyncKeysIterator::new(dots_delta);
+        let iterator_fn: IteratorFn = Box::new(move |state| {
+            loop {
+                match sync_keys.next(state) {
+                    Ok(k) => {
+                        if let Some(v) = state.storage.get(&k, |v| Bytes::from(v)) {
+                            let mut dcc: DottedCausalContainer<_> =
+                                bincode::deserialize(&v).unwrap();
                             // TODO: fill should be done in the remote?
                             dcc.fill(&clocks_snapshot);
-                            Some((k.into(), dcc))
-                        } else {
-                            None
+                            return Ok((k, dcc));
                         }
-                    })
-                    .next()
-                    .ok_or(Ok(()))
-            })
-        };
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        });
 
         SyncSender {
             clocks_in_peer: clocks_in_peer2,
             clocks_snapshot: clocks_snapshot2,
-            iterator: iterator,
+            iterator: iterator_fn,
             inflight: InFlightMap::new(),
             cookie: cookie,
             peer: peer,

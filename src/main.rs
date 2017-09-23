@@ -1,11 +1,15 @@
-#![allow(stable_features)]
-#![feature(
-    slice_patterns,
-    fnbox,
-manually_drop, // keep CI happy
-    try_from)]
+#![feature(slice_patterns, fnbox, try_from)]
 #![allow(dead_code)]
 #![cfg_attr(feature = "cargo-clippy", allow(cast_lossless))]
+
+// #![feature(alloc_system, global_allocator, allocator_api)]
+//
+// extern crate alloc_system;
+//
+// use alloc_system::System;
+//
+// #[global_allocator]
+// static A: System = System;
 
 extern crate bincode;
 extern crate byteorder;
@@ -27,7 +31,6 @@ extern crate rocksdb;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
-extern crate serde_json;
 extern crate serde_yaml;
 extern crate tokio_core;
 extern crate tokio_io;

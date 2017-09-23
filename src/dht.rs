@@ -90,7 +90,7 @@ struct VNode {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(bound = "T: DeserializeOwned")]
-pub struct Ring<T: Metadata> {
+struct Ring<T: Metadata> {
     vnodes: Vec<VNode>,
     nodes: IdHashMap<NodeId, Node<T>>,
     replication_factor: usize,
@@ -113,6 +113,15 @@ impl RingDescription {
 }
 
 impl<T: Metadata> Ring<T> {
+    fn serialize(ring: &Ring<T>) -> Result<Vec<u8>, GenericError> {
+        bincode::serialize(ring, bincode::Infinite)
+            .map_err(|e| format!("can't serialize Ring: {:?}", e).into())
+    }
+
+    fn deserialize(bytes: &[u8]) -> Result<Ring<T>, GenericError> {
+        bincode::deserialize(bytes).map_err(|e| format!("can't deserialize Ring: {:?}", e).into())
+    }
+
     fn new(cluster: &str, partitions: u16, replication_factor: u8) -> Self {
         Ring {
             version: Default::default(),
@@ -152,20 +161,30 @@ impl<T: Metadata> Ring<T> {
         addr: SocketAddr,
         meta: T,
     ) -> Result<(), GenericError> {
+        match self.nodes.entry(node) {
+            HMEntry::Vacant(v) => {
+                v.insert(Node {
+                    addr,
+                    meta,
+                    status: Valid,
+                    version: {
+                        let mut version = VersionVector::new();
+                        version.event(this);
+                        version
+                    },
+                });
+            }
+            HMEntry::Occupied(mut o) => {
+                let node = o.get_mut();
+                if node.meta == meta && node.addr == addr {
+                    return Ok(());
+                }
+                node.meta = meta;
+                node.addr = addr;
+                node.version.event(this);
+            }
+        }
         self.version.event(this);
-        self.nodes.insert(
-            node,
-            Node {
-                addr,
-                meta,
-                status: Valid,
-                version: {
-                    let mut version = VersionVector::new();
-                    version.event(this);
-                    version
-                },
-            },
-        );
         Ok(())
     }
 
@@ -207,7 +226,7 @@ impl<T: Metadata> Ring<T> {
         Ok(())
     }
 
-    fn replace(
+    fn replace_node(
         &mut self,
         this: NodeId,
         old: NodeId,
@@ -246,22 +265,8 @@ impl<T: Metadata> Ring<T> {
         Ok(())
     }
 
-    fn set_meta(&mut self, this: NodeId, node: NodeId, meta: T) -> Result<(), GenericError> {
-        if let Some(node) = self.nodes.get_mut(&node) {
-            if node.meta != meta {
-                node.meta = meta;
-                node.version.event(this);
-            } else {
-                return Ok(());
-            }
-        } else {
-            return Err(format!("Node {} not found in ring nodes", node).into());
-        }
-        self.version.event(this);
-        Ok(())
-    }
-
     fn merge(&mut self, mut other: Self) -> Result<bool, GenericError> {
+        debug!("merge {:?} with {:?}", self, other);
         // sanity checks
         if self.cluster != other.cluster {
             return Err(
@@ -370,6 +375,12 @@ impl<T: Metadata> Ring<T> {
         self.version.event(this);
         // special case when #nodes <= replication factor
         if self.valid_nodes_count() <= self.replication_factor {
+            // special case 1 node case
+            let status = if self.nodes.len() == 1 {
+                Owner
+            } else {
+                Pending
+            };
             for vn in &mut self.vnodes {
                 for (&node_id, node) in &self.nodes {
                     if node.status != Valid {
@@ -377,13 +388,13 @@ impl<T: Metadata> Ring<T> {
                     }
                     match vn.owners.entry(node_id) {
                         LMEntry::Vacant(v) => {
-                            v.insert(Pending);
+                            v.insert(status);
                         }
                         LMEntry::Occupied(mut o) => {
                             if *o.get() != Retiring {
                                 continue;
                             }
-                            *o.get_mut() = Pending;
+                            *o.get_mut() = status;
                         }
                     }
                     vn.version.event(this);
@@ -564,14 +575,34 @@ impl<T: Metadata> DHT<T> {
         cluster: &str,
         meta: T,
         ring: RingDescription,
+        old_node: Option<NodeId>,
     ) -> Result<DHT<T>, GenericError> {
-        let mut dht = Self::new(fabric, cluster);
-        dht.reset(cluster, meta, ring.partitions, ring.replication_factor)
-            .unwrap();
+        let addr = fabric.addr();
+        let partitions = ring.partitions;
+        let replication_factor = ring.replication_factor;
+        assert!(
+            partitions.is_power_of_two(),
+            "Partition count must be a power of 2"
+        );
+        assert!(partitions >= 32, "Partition count must be >= 32");
+        assert!(partitions <= 1024, "Partition count must be <= 1024");
+        assert!(replication_factor >= 1, "Replication factor must be >= 1");
+        assert!(replication_factor <= 6, "Replication factor must be <= 6");
 
-        dht.partitions = ring.partitions as usize;
+        let mut dht = Self::new(fabric, cluster);
+        let ring = Ring::new(cluster, partitions, replication_factor);
+        dht.partitions = ring.vnodes.len();
         dht.replication_factor = ring.replication_factor as usize;
         dht.slots_per_partition = HASH_SLOTS / dht.partitions as u16;
+        dht.inner.lock().unwrap().ring = ring;
+
+        if let Some(old_node) = old_node {
+            dht.replace_node(old_node, dht.node, addr, meta).unwrap();
+        } else {
+            dht.join_node(dht.node, addr, meta).unwrap();
+        }
+        dht.rebalance().unwrap();
+
         Ok(dht)
     }
 
@@ -579,22 +610,23 @@ impl<T: Metadata> DHT<T> {
         fabric: Arc<Fabric>,
         cluster: &str,
         meta: T,
-        mut ring: Ring<T>,
+        serialized_ring: &[u8],
         old_node: Option<NodeId>,
     ) -> Result<DHT<T>, GenericError> {
-        if let Some(old_node) = old_node {
-            ring.replace(fabric.node(), old_node, fabric.node(), fabric.addr(), meta)
-                .unwrap();
-        } else {
-            ring.set_meta(fabric.node(), fabric.node(), meta).unwrap();
-        }
-        ring.is_valid().unwrap();
-
+        let addr = fabric.addr();
         let mut dht = Self::new(fabric, cluster);
+        let ring = Ring::deserialize(serialized_ring)?;
         dht.partitions = ring.vnodes.len();
         dht.replication_factor = ring.replication_factor;
         dht.slots_per_partition = HASH_SLOTS / dht.partitions as u16;
         dht.inner.lock().unwrap().ring = ring;
+
+        if let Some(old_node) = old_node {
+            dht.replace_node(old_node, dht.node, addr, meta).unwrap();
+        } else {
+            dht.join_node(dht.node, addr, meta).unwrap();
+        }
+
         Ok(dht)
     }
 
@@ -603,18 +635,16 @@ impl<T: Metadata> DHT<T> {
         cluster: &str,
         meta: T,
         seeds: &[SocketAddr],
+        old_node: Option<NodeId>,
     ) -> Result<DHT<T>, GenericError> {
-        let dht = Self::new(fabric.clone(), cluster);
-        dht.inner
-            .lock()
-            .unwrap()
-            .ring
-            .join_node(fabric.node(), fabric.node(), fabric.addr(), meta)
-            .unwrap();
+        let addr = fabric.addr();
+        let mut dht = Self::new(fabric.clone(), cluster);
 
         info!("registering seeds {:?}", seeds);
         for &seed in seeds {
-            fabric.register_seed(seed)
+            if seed != addr {
+                fabric.register_seed(seed);
+            }
         }
 
         info!("connecting to seeds");
@@ -629,21 +659,25 @@ impl<T: Metadata> DHT<T> {
         if connections.is_empty() {
             return Err("Cannot contact seed nodes".into());
         }
-        info!("requesting ring from seeds");
-        for node in connections {
-            let _ = fabric.send_msg(node, FabricMsg::DHTSyncReq(Default::default()));
-        }
         for _ in 0..10 {
             thread::sleep(Duration::from_millis(500));
-            if dht.partitions() != 0 {
+            if !dht.inner.lock().unwrap().ring.vnodes.is_empty() {
                 break;
             }
         }
-        if dht.partitions() != 0 {
-            Ok(dht)
-        } else {
-            Err("Didn't receive seed ring".into())
+        if dht.inner.lock().unwrap().ring.vnodes.is_empty() {
+            return Err("Didn't receive seed ring".into());
         }
+
+        dht.partitions = dht.inner.lock().unwrap().ring.vnodes.len();
+        dht.replication_factor = dht.inner.lock().unwrap().ring.replication_factor;
+        dht.slots_per_partition = HASH_SLOTS / dht.partitions as u16;
+        if let Some(old_node) = old_node {
+            dht.replace_node(old_node, dht.node, addr, meta).unwrap();
+        } else {
+            dht.join_node(dht.node, addr, meta).unwrap();
+        }
+        Ok(dht)
     }
 
     fn new(fabric: Arc<Fabric>, cluster: &str) -> DHT<T> {
@@ -681,7 +715,7 @@ impl<T: Metadata> DHT<T> {
         if !inner.ring.vnodes.is_empty() {
             let _ = inner.fabric.send_msg(
                 from,
-                FabricMsg::DHTSync(Self::serialize(&inner.ring).unwrap().into()),
+                FabricMsg::DHTSync(Ring::serialize(&inner.ring).unwrap().into()),
             );
         }
     }
@@ -693,15 +727,16 @@ impl<T: Metadata> DHT<T> {
             } else if inner.ring.version != version {
                 let _ = inner.fabric.send_msg(
                     from,
-                    FabricMsg::DHTSync(Self::serialize(&inner.ring).unwrap().into()),
+                    FabricMsg::DHTSync(Ring::serialize(&inner.ring).unwrap().into()),
                 );
             },
             FabricMsg::DHTSync(bytes) => {
-                let sync_res = Self::deserialize(&bytes).and_then(|new| inner.ring.merge(new));
-                match sync_res {
-                    Ok(true) => if let Some(callback) = inner.callback.as_ref() {
-                        callback();
-                    },
+                let mut ring = inner.ring.clone();
+                match Ring::deserialize(&bytes).and_then(|new| ring.merge(new)) {
+                    Ok(true) => {
+                        inner.ring = ring;
+                        Self::call_callback(inner);
+                    }
                     Ok(false) => (),
                     Err(e) => error!("Failed to process DHTSync {:?}", e),
                 };
@@ -710,8 +745,14 @@ impl<T: Metadata> DHT<T> {
         }
     }
 
+    fn call_callback(inner: &mut Inner<T>) {
+        if let Some(callback) = inner.callback.as_ref() {
+            callback();
+        }
+    }
+
     fn broadcast(inner: &mut Inner<T>) {
-        let serialized_ring: Bytes = Self::serialize(&inner.ring).unwrap().into();
+        let serialized_ring: Bytes = Ring::serialize(&inner.ring).unwrap().into();
         for &node in inner.ring.nodes.keys() {
             if node == inner.node {
                 continue;
@@ -734,33 +775,6 @@ impl<T: Metadata> DHT<T> {
                 .fabric
                 .send_msg(node, FabricMsg::DHTSyncReq(inner.ring.version.clone()));
         }
-    }
-
-    fn reset(
-        &self,
-        cluster: &str,
-        meta: T,
-        partitions: u16,
-        replication_factor: u8,
-    ) -> Result<(), GenericError> {
-        assert!(
-            partitions.is_power_of_two(),
-            "Partition count must be a power of 2"
-        );
-        assert!(partitions >= 32, "Partition count must be >= 32");
-        assert!(partitions <= 1024, "Partition count must be <= 1024");
-        assert!(replication_factor >= 1, "Replication factor must be >= 1");
-        assert!(replication_factor <= 6, "Replication factor must be <= 6");
-
-        let mut inner = self.inner.lock().unwrap();
-        let addr = inner.fabric.addr();
-        inner.ring = Ring::new(cluster, partitions, replication_factor);
-        inner
-            .ring
-            .join_node(self.node, self.node, addr, meta)
-            .unwrap();
-        inner.ring.rebalance(self.node).unwrap();
-        Ok(())
     }
 
     pub fn handler_tick(&self, time: Instant) {
@@ -796,12 +810,16 @@ impl<T: Metadata> DHT<T> {
         (hash_slot(key) / self.slots_per_partition) as VNodeId
     }
 
-    pub fn vnodes_for_node(&self, node: NodeId) -> [Vec<VNodeId>; 3] {
-        let mut result = [Vec::new(), Vec::new(), Vec::new()];
+    pub fn vnodes_for_node(&self, node: NodeId) -> (Vec<VNodeId>, Vec<VNodeId>) {
+        let mut result = (Vec::new(), Vec::new());
         let inner = self.inner.lock().unwrap();
         for (vn_no, vn) in inner.ring.vnodes.iter().enumerate() {
-            if let Some(status) = vn.owners.get(&node) {
-                result[*status as usize].push(vn_no as VNodeId);
+            if let Some(&status) = vn.owners.get(&node) {
+                match status {
+                    Owner => result.0.push(vn_no as VNodeId),
+                    Pending => result.0.push(vn_no as VNodeId),
+                    Retiring => (),
+                }
             }
         }
         result
@@ -851,12 +869,17 @@ impl<T: Metadata> DHT<T> {
         result
     }
 
+    pub fn save_ring(&self) -> Result<Vec<u8>, GenericError> {
+        Ring::serialize(&self.inner.lock().unwrap().ring)
+    }
+
     pub fn members(&self) -> IdHashMap<NodeId, SocketAddr> {
         let inner = self.inner.lock().unwrap();
         inner
             .ring
             .nodes
             .iter()
+            .filter(|&(_, v)| v.status != Invalid)
             .map(|(k, v)| (k.clone(), v.addr))
             .collect()
     }
@@ -886,37 +909,49 @@ impl<T: Metadata> DHT<T> {
         result
     }
 
-    fn ring_clone(&self) -> Ring<T> {
-        self.inner.lock().unwrap().ring.clone()
-    }
-
     pub fn rebalance(&self) -> Result<(), GenericError> {
-        self.propose(|| {
-            let mut ring = self.ring_clone();
+        self.propose(|mut ring| {
             ring.rebalance(self.node)?;
             Ok(ring)
         })
     }
 
     pub fn remove_node(&self, node: NodeId) -> Result<(), GenericError> {
-        self.propose(|| {
-            let mut ring = self.ring_clone();
+        self.propose(|mut ring| {
             ring.remove_node(self.node, node)?;
             Ok(ring)
         })
     }
 
+    pub fn join_node(&self, node: NodeId, addr: SocketAddr, meta: T) -> Result<(), GenericError> {
+        self.propose(|mut ring| {
+            ring.join_node(self.node, node, addr, meta)?;
+            Ok(ring)
+        })
+    }
+
+    pub fn replace_node(
+        &self,
+        old_node: NodeId,
+        node: NodeId,
+        addr: SocketAddr,
+        meta: T,
+    ) -> Result<(), GenericError> {
+        self.propose(|mut ring| {
+            ring.replace_node(self.node, old_node, node, addr, meta)?;
+            Ok(ring)
+        })
+    }
+
     pub fn leave_node(&self, node: NodeId) -> Result<(), GenericError> {
-        self.propose(|| {
-            let mut ring = self.ring_clone();
+        self.propose(|mut ring| {
             ring.leave_node(self.node, node)?;
             Ok(ring)
         })
     }
 
     pub fn promote_pending_node(&self, node: NodeId, vnode: VNodeId) -> Result<(), GenericError> {
-        self.propose(|| {
-            let mut ring = self.ring_clone();
+        self.propose(|mut ring| {
             ring.promote_pending_node(self.node, node, vnode)?;
             Ok(ring)
         })
@@ -924,23 +959,16 @@ impl<T: Metadata> DHT<T> {
 
     fn propose<C>(&self, proposal: C) -> Result<(), GenericError>
     where
-        C: Fn() -> Result<Ring<T>, GenericError>,
+        C: FnOnce(Ring<T>) -> Result<Ring<T>, GenericError>,
     {
-        let new_ring = proposal()?;
+        let new_ring = proposal(self.inner.lock().unwrap().ring.clone())?;
         info!("Proposing new ring version {:?}", new_ring.version);
         let mut inner = self.inner.lock().unwrap();
         if inner.ring.merge(new_ring)? {
             Self::broadcast(&mut *inner);
+            Self::call_callback(&mut *inner);
         }
         Ok(())
-    }
-
-    fn serialize(ring: &Ring<T>) -> Result<Vec<u8>, GenericError> {
-        bincode::serialize(ring, bincode::Infinite).map_err(Into::into)
-    }
-
-    fn deserialize(bytes: &[u8]) -> Result<Ring<T>, GenericError> {
-        bincode::deserialize(bytes).map_err(Into::into)
     }
 }
 

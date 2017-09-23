@@ -130,7 +130,7 @@ impl SharedContext {
     fn register_connection(&self, peer: NodeId, sender: SenderChan) -> usize {
         let connection_id = self.connection_gen.fetch_add(1, Ordering::Relaxed);
         debug!(
-            "register_connectionpeer: {}, connection_id: {:?}",
+            "register_connection peer: {}, id: {:?}",
             peer,
             connection_id
         );
@@ -150,11 +150,7 @@ impl SharedContext {
     }
 
     fn remove_connection(&self, peer: NodeId, connection_id: usize) {
-        debug!(
-            "remove_connectionpeer: {}, connection_id: {:?}",
-            peer,
-            connection_id
-        );
+        debug!("remove_connection peer: {}, id: {:?}", peer, connection_id);
         let mut locked = self.connections.lock().unwrap();
         if let HMEntry::Occupied(mut o) = locked.entry(peer) {
             let p = o.get()
@@ -188,7 +184,7 @@ impl ReaderContext {
             .unwrap()
             .get_mut(&(msg_type as u8))
         {
-            debug!("recv from {:?} {:?}", self.peer, msg);
+            trace!("recv from {:?} {:?}", self.peer, msg);
             handler(self.peer, msg);
         } else {
             error!("No handler for msg type {:?}", msg_type);
@@ -197,13 +193,7 @@ impl ReaderContext {
 }
 
 impl WriterContext {
-    fn new(
-        context: Arc<SharedContext>,
-        peer: NodeId,
-        peer_addr: SocketAddr,
-        sender: SenderChan,
-    ) -> Self {
-        context.register_node(peer, peer_addr);
+    fn new(context: Arc<SharedContext>, peer: NodeId, sender: SenderChan) -> Self {
         let connection_id = context.register_connection(peer, sender);
         WriterContext {
             context: context,
@@ -232,7 +222,13 @@ impl Fabric {
             .for_each(move |(socket, addr)| {
                 debug!("Accepting connection from {:?}", addr);
                 let context_cloned = context.clone();
-                handle.spawn(Self::handshake(socket, None, addr, context_cloned).then(|_| Ok(())));
+                handle.spawn(
+                    Self::handshake(socket, None, context_cloned)
+                        .and_then(move |(s, peer_id, context)| {
+                            Self::steady_connection(s, peer_id, context)
+                        })
+                        .then(|_| Ok(())),
+                );
                 Ok(())
             })
             .map_err(|_| ());
@@ -262,9 +258,9 @@ impl Fabric {
                 Ok(Either::B(_)) => Err(io::ErrorKind::TimedOut.into()),
                 Err(either) => Err(either.split().0),
             })
-            .and_then(move |s| Self::handshake(s, expected_node, addr, context))
-            .and_then(move |(s, peer_id, addr, context)| {
-                Self::steady_connection(s, peer_id, addr, context)
+            .and_then(move |s| Self::handshake(s, expected_node, context))
+            .and_then(move |(s, peer_id, context)| {
+                Self::steady_connection(s, peer_id, context)
             })
             .then(move |_| {
                 tokio::reactor::Timeout::new(
@@ -295,24 +291,15 @@ impl Fabric {
     fn handshake(
         socket: tokio::net::TcpStream,
         expected_node: Option<NodeId>,
-        addr: SocketAddr,
         context: Arc<SharedContext>,
-    ) -> Box<
-        Future<
-            Item = (
-                tokio::net::TcpStream,
-                NodeId,
-                SocketAddr,
-                Arc<SharedContext>,
-            ),
-            Error = io::Error,
-        >,
-    > {
-        debug!("Stablished connection with {:?}: {:?}", expected_node, addr);
-        socket.set_nodelay(true).expect("Failed to set nodelay");
-        socket
-            .set_keepalive(Some(Duration::from_millis(FABRIC_KEEPALIVE_MS)))
-            .expect("Failed to set keepalive");
+    ) -> Box<Future<Item = (tokio::net::TcpStream, NodeId, Arc<SharedContext>), Error = io::Error>> {
+        debug!(
+            "Stablished connection with {:?}: {:?}",
+            expected_node,
+            socket.peer_addr()
+        );
+        let _ = socket.set_nodelay(true);
+        let _ = socket.set_keepalive(Some(Duration::from_millis(FABRIC_KEEPALIVE_MS)));
         let mut buffer = [0u8; 8];
         (&mut buffer[..])
             .write_u64::<LittleEndian>(context.node)
@@ -323,7 +310,7 @@ impl Fabric {
                 let peer_id = (&b[..]).read_u64::<LittleEndian>().unwrap();
                 debug!("Identified connection to node {}", peer_id);
                 if expected_node.unwrap_or(peer_id) == peer_id {
-                    Ok((s, peer_id, addr, context))
+                    Ok((s, peer_id, context))
                 } else {
                     Err(io::Error::new(io::ErrorKind::Other, "Unexpected NodeId"))
                 }
@@ -335,7 +322,6 @@ impl Fabric {
     fn steady_connection(
         socket: tokio::net::TcpStream,
         peer: NodeId,
-        peer_addr: SocketAddr,
         context: Arc<SharedContext>,
     ) -> Box<Future<Item = (), Error = io::Error>> {
         let (socket_rx, socket_tx) = socket.split();
@@ -349,7 +335,7 @@ impl Fabric {
             Ok(())
         });
 
-        let ctx_tx = WriterContext::new(context, peer, peer_addr, chan_tx);
+        let ctx_tx = WriterContext::new(context, peer, chan_tx);
         let fut_tx = socket_tx
             .send_all(chan_rx.map_err(|_| -> io::Error { io::ErrorKind::Other.into() }))
             .then(move |r| {
@@ -501,7 +487,7 @@ impl Fabric {
             HMEntry::Occupied(mut o) => if let Some(&mut (connection_id, ref mut chan)) =
                 thread_rng().choose_mut(o.get_mut())
             {
-                debug!("send_msg node:{}, chan:{} {:?}", node, connection_id, msg);
+                trace!("send_msg node:{}, chan:{} {:?}", node, connection_id, msg);
                 if let Err(e) = chan.unbounded_send(msg) {
                     warn!(
                         "Can't send to fabric {}-{} chan: {:?}",

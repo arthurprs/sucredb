@@ -59,7 +59,10 @@ impl WorkerManager {
             self.threads.push(
                 thread::Builder::new()
                     .name(format!("Worker:{}:{}", i, self.node))
-                    .spawn(move || worker_fn(rx))
+                    .spawn(move || {
+                        worker_fn(rx);
+                        info!("Exiting worker");
+                    })
                     .unwrap(),
             );
             self.channels.push(tx);
