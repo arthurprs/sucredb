@@ -14,7 +14,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use bytes::Bytes;
 use utils::{IdHashMap, IdHashSet, IdHasherBuilder};
 
-const ZOMBIE_TIMEOUT_MS: u64 = 30_000;
+const ZOMBIE_TIMEOUT_MS: u64 = 60 * 1_000;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum VNodeStatus {
@@ -658,7 +658,7 @@ impl VNode {
             let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::BadVNodeStatus);
         } else if !self.syncs.contains_key(&msg.cookie) {
             if !db.signal_sync_start(SyncDirection::Outgoing) {
-                debug!("Aborting handler_sync_start");
+                debug!("Aborting remote sync request, limit exceeded");
                 let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::NotReady);
                 return;
             }
@@ -839,7 +839,7 @@ impl VNode {
                 continue;
             }
             if !db.signal_sync_start(SyncDirection::Incomming) {
-                debug!("Aborting do_start_sync");
+                debug!("Aborting start sync, limit exceeded");
                 continue;
             }
 

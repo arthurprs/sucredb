@@ -160,26 +160,31 @@ impl Database {
 
         db.workers.lock().unwrap().start(|| {
             let cdb = Arc::downgrade(&db);
-            Box::new(move |chan| {
-                for wm in chan {
-                    let db = if let Some(db) = cdb.upgrade() {
-                        db
-                    } else {
-                        break;
-                    };
-                    match wm {
-                        WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
-                        WorkerMsg::Tick(time) => db.handler_tick(time),
-                        WorkerMsg::Command(token, cmd) => db.handler_cmd(token, cmd),
-                        WorkerMsg::DHTChange => db.handler_dht_change(),
-                        WorkerMsg::Exit => break,
-                    }
+            Box::new(move |chan| for wm in chan {
+                let db = if let Some(db) = cdb.upgrade() {
+                    db
+                } else {
+                    break;
+                };
+                match wm {
+                    WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
+                    WorkerMsg::Command(token, cmd) => db.handler_cmd(token, cmd),
+                    WorkerMsg::Tick(time) => db.handler_tick(time),
+                    WorkerMsg::DHTFabric(from, m) => db.dht.handler_fabric_msg(from, m),
+                    WorkerMsg::DHTChange => db.handler_dht_change(),
+                    WorkerMsg::Exit => break,
                 }
             })
         });
 
         // register dht nodes into fabric
         db.fabric.set_nodes(db.dht.members().into_iter());
+        // fabric dht messages
+        let sender = RefCell::new(db.sender());
+        let callback = move |f, m| {
+            sender.borrow_mut().send(WorkerMsg::DHTFabric(f, m));
+        };
+        db.fabric.register_msg_handler(FabricMsgType::DHT, Box::new(callback));
 
         // setup dht change callback
         let sender = RefCell::new(db.sender());
@@ -188,10 +193,10 @@ impl Database {
         };
         db.dht.set_callback(Box::new(callback));
 
+        // other types of fabric msgs
         for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch] {
             let sender = RefCell::new(db.sender());
             let callback = move |f, m| {
-                // trace!("fabric callback {:?} {:?}", msg_type, m);
                 sender.borrow_mut().send(WorkerMsg::Fabric(f, m));
             };
             db.fabric.register_msg_handler(msg_type, Box::new(callback));
@@ -405,6 +410,7 @@ impl Drop for Database {
 #[cfg(test)]
 mod tests {
     use std::{fs, net, ops, thread};
+    use std::time::Duration;
     use std::sync::{Arc, Mutex};
     use std::collections::HashMap;
     use super::*;
@@ -416,7 +422,6 @@ mod tests {
     use types::ConsistencyLevel::*;
 
     fn sleep_ms(ms: u64) {
-        use std::time::Duration;
         thread::sleep(Duration::from_millis(ms));
     }
 
@@ -536,14 +541,14 @@ mod tests {
         assert!(db.values_response(1).len() == 1);
 
         db.get(1, b"test", One);
-        assert!(db.values_response(1).eq(&[b"value1"]));
+        assert_eq!(db.values_response(1), [b"value1"]);
 
         db.save(shutdown);
         drop(db);
         db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", false);
 
         db.get(1, b"test", One);
-        assert!(db.values_response(1).eq(&[b"value1"]));
+        assert_eq!(db.values_response(1), [b"value1"]);
 
         if shutdown {
             assert_eq!(db.dht.node(), prev_node);
@@ -585,21 +590,21 @@ mod tests {
         assert!(db.values_response(1).len() == 1);
 
         db.get(1, b"test", One);
-        assert!(db.values_response(1).eq(&[b"value1"]));
+        assert_eq!(db.values_response(1), [b"value1"]);
 
         db.set(1, b"test", Some(b"value2"), VersionVector::new(), One, true);
         assert!(db.values_response(1).len() == 2);
 
         db.get(1, b"test", One);
         let (values, vv) = db.response(1);
-        assert!(values.eq(&[b"value1", b"value2"]));
+        assert_eq!(values, [b"value1", b"value2"]);
 
         db.set(1, b"test", Some(b"value12"), vv, One, true);
         assert!(db.values_response(1).len() == 1);
 
         db.get(1, b"test", One);
         let (values, vv) = db.response(1);
-        assert!(values.eq(&[b"value12"]));
+        assert_eq!(values, [b"value12"]);
 
         db.set(1, b"test", None, vv, One, true);
         assert!(db.values_response(1).len() == 0);
@@ -627,7 +632,7 @@ mod tests {
 
         for &db in &[&db1, &db2] {
             db.get(1, b"test", One);
-            assert!(db.values_response(1).eq(&[b"value1"]));
+            assert_eq!(db.values_response(1), [b"value1"]);
         }
     }
 
@@ -655,7 +660,7 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
+                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
             }
         }
 
@@ -665,7 +670,7 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
+                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
             }
         }
 
@@ -676,7 +681,7 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
+                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
             }
         }
     }
@@ -715,12 +720,13 @@ mod tests {
         // sim partition heal
         warn!("bringing back db2");
         db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        sleep_ms(200); // wait for fabric to reconnect
 
         warn!("will check before sync");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), Quorum);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
+                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
             }
         }
 
@@ -735,7 +741,7 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
+                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
             }
         }
     }
@@ -749,19 +755,17 @@ mod tests {
         let db3 = TestDatabase::new("127.0.0.1:9002".parse().unwrap(), "t/db3", false);
         db1.dht.rebalance();
 
-        sleep_ms(1000);
-        while db1.syncs_inflight() + db2.syncs_inflight() + db3.syncs_inflight() > 0 {
-            warn!("waiting for syncs to finish");
-            sleep_ms(1000);
-        }
+        db1.wait_syncs();
+        db2.wait_syncs();
+        db3.wait_syncs();
 
         // test data
         db1.set(0, b"key", Some(b"value"), VersionVector::new(), All, true);
-        assert!(db1.values_response(0).eq(&[b"value"]));
+        assert_eq!(db1.values_response(0), [b"value"]);
 
         for &cl in &[One, Quorum, All] {
             db1.get(0, b"key", cl);
-            assert!(db1.values_response(0).eq(&[b"value"]));
+            assert_eq!(db1.values_response(0), [b"value"]);
             db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
             db1.values_response(0);
         }
@@ -769,7 +773,7 @@ mod tests {
         drop(db3);
         for &cl in &[One, Quorum] {
             db1.get(0, b"key", cl);
-            assert!(db1.values_response(0).eq(&[b"value"]));
+            assert_eq!(db1.values_response(0), [b"value"]);
             db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
             db1.values_response(0);
         }
@@ -784,7 +788,7 @@ mod tests {
         drop(db2);
         for &cl in &[One] {
             db1.get(0, b"key", cl);
-            assert!(db1.values_response(0).eq(&[b"value"]));
+            assert_eq!(db1.values_response(0), [b"value"]);
             db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
             db1.values_response(0);
         }

@@ -9,8 +9,9 @@ use resp::RespValue;
 #[derive(Debug)]
 pub enum WorkerMsg {
     Fabric(NodeId, FabricMsg),
-    Tick(time::Instant),
     Command(Token, RespValue),
+    Tick(time::Instant),
+    DHTFabric(NodeId, FabricMsg),
     DHTChange,
     Exit,
 }

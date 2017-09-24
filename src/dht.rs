@@ -38,10 +38,6 @@ const BROADCAST_REQ_INTERVAL_MS: u64 = 30000;
 /// Extra (static) information is attached to NodeId through a Metadata type.
 pub struct DHT<T: Metadata> {
     node: NodeId,
-    slots_per_partition: u16,
-    partitions: usize,
-    replication_factor: usize,
-    cluster: String,
     inner: Arc<Mutex<Inner<T>>>,
 }
 
@@ -219,10 +215,18 @@ impl<T: Metadata> Ring<T> {
             if *status != Owner {
                 *status = Owner;
                 vn.version.event(this);
+            } else {
+                debug!("cant promote {}, it's already an owner of {}", promoted, vn_no);
+                return Ok(());
             }
         } else {
             return Err(format!("{} is not part of vnodes[{}]", promoted, vn_no).into());
         }
+        if !vn.owners.values().any(|&s| s == Pending) {
+            debug!("Removing retiring nodes from vnode {}", vn_no);
+            vn.owners.retain(|_, s| *s != Retiring);
+        }
+
         Ok(())
     }
 
@@ -266,7 +270,7 @@ impl<T: Metadata> Ring<T> {
     }
 
     fn merge(&mut self, mut other: Self) -> Result<bool, GenericError> {
-        debug!("merge {:?} with {:?}", self, other);
+        debug!("merge rings {:?} {:?}", self.version, other.version);
         // sanity checks
         if self.cluster != other.cluster {
             return Err(
@@ -291,13 +295,16 @@ impl<T: Metadata> Ring<T> {
         }
 
         if self.version.descends(&other.version) {
+            debug!("accepting this ring {:?} {:?}", self.version, other.version);
             return Ok(false);
         }
         if other.version.descends(&self.version) {
+            debug!("accepting other ring {:?} {:?}", self.version, other.version);
             *self = other;
             return Ok(true);
         }
 
+        info!("merging diverging ring versions {:?} {:?}", self.version, other.version);
         self.version.merge(&other.version);
 
         // merge nodes
@@ -335,7 +342,7 @@ impl<T: Metadata> Ring<T> {
         if self.vnodes.is_empty() {
             self.vnodes = other.vnodes;
         } else {
-            for (vnode, mut other_vnode) in self.vnodes.iter_mut().zip(other.vnodes) {
+            for (vn_no, (vnode, mut other_vnode)) in self.vnodes.iter_mut().zip(other.vnodes).enumerate() {
                 if vnode.version.descends(&other_vnode.version) {
                     continue;
                 }
@@ -353,6 +360,8 @@ impl<T: Metadata> Ring<T> {
                         }
                         LMEntry::Occupied(mut o) => {
                             let status = o.get_mut();
+                            debug!("conflicting vnode {} vnode {} status {:?} {:?}",
+                                n, vn_no, status, other_status);
                             match (*status, other_status) {
                                 (Owner, _) | (_, Owner) => {
                                     *status = Owner;
@@ -364,6 +373,11 @@ impl<T: Metadata> Ring<T> {
                             }
                         }
                     }
+                }
+
+                if !vnode.owners.values().any(|&s| s == Pending) {
+                    debug!("Removing retiring nodes from vnone {}", vn_no);
+                    vnode.owners.retain(|_, s| *s != Retiring);
                 }
             }
         }
@@ -589,11 +603,8 @@ impl<T: Metadata> DHT<T> {
         assert!(replication_factor >= 1, "Replication factor must be >= 1");
         assert!(replication_factor <= 6, "Replication factor must be <= 6");
 
-        let mut dht = Self::new(fabric, cluster);
+        let dht = Self::new(fabric, cluster);
         let ring = Ring::new(cluster, partitions, replication_factor);
-        dht.partitions = ring.vnodes.len();
-        dht.replication_factor = ring.replication_factor as usize;
-        dht.slots_per_partition = HASH_SLOTS / dht.partitions as u16;
         dht.inner.lock().unwrap().ring = ring;
 
         if let Some(old_node) = old_node {
@@ -614,11 +625,8 @@ impl<T: Metadata> DHT<T> {
         old_node: Option<NodeId>,
     ) -> Result<DHT<T>, GenericError> {
         let addr = fabric.addr();
-        let mut dht = Self::new(fabric, cluster);
+        let dht = Self::new(fabric, cluster);
         let ring = Ring::deserialize(serialized_ring)?;
-        dht.partitions = ring.vnodes.len();
-        dht.replication_factor = ring.replication_factor;
-        dht.slots_per_partition = HASH_SLOTS / dht.partitions as u16;
         dht.inner.lock().unwrap().ring = ring;
 
         if let Some(old_node) = old_node {
@@ -638,7 +646,7 @@ impl<T: Metadata> DHT<T> {
         old_node: Option<NodeId>,
     ) -> Result<DHT<T>, GenericError> {
         let addr = fabric.addr();
-        let mut dht = Self::new(fabric.clone(), cluster);
+        let dht = Self::new(fabric.clone(), cluster);
 
         info!("registering seeds {:?}", seeds);
         for &seed in seeds {
@@ -669,9 +677,6 @@ impl<T: Metadata> DHT<T> {
             return Err("Didn't receive seed ring".into());
         }
 
-        dht.partitions = dht.inner.lock().unwrap().ring.vnodes.len();
-        dht.replication_factor = dht.inner.lock().unwrap().ring.replication_factor;
-        dht.slots_per_partition = HASH_SLOTS / dht.partitions as u16;
         if let Some(old_node) = old_node {
             dht.replace_node(old_node, dht.node, addr, meta).unwrap();
         } else {
@@ -684,6 +689,7 @@ impl<T: Metadata> DHT<T> {
         let inner = Arc::new(Mutex::new(Inner {
             node: fabric.node(),
             ring: Ring::new(cluster, 0, 0),
+
             callback: None,
             fabric: fabric.clone(),
             next_req_broadcast: Instant::now(),
@@ -703,11 +709,7 @@ impl<T: Metadata> DHT<T> {
 
         DHT {
             node: fabric.node(),
-            cluster: cluster.into(),
             inner: inner,
-            slots_per_partition: 0,
-            partitions: 0,
-            replication_factor: 0,
         }
     }
 
@@ -723,14 +725,16 @@ impl<T: Metadata> DHT<T> {
     fn on_message(inner: &mut Inner<T>, from: NodeId, msg: FabricMsg) {
         match msg {
             FabricMsg::DHTSyncReq(version) => if inner.ring.vnodes.is_empty() {
-                error!("Can't reply DHTSyncReq while starting up");
+                warn!("Can't reply DHTSyncReq while starting up");
             } else if inner.ring.version != version {
+                debug!("Replying DHTSyncReq");
                 let _ = inner.fabric.send_msg(
                     from,
                     FabricMsg::DHTSync(Ring::serialize(&inner.ring).unwrap().into()),
                 );
             },
             FabricMsg::DHTSync(bytes) => {
+                debug!("Incoming DHTSync");
                 let mut ring = inner.ring.clone();
                 match Ring::deserialize(&bytes).and_then(|new| ring.merge(new)) {
                     Ok(true) => {
@@ -761,9 +765,6 @@ impl<T: Metadata> DHT<T> {
                 .fabric
                 .send_msg(node, FabricMsg::DHTSync(serialized_ring.clone()));
         }
-        if let Some(callback) = inner.callback.as_ref() {
-            callback();
-        }
     }
 
     fn broadcast_req(inner: &mut Inner<T>) {
@@ -775,6 +776,10 @@ impl<T: Metadata> DHT<T> {
                 .fabric
                 .send_msg(node, FabricMsg::DHTSyncReq(inner.ring.version.clone()));
         }
+    }
+
+    pub fn handler_fabric_msg(&self, from: NodeId, msg: FabricMsg) {
+        Self::on_message(&mut *self.inner.lock().unwrap(), from, msg);
     }
 
     pub fn handler_tick(&self, time: Instant) {
@@ -793,21 +798,18 @@ impl<T: Metadata> DHT<T> {
         self.node
     }
 
-    pub fn cluster(&self) -> &str {
-        &self.cluster
-    }
-
     pub fn partitions(&self) -> usize {
-        self.partitions
+        // FIXME: should not lock
+        self.inner.lock().unwrap().ring.vnodes.len()
     }
 
     pub fn replication_factor(&self) -> usize {
-        self.replication_factor
+        self.inner.lock().unwrap().ring.replication_factor
     }
 
     pub fn key_vnode(&self, key: &[u8]) -> VNodeId {
         // use / instead of % to get continuous hash slots for each vnode
-        (hash_slot(key) / self.slots_per_partition) as VNodeId
+        (hash_slot(key) / (HASH_SLOTS / self.partitions() as VNodeId)) as VNodeId
     }
 
     pub fn vnodes_for_node(&self, node: NodeId) -> (Vec<VNodeId>, Vec<VNodeId>) {
@@ -833,8 +835,8 @@ impl<T: Metadata> DHT<T> {
         include_retiring: bool,
     ) -> Vec<NodeId> {
         // FIXME: this shouldn't alloc
-        let mut result = Vec::with_capacity(self.replication_factor + 1);
         let inner = self.inner.lock().unwrap();
+        let mut result = Vec::with_capacity(inner.ring.replication_factor + 1);
         for (&node, &status) in inner.ring.vnodes[vn_no as usize].owners.iter() {
             match status {
                 Owner => (),
@@ -854,8 +856,8 @@ impl<T: Metadata> DHT<T> {
         include_retiring: bool,
     ) -> Vec<(NodeId, (SocketAddr, T))> {
         // FIXME: this shouldn't alloc
-        let mut result = Vec::with_capacity(self.replication_factor + 1);
         let inner = self.inner.lock().unwrap();
+        let mut result = Vec::with_capacity(inner.ring.replication_factor + 1);
         for (&node_id, &status) in inner.ring.vnodes[vn_no as usize].owners.iter() {
             match status {
                 Owner => (),
@@ -910,6 +912,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn rebalance(&self) -> Result<(), GenericError> {
+        info!("rebalancing ring");
         self.propose(|mut ring| {
             ring.rebalance(self.node)?;
             Ok(ring)
@@ -917,6 +920,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn remove_node(&self, node: NodeId) -> Result<(), GenericError> {
+        info!("removing node {}", node);
         self.propose(|mut ring| {
             ring.remove_node(self.node, node)?;
             Ok(ring)
@@ -924,6 +928,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn join_node(&self, node: NodeId, addr: SocketAddr, meta: T) -> Result<(), GenericError> {
+        info!("joining node {}", node);
         self.propose(|mut ring| {
             ring.join_node(self.node, node, addr, meta)?;
             Ok(ring)
@@ -937,6 +942,7 @@ impl<T: Metadata> DHT<T> {
         addr: SocketAddr,
         meta: T,
     ) -> Result<(), GenericError> {
+        info!("replacing node {} with {}", old_node, node);
         self.propose(|mut ring| {
             ring.replace_node(self.node, old_node, node, addr, meta)?;
             Ok(ring)
@@ -944,6 +950,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn leave_node(&self, node: NodeId) -> Result<(), GenericError> {
+        info!("leaving node {}", node);
         self.propose(|mut ring| {
             ring.leave_node(self.node, node)?;
             Ok(ring)
@@ -951,6 +958,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn promote_pending_node(&self, node: NodeId, vnode: VNodeId) -> Result<(), GenericError> {
+        info!("promoting pending node {} vnode {}", node, vnode);
         self.propose(|mut ring| {
             ring.promote_pending_node(self.node, node, vnode)?;
             Ok(ring)
@@ -961,13 +969,12 @@ impl<T: Metadata> DHT<T> {
     where
         C: FnOnce(Ring<T>) -> Result<Ring<T>, GenericError>,
     {
-        let new_ring = proposal(self.inner.lock().unwrap().ring.clone())?;
-        info!("Proposing new ring version {:?}", new_ring.version);
         let mut inner = self.inner.lock().unwrap();
-        if inner.ring.merge(new_ring)? {
-            Self::broadcast(&mut *inner);
-            Self::call_callback(&mut *inner);
-        }
+        debug!("Executing proposal");
+        inner.ring = proposal(inner.ring.clone())?;
+        info!("Proposing new ring version {:?}", inner.ring.version);
+        Self::broadcast(&mut *inner);
+        Self::call_callback(&mut *inner);
         Ok(())
     }
 }

@@ -36,7 +36,7 @@ version = "1.2"
 features = ["serde_impl"]
 
 [dependencies.bytes]
-version = "0.4.4"
+version = "0.4"
 features = ["serde"]
 
 [dev-dependencies]
