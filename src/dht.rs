@@ -51,8 +51,11 @@ struct Inner<T: Metadata> {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
 enum NodeStatus {
+    // Valid node, as one would expect
     Valid,
+    // Like valid but shouldn't be considered to own anything by rebalance
     Leaving,
+    // Invalid node, does not own anything. Works like a tombstone.
     Invalid,
 }
 
@@ -60,8 +63,13 @@ use self::NodeStatus::*;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
 enum VNodeNodeStatus {
+    // Takes read/write traffic
     Owner,
+    // Takes write traffic while it bootstraps from an Owner
     Pending,
+    // Like Owner, but will go away once there are no more pending
+    // FIXME: once a retiring vnode goes away (vnode goes zombie for a grace period)
+    // other nodes will not sync from it (as sync is a pull)
     Retiring,
 }
 
@@ -90,6 +98,7 @@ struct Ring<T: Metadata> {
     vnodes: Vec<VNode>,
     nodes: IdHashMap<NodeId, Node<T>>,
     replication_factor: usize,
+    // Note: For the version vector to be "valid" all proposedchanges by a node must be serialized
     version: VersionVector,
     cluster: String,
 }
@@ -111,11 +120,11 @@ impl RingDescription {
 impl<T: Metadata> Ring<T> {
     fn serialize(ring: &Ring<T>) -> Result<Vec<u8>, GenericError> {
         bincode::serialize(ring, bincode::Infinite)
-            .map_err(|e| format!("can't serialize Ring: {:?}", e).into())
+            .map_err(|e| format!("Can't serialize Ring: {:?}", e).into())
     }
 
     fn deserialize(bytes: &[u8]) -> Result<Ring<T>, GenericError> {
-        bincode::deserialize(bytes).map_err(|e| format!("can't deserialize Ring: {:?}", e).into())
+        bincode::deserialize(bytes).map_err(|e| format!("Can't deserialize Ring: {:?}", e).into())
     }
 
     fn new(cluster: &str, partitions: u16, replication_factor: u8) -> Self {
@@ -270,7 +279,7 @@ impl<T: Metadata> Ring<T> {
     }
 
     fn merge(&mut self, mut other: Self) -> Result<bool, GenericError> {
-        debug!("merge rings {:?} {:?}", self.version, other.version);
+        debug!("Merging rings {:?} {:?}", self.version, other.version);
         // sanity checks
         if self.cluster != other.cluster {
             return Err(
@@ -291,20 +300,20 @@ impl<T: Metadata> Ring<T> {
             );
         }
         if other.vnodes.is_empty() {
-            return Err("other ring isn't valid".into());
+            return Err("Other ring isn't valid".into());
         }
 
         if self.version.descends(&other.version) {
-            debug!("accepting this ring {:?} {:?}", self.version, other.version);
+            debug!("Accepting this ring {:?} {:?}", self.version, other.version);
             return Ok(false);
         }
         if other.version.descends(&self.version) {
-            debug!("accepting other ring {:?} {:?}", self.version, other.version);
+            debug!("Accepting other ring {:?} {:?}", self.version, other.version);
             *self = other;
             return Ok(true);
         }
 
-        info!("merging diverging ring versions {:?} {:?}", self.version, other.version);
+        info!("Merging diverging ring versions {:?} {:?}", self.version, other.version);
         self.version.merge(&other.version);
 
         // merge nodes
