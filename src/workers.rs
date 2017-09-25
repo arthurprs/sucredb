@@ -1,6 +1,5 @@
 use std::{thread, time};
 use std::sync::mpsc;
-use std::boxed::FnBox;
 use fabric::FabricMsg;
 use database::{NodeId, Token};
 use rand::{thread_rng, Rng};
@@ -51,11 +50,12 @@ impl WorkerManager {
     pub fn start<F>(&mut self, mut worker_fn_gen: F)
     where
         F: FnMut()
-            -> Box<FnBox(mpsc::Receiver<WorkerMsg>) + Send>,
+            -> Box<FnMut(mpsc::Receiver<WorkerMsg>) + Send>,
     {
         assert!(self.channels.is_empty());
         for i in 0..self.thread_count {
-            let worker_fn = worker_fn_gen();
+            // since neither closure cloning or Box<FnOnce> are stable use Box<FnMut>
+            let mut worker_fn = worker_fn_gen();
             let (tx, rx) = mpsc::channel();
             self.threads.push(
                 thread::Builder::new()
