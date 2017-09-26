@@ -1,5 +1,7 @@
 use std::{thread, time};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use fabric::FabricMsg;
 use database::{NodeId, Token};
 use rand::{thread_rng, Rng};
@@ -18,8 +20,9 @@ pub enum WorkerMsg {
 /// A Sender attached to a WorkerManager
 /// messages are distributed to threads in a Round-Robin manner.
 pub struct WorkerSender {
-    cursor: usize,
-    channels: Vec<mpsc::Sender<WorkerMsg>>,
+    cursor: AtomicUsize,
+    // FIXME: We don't want a Mutex here
+    channels: Arc<Vec<Mutex<mpsc::Sender<WorkerMsg>>>>,
 }
 
 /// A thread pool containing threads prepared to receive WorkerMsg's
@@ -29,7 +32,7 @@ pub struct WorkerManager {
     ticker_chan: Option<mpsc::Sender<()>>,
     thread_count: usize,
     threads: Vec<thread::JoinHandle<()>>,
-    channels: Vec<mpsc::Sender<WorkerMsg>>,
+    channels: Arc<Vec<Mutex<mpsc::Sender<WorkerMsg>>>>,
     node: NodeId,
 }
 
@@ -41,8 +44,8 @@ impl WorkerManager {
             ticker_thread: None,
             ticker_chan: None,
             thread_count: thread_count,
-            threads: Vec::new(),
-            channels: Vec::new(),
+            threads: Default::default(),
+            channels: Default::default(),
             node: node,
         }
     }
@@ -53,6 +56,7 @@ impl WorkerManager {
             -> Box<FnMut(mpsc::Receiver<WorkerMsg>) + Send>,
     {
         assert!(self.channels.is_empty());
+        let mut channels = Vec::new();
         for i in 0..self.thread_count {
             // since neither closure cloning or Box<FnOnce> are stable use Box<FnMut>
             let mut worker_fn = worker_fn_gen();
@@ -66,13 +70,14 @@ impl WorkerManager {
                     })
                     .unwrap(),
             );
-            self.channels.push(tx);
+            channels.push(Mutex::new(tx));
         }
+        self.channels = Arc::new(channels);
 
         let (ticker_tx, ticker_rx) = mpsc::channel();
         self.ticker_chan = Some(ticker_tx);
         let ticker_interval = self.ticker_interval;
-        let mut sender = self.sender();
+        let sender = self.sender();
         self.ticker_thread = Some(
             thread::Builder::new()
                 .name(format!("WorkerTicker:{}", self.node))
@@ -91,32 +96,34 @@ impl WorkerManager {
     pub fn sender(&self) -> WorkerSender {
         assert!(!self.channels.is_empty());
         WorkerSender {
-            cursor: thread_rng().gen(),
+            cursor: AtomicUsize::new(thread_rng().gen()),
             channels: self.channels.clone(),
         }
     }
 }
 
 impl WorkerSender {
-    pub fn send(&mut self, msg: WorkerMsg) {
+    pub fn send(&self, msg: WorkerMsg) {
         // right now only possible error is disconected, so no need to do anything
         let _ = self.try_send(msg);
     }
-    pub fn try_send(&mut self, msg: WorkerMsg) -> Result<(), mpsc::SendError<WorkerMsg>> {
+    pub fn try_send(&self, msg: WorkerMsg) -> Result<(), mpsc::SendError<WorkerMsg>> {
         debug!("try_send {:?}", msg);
-        let i = self.cursor;
-        self.cursor = self.cursor.wrapping_add(1);
-        self.channels[i % self.channels.len()].send(msg)
+        let i = self.cursor.fetch_add(1, Ordering::Relaxed);
+        self.channels[i % self.channels.len()]
+            .lock()
+            .unwrap()
+            .send(msg)
     }
 }
 
 impl Drop for WorkerManager {
     fn drop(&mut self) {
-        if let Some(chan) = self.ticker_chan.take() {
-            let _ = chan.send(());
+        for c in &*self.channels {
+            let _ = c.lock().map(|c| c.send(WorkerMsg::Exit));
         }
-        for chan in self.channels.drain(..) {
-            let _ = chan.send(WorkerMsg::Exit);
+        if let Some(c) = self.ticker_chan.take() {
+            let _ = c.send(());
         }
         if let Some(t) = self.ticker_thread.take() {
             let _ = t.join();

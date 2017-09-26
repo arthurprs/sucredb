@@ -1,5 +1,4 @@
 use std::{net, time};
-use std::cell::RefCell;
 use std::sync::{Arc, Mutex, RwLock};
 use dht::{RingDescription, DHT};
 use version_vector::*;
@@ -179,25 +178,25 @@ impl Database {
         // register dht nodes into fabric
         db.fabric.set_nodes(db.dht.members().into_iter());
         // fabric dht messages
-        let sender = RefCell::new(db.sender());
+        let sender = db.sender();
         let callback = move |f, m| {
-            sender.borrow_mut().send(WorkerMsg::DHTFabric(f, m));
+            sender.send(WorkerMsg::DHTFabric(f, m));
         };
         db.fabric
             .register_msg_handler(FabricMsgType::DHT, Box::new(callback));
 
         // setup dht change callback
-        let sender = RefCell::new(db.sender());
+        let sender = db.sender();
         let callback = move || {
-            sender.borrow_mut().send(WorkerMsg::DHTChange);
+            sender.send(WorkerMsg::DHTChange);
         };
         db.dht.set_callback(Box::new(callback));
 
         // other types of fabric msgs
         for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch] {
-            let sender = RefCell::new(db.sender());
+            let sender = db.sender();
             let callback = move |f, m| {
-                sender.borrow_mut().send(WorkerMsg::Fabric(f, m));
+                sender.send(WorkerMsg::Fabric(f, m));
             };
             db.fabric.register_msg_handler(msg_type, Box::new(callback));
         }

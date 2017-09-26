@@ -1,7 +1,7 @@
 use std::{io, thread};
 use std::net::SocketAddr;
 use std::time::Duration;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::hash_map::Entry as HMEntry;
 
@@ -65,8 +65,8 @@ impl codec::Encoder for FramedBincodeCodec {
     }
 }
 
-pub type FabricMsgFn = Box<Fn(NodeId, FabricMsg) + Send>;
-pub type FabricConFn = Box<Fn(NodeId) + Send>;
+pub type FabricMsgFn = Box<Fn(NodeId, FabricMsg) + Send + Sync>;
+pub type FabricConFn = Box<Fn(NodeId) + Send + Sync>;
 type SenderChan = fmpsc::UnboundedSender<FabricMsg>;
 type InitType = io::Result<(Arc<SharedContext>, foneshot::Sender<()>)>;
 
@@ -108,24 +108,22 @@ struct WriterContext {
 struct SharedContext {
     node: NodeId,
     addr: SocketAddr,
-    timeout: u32, // not currently used
     loop_remote: tokio::reactor::Remote,
-    // FIXME: rwlock or make this immutable, removing the need for a lock
-    msg_handlers: Mutex<LinearMap<u8, FabricMsgFn>>,
-    con_handlers: Mutex<Vec<FabricConFn>>,
-    nodes_addr: Mutex<IdHashMap<NodeId, SocketAddr>>,
-    // FIXME: rwlock
-    connections: Mutex<IdHashMap<NodeId, Vec<(usize, SenderChan)>>>,
+    msg_handlers: RwLock<LinearMap<u8, FabricMsgFn>>,
+    con_handlers: RwLock<Vec<FabricConFn>>,
+    // TODO: unify nodes_addr and connections maps
+    nodes_addr: RwLock<IdHashMap<NodeId, SocketAddr>>,
+    connections: RwLock<IdHashMap<NodeId, Vec<(usize, SenderChan)>>>,
     connection_gen: AtomicUsize,
 }
 
 impl SharedContext {
     fn register_node(&self, peer: NodeId, peer_addr: SocketAddr) -> Option<SocketAddr> {
-        self.nodes_addr.lock().unwrap().insert(peer, peer_addr)
+        self.nodes_addr.write().unwrap().insert(peer, peer_addr)
     }
 
     fn remove_node(&self, peer: NodeId) -> Option<SocketAddr> {
-        self.nodes_addr.lock().unwrap().remove(&peer)
+        self.nodes_addr.write().unwrap().remove(&peer)
     }
 
     fn register_connection(&self, peer: NodeId, sender: SenderChan) -> usize {
@@ -136,14 +134,14 @@ impl SharedContext {
             connection_id
         );
         let is_new = {
-            let mut locked = self.connections.lock().unwrap();
+            let mut locked = self.connections.write().unwrap();
             let entry = locked.entry(peer).or_insert_with(Default::default);
             let is_new = entry.is_empty();
             entry.push((connection_id, sender));
             is_new
         };
         if is_new {
-            for handler in &mut *self.con_handlers.lock().unwrap() {
+            for handler in &*self.con_handlers.read().unwrap() {
                 handler(peer);
             }
         }
@@ -152,7 +150,7 @@ impl SharedContext {
 
     fn remove_connection(&self, peer: NodeId, connection_id: usize) {
         debug!("Remove_connection peer: {}, id: {:?}", peer, connection_id);
-        let mut locked = self.connections.lock().unwrap();
+        let mut locked = self.connections.write().unwrap();
         if let HMEntry::Occupied(mut o) = locked.entry(peer) {
             let p = o.get()
                 .iter()
@@ -181,7 +179,7 @@ impl ReaderContext {
         let msg_type = msg.get_type();
         if let Some(handler) = self.context
             .msg_handlers
-            .lock()
+            .write()
             .unwrap()
             .get_mut(&(msg_type as u8))
         {
@@ -272,7 +270,7 @@ impl Fabric {
             .and_then(move |_| {
                 let node = expected_node.ok_or(io::ErrorKind::NotFound)?;
                 let addr_opt = {
-                    let locked = context1.nodes_addr.lock().unwrap();
+                    let locked = context1.nodes_addr.read().unwrap();
                     locked.get(&node).cloned()
                 };
                 if let Some(addr) = addr_opt {
@@ -356,7 +354,6 @@ impl Fabric {
         let context = Arc::new(SharedContext {
             node: node,
             addr: config.fabric_addr,
-            timeout: config.fabric_timeout,
             loop_remote: handle.remote().clone(),
             nodes_addr: Default::default(),
             msg_handlers: Default::default(),
@@ -401,13 +398,13 @@ impl Fabric {
     pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: FabricMsgFn) {
         self.context
             .msg_handlers
-            .lock()
+            .write()
             .unwrap()
             .insert(msg_type as u8, handler);
     }
 
     pub fn register_con_handler(&self, handler: FabricConFn) {
-        self.context.con_handlers.lock().unwrap().push(handler);
+        self.context.con_handlers.write().unwrap().push(handler);
     }
 
     pub fn register_seed(&self, addr: SocketAddr) {
@@ -426,7 +423,7 @@ impl Fabric {
     }
 
     pub fn connections(&self) -> Vec<NodeId> {
-        let writers = self.context.connections.lock().unwrap();
+        let writers = self.context.connections.read().unwrap();
         writers
             .iter()
             .filter(|&(_, c)| !c.is_empty())
@@ -438,7 +435,7 @@ impl Fabric {
     where
         I: Iterator<Item = (NodeId, SocketAddr)>,
     {
-        let mut nodes = self.context.nodes_addr.lock().unwrap();
+        let mut nodes = self.context.nodes_addr.write().unwrap();
         let mut x_nodes = nodes.clone();
         for (node, addr) in it {
             if node != self.context.node {
@@ -483,11 +480,10 @@ impl Fabric {
                 }
             }
         }
-        let mut writers = self.context.connections.lock().unwrap();
-        match writers.entry(node) {
-            HMEntry::Occupied(mut o) => if let Some(&mut (connection_id, ref mut chan)) =
-                thread_rng().choose_mut(o.get_mut())
-            {
+
+        let connections = self.context.connections.read().unwrap();
+        if let Some(o) = connections.get(&node) {
+            if let Some(&(connection_id, ref chan)) = thread_rng().choose(o) {
                 trace!("send_msg node:{}, chan:{} {:?}", node, connection_id, msg);
                 if let Err(e) = chan.unbounded_send(msg) {
                     warn!(
@@ -501,10 +497,9 @@ impl Fabric {
                 }
             } else {
                 warn!("DROPING MSG - No channel available for {:?}", node);
-            },
-            HMEntry::Vacant(_v) => {
-                warn!("DROPING MSG - No entry for node {:?}", node);
             }
+        } else {
+            warn!("DROPING MSG - No entry for node {:?}", node);
         }
 
         Err(FabricError::NoRoute)
