@@ -24,6 +24,7 @@ pub struct StorageManager {
 }
 
 // TODO: support TTL
+// TODO: specific comparator for log cf
 // TODO: merge operator would be a huge win
 pub struct Storage {
     db: Arc<rocksdb::DB>,

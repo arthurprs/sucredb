@@ -225,7 +225,11 @@ impl<T: Metadata> Ring<T> {
                 *status = Owner;
                 vn.version.event(this);
             } else {
-                debug!("cant promote {}, it's already an owner of {}", promoted, vn_no);
+                debug!(
+                    "Can't promote {}, it's already an owner of {}",
+                    promoted,
+                    vn_no
+                );
                 return Ok(());
             }
         } else {
@@ -308,12 +312,20 @@ impl<T: Metadata> Ring<T> {
             return Ok(false);
         }
         if other.version.descends(&self.version) {
-            debug!("Accepting other ring {:?} {:?}", self.version, other.version);
+            debug!(
+                "Accepting other ring {:?} {:?}",
+                self.version,
+                other.version
+            );
             *self = other;
             return Ok(true);
         }
 
-        info!("Merging diverging ring versions {:?} {:?}", self.version, other.version);
+        info!(
+            "Merging diverging ring versions {:?} {:?}",
+            self.version,
+            other.version
+        );
         self.version.merge(&other.version);
 
         // merge nodes
@@ -351,7 +363,9 @@ impl<T: Metadata> Ring<T> {
         if self.vnodes.is_empty() {
             self.vnodes = other.vnodes;
         } else {
-            for (vn_no, (vnode, mut other_vnode)) in self.vnodes.iter_mut().zip(other.vnodes).enumerate() {
+            for (vn_no, (vnode, mut other_vnode)) in
+                self.vnodes.iter_mut().zip(other.vnodes).enumerate()
+            {
                 if vnode.version.descends(&other_vnode.version) {
                     continue;
                 }
@@ -369,8 +383,13 @@ impl<T: Metadata> Ring<T> {
                         }
                         LMEntry::Occupied(mut o) => {
                             let status = o.get_mut();
-                            debug!("conflicting vnode {} vnode {} status {:?} {:?}",
-                                n, vn_no, status, other_status);
+                            debug!(
+                                "Conflicting vnode {} vnode {} status {:?} {:?}",
+                                n,
+                                vn_no,
+                                status,
+                                other_status
+                            );
                             match (*status, other_status) {
                                 (Owner, _) | (_, Owner) => {
                                     *status = Owner;
@@ -466,7 +485,6 @@ impl<T: Metadata> Ring<T> {
                 .map(|(n, _)| *n)
                 .collect();
             for (from, to) in doing_much.into_iter().zip(candidates) {
-                println!("rh ({}) {} -> {}", vn_no, from, to);
                 assert!(vn.owners.insert(to, Pending).is_none());
                 assert!(vn.owners.insert(from, Retiring).is_some());
                 assert!(node_map.get_mut(&from).unwrap().remove(&vn_no));
@@ -484,7 +502,6 @@ impl<T: Metadata> Ring<T> {
                     .filter(|&(n, _)| !vn.owners.contains_key(n))
                     .min_by_key(|&(_, ref p)| p.len())
                 {
-                    println!("lw ({}) {}", vn_no, node);
                     assert!(vns.insert(vn_no));
                     assert!(vn.owners.insert(node, Pending).is_none());
                     continue;
@@ -500,13 +517,12 @@ impl<T: Metadata> Ring<T> {
                     })
                     .min()
                 {
-                    println!("unretire ({}) {}", vn_no, node);
                     assert!(node_map.get_mut(&node).unwrap().insert(vn_no));
                     assert!(vn.owners.insert(node, Owner).is_some());
                     continue;
                 }
                 unreachable!(
-                    "cant find replica for vnode {} {:?} rf:{}",
+                    "Can't find replica for vnode {} {:?} rf:{}",
                     vn_no,
                     vn.owners,
                     self.replication_factor
@@ -657,14 +673,14 @@ impl<T: Metadata> DHT<T> {
         let addr = fabric.addr();
         let dht = Self::new(fabric.clone(), cluster);
 
-        info!("registering seeds {:?}", seeds);
+        info!("Registering seeds {:?}", seeds);
         for &seed in seeds {
             if seed != addr {
                 fabric.register_seed(seed);
             }
         }
 
-        info!("connecting to seeds");
+        info!("Connecting to seeds");
         let mut connections = Vec::new();
         for _ in 0..10 {
             thread::sleep(Duration::from_millis(500));
@@ -921,7 +937,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn rebalance(&self) -> Result<(), GenericError> {
-        info!("rebalancing ring");
+        info!("Rebalancing ring");
         self.propose(|mut ring| {
             ring.rebalance(self.node)?;
             Ok(ring)
@@ -929,7 +945,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn remove_node(&self, node: NodeId) -> Result<(), GenericError> {
-        info!("removing node {}", node);
+        info!("Removing node {}", node);
         self.propose(|mut ring| {
             ring.remove_node(self.node, node)?;
             Ok(ring)
@@ -937,7 +953,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn join_node(&self, node: NodeId, addr: SocketAddr, meta: T) -> Result<(), GenericError> {
-        info!("joining node {}", node);
+        info!("Joining node {}", node);
         self.propose(|mut ring| {
             ring.join_node(self.node, node, addr, meta)?;
             Ok(ring)
@@ -951,7 +967,7 @@ impl<T: Metadata> DHT<T> {
         addr: SocketAddr,
         meta: T,
     ) -> Result<(), GenericError> {
-        info!("replacing node {} with {}", old_node, node);
+        info!("Replacing node {} with {}", old_node, node);
         self.propose(|mut ring| {
             ring.replace_node(self.node, old_node, node, addr, meta)?;
             Ok(ring)
@@ -959,7 +975,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn leave_node(&self, node: NodeId) -> Result<(), GenericError> {
-        info!("leaving node {}", node);
+        info!("Leaving node {}", node);
         self.propose(|mut ring| {
             ring.leave_node(self.node, node)?;
             Ok(ring)
@@ -967,7 +983,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn promote_pending_node(&self, node: NodeId, vnode: VNodeId) -> Result<(), GenericError> {
-        info!("promoting pending node {} vnode {}", node, vnode);
+        info!("Promoting pending node {} vnode {}", node, vnode);
         self.propose(|mut ring| {
             ring.promote_pending_node(self.node, node, vnode)?;
             Ok(ring)

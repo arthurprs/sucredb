@@ -27,8 +27,8 @@ struct Stats {
 // track deleted keys pending physical deletion (is this a good idea? maybe a compaction filter?)
 // pruning old nodes from node clocks (is it possible?)
 // inner vnode parallelism
-// track bad peers with the fabric or gossip and use that info
-// avoid fill/strip altogether, it saves just a bit of storage but not much
+// track dead peers with the fabric or gossip and use that info
+// avoid strip altogether, it saves just a bit of storage but not much
 
 pub struct Database {
     pub dht: DHT<net::SocketAddr>,
@@ -68,20 +68,19 @@ macro_rules! vnode {
 
 impl Database {
     pub fn new(config: &Config, response_fn: DatabaseResponseFn) -> Arc<Database> {
+        info!("Initializing database");
         if config.cmd_init.is_some()
-            && !is_dir_empty_or_absent(&config.data_dir).expect("failed to open data dir")
+            && !is_dir_empty_or_absent(&config.data_dir).expect("Failed to open data dir")
         {
-            panic!("can't init cluster when data directory isn't clean");
+            panic!("Can't init cluster when data directory isn't clean");
         }
 
-        let storage_manager = StorageManager::new(&config.data_dir).unwrap();
+        let storage_manager =
+            StorageManager::new(&config.data_dir).expect("Failed to create storage manager");
         let meta_storage = storage_manager.open(u16::max_value()).unwrap();
 
         let (old_node, node) = if let Some(s_node) = meta_storage.get_vec(b"node") {
-            let prev_node = String::from_utf8(s_node)
-                .unwrap()
-                .parse::<NodeId>()
-                .unwrap();
+            let prev_node: NodeId = String::from_utf8(s_node).unwrap().parse().unwrap();
             if meta_storage.get_vec(b"clean_shutdown").is_some() {
                 (None, prev_node)
             } else {
@@ -136,7 +135,7 @@ impl Database {
             ).expect("can't join cluster")
         };
 
-        // save init (1 of 2)
+        // save init (2 of 2)
         meta_storage.set(b"ring", &dht.save_ring().unwrap());
         meta_storage.sync();
 
@@ -184,7 +183,8 @@ impl Database {
         let callback = move |f, m| {
             sender.borrow_mut().send(WorkerMsg::DHTFabric(f, m));
         };
-        db.fabric.register_msg_handler(FabricMsgType::DHT, Box::new(callback));
+        db.fabric
+            .register_msg_handler(FabricMsgType::DHT, Box::new(callback));
 
         // setup dht change callback
         let sender = RefCell::new(db.sender());
@@ -401,7 +401,7 @@ impl Database {
 
 impl Drop for Database {
     fn drop(&mut self) {
-        info!("droping database");
+        debug!("Droping database");
         // force dropping vnodes before other components
         let _ = self.vnodes.write().map(|mut vns| vns.clear());
     }

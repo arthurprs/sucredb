@@ -24,6 +24,7 @@ use config::Config;
 use utils::{into_io_error, GenericError, IdHashMap};
 use database::NodeId;
 
+// u32(le) payload len + bincode payload
 struct FramedBincodeCodec;
 
 impl codec::Decoder for FramedBincodeCodec {
@@ -150,7 +151,7 @@ impl SharedContext {
     }
 
     fn remove_connection(&self, peer: NodeId, connection_id: usize) {
-        debug!("remove_connection peer: {}, id: {:?}", peer, connection_id);
+        debug!("Remove_connection peer: {}, id: {:?}", peer, connection_id);
         let mut locked = self.connections.lock().unwrap();
         if let HMEntry::Occupied(mut o) = locked.entry(peer) {
             let p = o.get()
@@ -163,7 +164,7 @@ impl SharedContext {
                 o.remove();
             }
         } else {
-            panic!("peer not found in connections");
+            panic!("Peer not found in connections");
         }
     }
 }

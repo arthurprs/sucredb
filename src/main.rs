@@ -109,6 +109,13 @@ fn configure() -> config::Config {
                 .help("Fabric listen addr")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("seed_nodes")
+                .short("s")
+                .long("seeds")
+                .multiple(true)
+                .takes_value(true),
+        )
         .subcommand(
             SubCommand::with_name("init")
                 .about("Init and configure the cluster")
@@ -149,17 +156,28 @@ fn configure() -> config::Config {
     }
 
     if let Some(v) = matches.value_of("listen_addr") {
-        config.listen_addr = v.parse().unwrap();
+        config.listen_addr = v.parse().expect("Can't parse listen_addr");
+    }
+
+    if let Some(v) = matches.values_of("seed_nodes") {
+        config.seed_nodes = v.map(|v| v.parse().expect("Can't parse seed_nodes"))
+            .collect();
     }
 
     if let Some(v) = matches.value_of("fabric_addr") {
-        config.fabric_addr = v.parse().unwrap();
+        config.fabric_addr = v.parse().expect("Can't parse fabric_addr");
     }
 
     if let Some(sub) = matches.subcommand_matches("init") {
         config.cmd_init = Some(InitCommand {
-            partitions: sub.value_of("partitions").unwrap().parse().unwrap(),
-            replication_factor: sub.value_of("replication_factor").unwrap().parse().unwrap(),
+            partitions: sub.value_of("partitions")
+                .unwrap()
+                .parse()
+                .expect("Can't parse partitions"),
+            replication_factor: sub.value_of("replication_factor")
+                .unwrap()
+                .parse()
+                .expect("Can't parse replication_factor"),
         });
     }
 

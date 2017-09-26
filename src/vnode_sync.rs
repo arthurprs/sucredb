@@ -131,14 +131,14 @@ impl SyncKeysIterator {
             if self.broken {
                 return Err(Err(()));
             }
-            // fetch log in 10_000 key batches
+            // fetch log in 1_000 key batches
             // reserve a dedup hashmap with half of iter len + 1
             // this way it will only resize once at the worst case
             let mut keys = HashSet::with_capacity(self.dots_delta.size_hint().0 / 2 + 1);
             for (n, v) in self.dots_delta.by_ref() {
                 if let Some(key) = state.logs.get(n, v) {
                     keys.insert(key);
-                    if keys.len() >= 10_000 {
+                    if keys.len() >= 1_000 {
                         break;
                     }
                 } else {
@@ -151,7 +151,7 @@ impl SyncKeysIterator {
             if keys.is_empty() {
                 return Err(Ok(()));
             }
-            debug!("sync will send key batch {:?}", keys);
+            debug!("Sync will send key batch with {:?} keys", keys.len());
             self.keys = keys.into_iter();
         }
     }

@@ -43,10 +43,10 @@ features = ["serde"]
 env_logger = "0.4"
 
 [profile.dev]
-codegen-units=2
+codegen-units=4
 
 [profile.test]
-codegen-units=2
+codegen-units=4
 
 # enable for profiling
 # [profile.release]

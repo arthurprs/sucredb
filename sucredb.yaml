@@ -18,11 +18,11 @@
 # Location of data directory in the file system
 data_dir: "./data"
 
-# URL to etcd, used to manage the cluster metadata
-# All key/values will have the "/sucredb/{cluster_name}/" prefix
-etcd_addr: "http://127.0.0.1:2379"
+# Seed nodes when joining a cluster
+# seed_nodes: ["123.123.123:16379"]
+seed_nodes: []
 
-# Cluster name, must be the same for nodes to see each other in etcd
+# Cluster name, must be the same for nodes to "see" each other
 cluster_name: "default"
 
 # Ip and port to bind the socket for client connections

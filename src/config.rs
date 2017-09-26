@@ -115,32 +115,29 @@ pub fn parse_size(size_text: &str) -> Result<i64, GenericError> {
 
 macro_rules! cfg {
     ($yaml: ident, $target: ident, $string: ident, $method: ident) => (
-        if let Some(v) = $yaml.get(stringify!($string)).and_then(|v| v.$method()) {
+        if let Some(v) = $yaml.get(stringify!($string)) {
+            let v = v.$method().expect(concat!("Can't access field with", stringify!($method)));
             $target.$string = v.into();
         }
     );
     ($yaml: ident, $target: ident, $string: ident, $method: ident, try_into) => (
-        if let Some(v) = $yaml.get(stringify!($string)).and_then(|v| v.$method()) {
-            $target.$string = v.try_into().expect("Can't convert");
+        if let Some(v) = $yaml.get(stringify!($string)) {
+            let v = v.$method().expect(concat!("Can't access field with", stringify!($method)));
+            $target.$string = v.try_into().expect(concat!("Can't convert ", stringify!($string)));
         }
     );
-    ($yaml: ident, $target: ident, $string: ident, $method: ident, $convert: ident) => (
-        if let Some(v) = $yaml.get(stringify!($string)).and_then(|v| v.$method()) {
+    ($yaml: ident, $target: ident, $string: ident, $method: ident, $convert: expr) => (
+        if let Some(v) = $yaml.get(stringify!($string)) {
+            let v = v.$method().expect(concat!("Can't access key ", stringify!($string), " with", stringify!($method)));
             $target.$string =
-                $convert(v).expect(concat!("Can't parse with ", stringify!($convert)))
-        }
-    );
-    ($yaml: ident, $target: ident, $string: ident, $method: ident, $convert: ident, try_into) => (
-        if let Some(v) = $yaml.get(stringify!($string)).and_then(|v| v.$method()) {
-            $target.$string =
-                $convert(v).expect(concat!("Can't parse with ", stringify!($convert)))
-                .try_into().expect("Can't convert");
+                $convert(v).expect(concat!("Can't convert ", stringify!($string), " with ", stringify!($convert)))
+                .try_into().expect(concat!("Can't convert ", stringify!($string)));
         }
     );
 }
 
 pub fn read_config_file(path: &Path, config: &mut Config) {
-    debug!("reading config file");
+    debug!("Reading config file");
     let yaml = {
         let mut s = String::new();
         File::open(path)
@@ -148,48 +145,40 @@ pub fn read_config_file(path: &Path, config: &mut Config) {
             .expect("Error reading config file");
         yaml::from_str::<yaml::Value>(&s).expect("Error parsing config file")
     };
-    debug!("done reading config file: {:?}", config);
+    debug!("Done reading config file: {:?}", config);
 
     cfg!(yaml, config, data_dir, as_str);
     cfg!(yaml, config, cluster_name, as_str);
     cfg!(yaml, config, listen_addr, as_str, try_into);
     cfg!(yaml, config, fabric_addr, as_str, try_into);
     // pub cmd_init: Option<InitCommand>,
-    cfg!(yaml, config, worker_timer, as_str, parse_duration, try_into);
+    cfg!(yaml, config, worker_timer, as_str, parse_duration);
     cfg!(yaml, config, worker_count, as_u64, try_into);
     cfg!(yaml, config, sync_incomming_max, as_u64, try_into);
     cfg!(yaml, config, sync_outgoing_max, as_u64, try_into);
-    // cfg!(yaml, config, sync_auto, as_bool);
-    cfg!(yaml, config, sync_timeout, as_str, parse_duration, try_into);
-    cfg!(
-        yaml,
-        config,
-        sync_msg_timeout,
-        as_str,
-        parse_duration,
-        try_into
-    );
+    cfg!(yaml, config, sync_auto, as_bool);
+    cfg!(yaml, config, sync_timeout, as_str, parse_duration);
+    cfg!(yaml, config, sync_msg_timeout, as_str, parse_duration);
     cfg!(yaml, config, sync_msg_inflight, as_u64, try_into);
-    cfg!(
-        yaml,
-        config,
-        fabric_timeout,
-        as_str,
-        parse_duration,
-        try_into
-    );
-    cfg!(
-        yaml,
-        config,
-        request_timeout,
-        as_str,
-        parse_duration,
-        try_into
-    );
+    cfg!(yaml, config, fabric_timeout, as_str, parse_duration);
+    cfg!(yaml, config, request_timeout, as_str, parse_duration);
     cfg!(yaml, config, client_connection_max, as_u64, try_into);
     cfg!(yaml, config, value_version_max, as_u64, try_into);
     cfg!(yaml, config, consistency_read, as_str, try_into);
     cfg!(yaml, config, consistency_write, as_str, try_into);
+
+    if let Some(v) = yaml.get("seed_nodes") {
+        config.seed_nodes = v.as_sequence()
+            .expect("seed_nodes is not a sequence")
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .expect("seed_nodes element is not a string")
+                    .try_into()
+                    .expect("seed_nodes element can't be parsed")
+            })
+            .collect();
+    }
 
     if let Some(config_value) = yaml.get("logging") {
         setup_logging(config_value);

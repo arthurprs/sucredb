@@ -81,12 +81,12 @@ OK
 
 **Requirements**
 
-* Sucredb uses etcd 3.0+ to coordinate cluster changes, so you'll need an instance of it, check https://coreos.com/etcd.
-* Needs a reasonably recent Rust (nightly[1]) and C++ compiler (for Rocksdb).
+* Needs a reasonably recent Rust (nightly[1])
+* C++ compiler (for Rocksdb).
 
 **Running**
 
-* The following setup will use the default etcd settings (lcocalhost, default port).
+* The following setup will use the default settings.
 * Clone the repo and enter repository root
 * `cargo install .` [2]
 * `sucredb --help`
@@ -97,11 +97,11 @@ Single/First Node
 
 Second node
 
-`sucredb -d datadir2 -l 127.0.0.1:6378 -f 127.0.0.1:16378`
+`sucredb -d datadir2 -l 127.0.0.1:6378 -f 127.0.0.1:16378 -s 127.0.0.1:16379`
 
 [1] Mostly due to the try_from feature that should be stable soon.
 
-[2] Be patient.
+[2] Be patient as rocksdb takes a long time to compile.
 
 # Configuration
 

@@ -1,7 +1,9 @@
 use std::convert::TryFrom;
 use std::str::FromStr;
+use std::fmt;
 
 /// Identifier for a Database instance
+/// node id should be a positive i64 to work nicelly with the RESP protocol
 pub type NodeId = u64;
 /// Identifier for physical node (high u32 of NodeId)
 pub type PhysicalNodeId = u32;
@@ -20,8 +22,8 @@ impl Cookie {
     }
 }
 
-impl ::std::fmt::Debug for Cookie {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+impl fmt::Debug for Cookie {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:016X}{:016X}", self.0, self.1)
     }
 }

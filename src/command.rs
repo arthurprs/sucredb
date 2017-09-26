@@ -88,7 +88,7 @@ impl Database {
             }
             b"CONFIG" | b"config" => self.cmd_config(token, args),
             _ => {
-                debug!("unknown command {:?}", cmd);
+                debug!("Unknown command {:?}", cmd);
                 Err(CommandError::UnknownCommand)
             }
         };
@@ -109,7 +109,7 @@ impl Database {
         } else {
             self.config.consistency_read
         };
-        metrics::REQUEST_READ.mark(1);
+        metrics::REQUEST_GET.mark(1);
         Ok(self.get(token, args[0], consistency))
     }
 
@@ -125,7 +125,7 @@ impl Database {
         } else {
             self.config.consistency_write
         };
-        metrics::REQUEST_WRITE.mark(1);
+        metrics::REQUEST_PUT.mark(1);
         Ok(self.set(
             token,
             args[0],
@@ -148,7 +148,7 @@ impl Database {
         } else {
             self.config.consistency_write
         };
-        metrics::REQUEST_DELETE.mark(1);
+        metrics::REQUEST_DEL.mark(1);
         Ok(self.set(token, args[0], None, vv, consistency, false))
     }
 
