@@ -410,7 +410,6 @@ impl Drop for Database {
 #[cfg(test)]
 mod tests {
     use std::{fs, net, ops, thread};
-    use std::time::Duration;
     use std::sync::{Arc, Mutex};
     use std::collections::HashMap;
     use super::*;
@@ -420,10 +419,7 @@ mod tests {
     use resp::RespValue;
     use config;
     use types::ConsistencyLevel::*;
-
-    fn sleep_ms(ms: u64) {
-        thread::sleep(Duration::from_millis(ms));
-    }
+    use utils::sleep_ms;
 
     struct TestDatabase {
         db: Arc<Database>,

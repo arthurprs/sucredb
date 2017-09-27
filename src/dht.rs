@@ -950,6 +950,15 @@ impl<T: Metadata> DHT<T> {
         })
     }
 
+    #[cfg(test)]
+    pub fn finish_rebalance(&self) -> Result<(), GenericError> {
+        info!("Finish Rebalancing ring");
+        self.propose(|mut ring| {
+            ring.finish_rebalance(self.node)?;
+            Ok(ring)
+        })
+    }
+
     pub fn remove_node(&self, node: NodeId) -> Result<(), GenericError> {
         info!("Removing node {}", node);
         self.propose(|mut ring| {
@@ -1014,30 +1023,120 @@ impl<T: Metadata> DHT<T> {
 mod tests {
     use super::*;
     use std::net;
-    use config;
-    use rand::{self, thread_rng, Rng};
     use env_logger;
-    //
-    // #[test]
-    // fn test_new() {
-    //     let node = 0;
-    //     let addr = "127.0.0.1:9000".parse().unwrap();
-    //     for rf in 1..4 {
-    //         let dht = DHT::new(
-    //             node,
-    //             addr,
-    //             "test",
-    //             (),
-    //             Some(RingDescription::new(rf, 256)),
-    //             None,
-    //         );
-    //         assert_eq!(dht.nodes_for_vnode(0, true, false), &[node]);
-    //         assert_eq!(dht.nodes_for_vnode(0, false, false), &[node]);
-    //         assert_eq!(dht.nodes_for_vnode(0, false, false), &[node]);
-    //         assert_eq!(dht.nodes_for_vnode(0, true, true), &[node]);
-    //         assert_eq!(dht.members(), [(node, addr)].iter().cloned().collect());
-    //     }
-    // }
+    use rand::{self, thread_rng, Rng};
+    use config::Config;
+    use fabric::Fabric;
+    use utils::sleep_ms;
+    use std::collections::HashMap as HM;
+    use std::iter::FromIterator;
+
+    #[test]
+    fn test_dht_init() {
+        let _ = env_logger::init();
+        let config: Config = Default::default();
+
+        let node = 0;
+        let addr = config.fabric_addr;
+        for rf in 1u8..4 {
+            let fabric = Arc::new(Fabric::new(node, &config).unwrap());
+            let dht = DHT::init(fabric, "test", (), RingDescription::new(rf, 32), None).unwrap();
+            assert_eq!(dht.nodes_for_vnode(0, true, false), &[node]);
+            assert_eq!(dht.nodes_for_vnode(0, false, false), &[node]);
+            assert_eq!(dht.nodes_for_vnode(0, false, false), &[node]);
+            assert_eq!(dht.nodes_for_vnode(0, true, true), &[node]);
+            assert_eq!(dht.members(), [(node, addr)].iter().cloned().collect());
+        }
+    }
+
+    #[test]
+    fn test_dht_join() {
+        let _ = env_logger::init();
+        let config1: Config = Config {
+            fabric_addr: "127.0.0.1:3331".parse().unwrap(),
+            ..Default::default()
+        };
+        let config2: Config = Config {
+            fabric_addr: "127.0.0.1:3332".parse().unwrap(),
+            ..Default::default()
+        };
+
+        let fabric1 = Arc::new(Fabric::new(1, &config1).unwrap());
+        let dht1 = DHT::init(fabric1, "test", (), RingDescription::new(2, 32), None).unwrap();
+
+        let fabric2 = Arc::new(Fabric::new(2, &config2).unwrap());
+        let dht2 = DHT::join_cluster(fabric2, "test", (), &[config1.fabric_addr], None).unwrap();
+
+        sleep_ms(100);
+        for dht in &[&dht1, &dht2] {
+            assert_eq!(dht.nodes_for_vnode(0, false, false), &[1]);
+            assert_eq!(dht.nodes_for_vnode(0, true, false), &[1]);
+            assert_eq!(
+                dht.members(),
+                [(1, config1.fabric_addr), (2, config2.fabric_addr)]
+                    .iter()
+                    .cloned()
+                    .collect()
+            );
+        }
+
+        dht1.rebalance();
+        sleep_ms(100);
+        for dht in &[&dht1, &dht2] {
+            assert_eq!(dht.nodes_for_vnode(0, false, false), &[1]);
+            assert_eq!(dht.nodes_for_vnode(0, true, false), &[1, 2]);
+            assert_eq!(
+                dht.members(),
+                [(1, config1.fabric_addr), (2, config2.fabric_addr)]
+                    .iter()
+                    .cloned()
+                    .collect()
+            );
+        }
+
+        dht1.finish_rebalance();
+        sleep_ms(100);
+        for dht in &[&dht1, &dht2] {
+            assert_eq!(dht.nodes_for_vnode(0, false, false), &[1, 2]);
+            assert_eq!(dht.nodes_for_vnode(0, true, false), &[1, 2]);
+            assert_eq!(
+                dht.members(),
+                [(1, config1.fabric_addr), (2, config2.fabric_addr)]
+                    .iter()
+                    .cloned()
+                    .collect()
+            );
+        }
+    }
+
+
+    #[test]
+    #[should_panic]
+    fn test_dht_join_wrong_cluster() {
+        let _ = env_logger::init();
+        let config1: Config = Config {
+            fabric_addr: "127.0.0.1:3331".parse().unwrap(),
+            ..Default::default()
+        };
+        let config2: Config = Config {
+            fabric_addr: "127.0.0.1:3332".parse().unwrap(),
+            ..Default::default()
+        };
+
+        let fabric1 = Arc::new(Fabric::new(1, &config1).unwrap());
+        let dht1 = DHT::init(fabric1, "test", (), RingDescription::new(2, 32), None).unwrap();
+
+        let fabric2 = Arc::new(Fabric::new(2, &config2).unwrap());
+        let dht2 = DHT::join_cluster(
+            fabric2,
+            "anything but test",
+            (),
+            &[config1.fabric_addr],
+            None,
+        ).unwrap();
+
+        sleep_ms(100);
+    }
 
     #[test]
     fn test_rebalance_leaving_nodes() {
