@@ -14,6 +14,7 @@ use config::Config;
 use metrics::{self, Gauge};
 use vnode_sync::SyncDirection;
 
+// require sync as it can be called from any worker thread
 pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;
 
 #[derive(Default)]
@@ -178,7 +179,7 @@ impl Database {
         // register dht nodes into fabric
         db.fabric.set_nodes(db.dht.members().into_iter());
         // fabric dht messages
-        let sender = db.sender();
+        let mut sender = db.sender();
         let callback = move |f, m| {
             sender.send(WorkerMsg::DHTFabric(f, m));
         };
@@ -186,15 +187,15 @@ impl Database {
             .register_msg_handler(FabricMsgType::DHT, Box::new(callback));
 
         // setup dht change callback
-        let sender = db.sender();
+        let sender = Mutex::new(db.sender());
         let callback = move || {
-            sender.send(WorkerMsg::DHTChange);
+            sender.lock().unwrap().send(WorkerMsg::DHTChange);
         };
         db.dht.set_callback(Box::new(callback));
 
         // other types of fabric msgs
         for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch] {
-            let sender = db.sender();
+            let mut sender = db.sender();
             let callback = move |f, m| {
                 sender.send(WorkerMsg::Fabric(f, m));
             };

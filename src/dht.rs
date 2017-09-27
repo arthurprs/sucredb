@@ -18,7 +18,10 @@ use version_vector::VersionVector;
 use fabric::{Fabric, FabricMsg, FabricMsgType};
 use utils::{GenericError, IdHashMap, IdHashSet};
 
-pub type DHTChangeFn = Box<Fn() + Send + Sync>;
+// can be called by the network thread or a worker doing a dht mutation
+pub type DHTChangeFn = Box<FnMut() + Send + Sync>;
+
+// rwlock needs metadata to be sync, as it's read concurrently by multiple threads
 pub trait Metadata
     : Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + fmt::Debug + 'static
     {
@@ -718,7 +721,7 @@ impl<T: Metadata> DHT<T> {
             node: fabric.node(),
             ring: Ring::new(cluster, 0, 0),
 
-            callback: None,
+            callback: Default::default(),
             fabric: fabric.clone(),
             next_req_broadcast: Instant::now(),
         }));
@@ -778,7 +781,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     fn call_callback(inner: &mut Inner<T>) {
-        if let Some(callback) = inner.callback.as_ref() {
+        if let Some(callback) = inner.callback.as_mut() {
             callback();
         }
     }
