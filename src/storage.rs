@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::io::Write;
 use std::sync::Arc;
 use rocksdb::{self, Writable};
-use byteorder::{BigEndian, WriteBytesExt};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use utils::*;
 
 struct U16BeSuffixTransform;
@@ -23,12 +23,36 @@ pub struct StorageManager {
     db: Arc<rocksdb::DB>,
 }
 
+
+#[inline]
+fn build_key<'a>(buffer: &'a mut [u8], num: u16, key: &[u8]) -> &'a [u8] {
+    (&mut buffer[..2]).write_u16::<BigEndian>(num).unwrap();
+    (&mut buffer[2..]).write_all(key).unwrap();
+    &buffer[..2 + key.len()]
+}
+
+#[inline]
+fn build_log_key<'a>(buffer: &'a mut [u8], num: u16, log_key: (u64, u64)) -> &'a [u8] {
+    (&mut buffer[..2]).write_u16::<BigEndian>(num).unwrap();
+    (&mut buffer[2..2 + 8]).write_u64::<BigEndian>(log_key.0).unwrap();
+    (&mut buffer[2 + 8..2 + 8 + 8]).write_u64::<BigEndian>(log_key.1).unwrap();
+    &buffer[..2 + 8 + 8]
+}
+
+#[inline]
+fn build_log_prefix<'a>(buffer: &'a mut [u8], num: u16, prefix: u64) -> &'a [u8] {
+    (&mut buffer[..2]).write_u16::<BigEndian>(num).unwrap();
+    (&mut buffer[2..2 + 8]).write_u64::<BigEndian>(prefix).unwrap();
+    &buffer[..2 + 8]
+}
+
 // TODO: support TTL
 // TODO: specific comparator for log cf
-// TODO: merge operator would be a huge win
+// TODO: merge operator could be a big win
 pub struct Storage {
     db: Arc<rocksdb::DB>,
     cf: &'static rocksdb::CFHandle,
+    log_cf: &'static rocksdb::CFHandle,
     iterators_handle: Arc<()>,
     num: u16,
 }
@@ -36,11 +60,24 @@ pub struct Storage {
 unsafe impl Sync for Storage {}
 unsafe impl Send for Storage {}
 
+pub struct StorageBatch<'a> {
+    storage: &'a Storage,
+    wb: rocksdb::WriteBatch,
+}
+
 pub struct StorageIterator {
     db: Arc<rocksdb::DB>,
     iterator: Box<rocksdb::rocksdb::DBIterator<'static>>,
     iterators_handle: Arc<()>,
     key_prefix: [u8; 2],
+    first: bool,
+}
+
+pub struct LogStorageIterator {
+    db: Arc<rocksdb::DB>,
+    iterator: Box<rocksdb::rocksdb::DBIterator<'static>>,
+    iterators_handle: Arc<()>,
+    key_prefix: [u8; 2 + 8],
     first: bool,
 }
 
@@ -51,6 +88,7 @@ impl StorageManager {
         let mut opts = rocksdb::DBOptions::new();
         opts.create_if_missing(true);
         opts.set_max_background_jobs(4);
+        opts.enable_pipelined_write(true);
         let mut def_cf_opts = rocksdb::ColumnFamilyOptions::new();
         def_cf_opts
             .set_prefix_extractor("U16BeSuffixTransform", Box::new(U16BeSuffixTransform))
@@ -90,14 +128,12 @@ impl StorageManager {
         let db = rocksdb::DB::open_cf(
             opts.clone(),
             path.as_ref().to_str().unwrap(),
-            vec!["default", "log"],
-            vec![def_cf_opts.clone(), log_cf_opts.clone()],
+            vec![("default", def_cf_opts.clone()), ("log", log_cf_opts.clone())],
         ).or_else(|_| -> Result<_, String> {
             let mut db = rocksdb::DB::open_cf(
                 opts,
                 path.as_ref().to_str().unwrap(),
-                vec!["default"],
-                vec![def_cf_opts],
+                vec![("default", def_cf_opts)],
             )?;
 
             db.create_cf("log", log_cf_opts)?;
@@ -114,15 +150,7 @@ impl StorageManager {
         Ok(Storage {
             db: self.db.clone(),
             cf: unsafe { mem::transmute(self.db.cf_handle("default").unwrap()) },
-            num: db_num,
-            iterators_handle: Arc::new(()),
-        })
-    }
-
-    pub fn open_log(&self, db_num: u16) -> Result<Storage, GenericError> {
-        Ok(Storage {
-            db: self.db.clone(),
-            cf: unsafe { mem::transmute(self.db.cf_handle("log").unwrap()) },
+            log_cf: unsafe { mem::transmute(self.db.cf_handle("log").unwrap()) },
             num: db_num,
             iterators_handle: Arc::new(()),
         })
@@ -139,30 +167,9 @@ impl Drop for StorageManager {
 }
 
 impl Storage {
-    #[inline]
-    fn build_key<'a>(&self, buffer: &'a mut [u8], key: &[u8]) -> &'a [u8] {
-        (&mut buffer[..2]).write_u16::<BigEndian>(self.num).unwrap();
-        (&mut buffer[2..]).write_all(key).unwrap();
-        &buffer[..2 + key.len()]
-    }
-
-    pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
-        let mut buffer = [0u8; 512];
-        let buffer = self.build_key(&mut buffer, key);
-        let r = self.db.get_cf(self.cf, buffer).unwrap();
-        trace!(
-            "get {:?} ({:?} bytes)",
-            str::from_utf8(key),
-            r.as_ref().map(|x| x.len())
-        );
-        r.map(|r| callback(&*r))
-    }
-
     pub fn iterator(&self) -> StorageIterator {
         let mut key_prefix = [0u8; 2];
-        (&mut key_prefix[..])
-            .write_u16::<BigEndian>(self.num)
-            .unwrap();
+        build_key(&mut key_prefix, self.num, b"").len();
         unsafe {
             let mut iterator = Box::new(self.db.iter_cf(self.cf));
             iterator.seek(rocksdb::SeekKey::Key(&key_prefix[..]));
@@ -177,22 +184,78 @@ impl Storage {
         }
     }
 
+    pub fn log_iterator(&self, prefix: u64, start: u64) -> LogStorageIterator {
+        unsafe {
+            let mut iterator = Box::new(self.db.iter_cf(self.log_cf));
+            let mut key = [0u8; 2 + 8 + 8];
+            build_log_key(&mut key, self.num, (prefix, start)).len();
+            iterator.seek(rocksdb::SeekKey::Key(&key[..]));
+            let mut key_prefix = [0u8; 2 + 8];
+            build_log_prefix(&mut key_prefix, self.num, prefix).len();
+            let result = LogStorageIterator {
+                db: self.db.clone(),
+                iterator: mem::transmute(iterator),
+                iterators_handle: self.iterators_handle.clone(),
+                key_prefix: key_prefix,
+                first: true,
+            };
+            result
+        }
+    }
+
+    pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
+        let mut buffer = [0u8; 512];
+        let buffer = build_key(&mut buffer, self.num, key);
+        let r = self.db.get_cf(self.cf, buffer).unwrap();
+        trace!(
+            "get {:?} ({:?} bytes)",
+            str::from_utf8(key),
+            r.as_ref().map(|x| x.len())
+        );
+        r.map(|r| callback(&*r))
+    }
+
+    pub fn log_get<R, F: FnOnce(&[u8]) -> R>(&self, log_key: (u64, u64), callback: F) -> Option<R> {
+        let mut buffer = [0u8; 2 + 8 + 8];
+        let buffer = build_log_key(&mut buffer, self.num, log_key);
+        let r = self.db.get_cf(self.log_cf, buffer).unwrap();
+        trace!(
+            "log_get {:?} ({:?} bytes)",
+            log_key,
+            r.as_ref().map(|x| x.len())
+        );
+        r.map(|r| callback(&*r))
+    }
+
     pub fn get_vec(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.get(key, |v| v.to_owned())
     }
 
+    pub fn log_get_vec(&self, log_key: (u64, u64)) -> Option<Vec<u8>> {
+        self.log_get(log_key, |v| v.to_owned())
+    }
+
     pub fn set(&self, key: &[u8], value: &[u8]) {
-        trace!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
-        let mut buffer = [0u8; 512];
-        let buffer = self.build_key(&mut buffer, key);
-        self.db.put_cf(self.cf, buffer, value).unwrap();
+        let mut b = self.batch_new(0);
+        b.set(key, value);
+        self.batch_write(b);
     }
 
     pub fn del(&self, key: &[u8]) {
-        trace!("del {:?}", str::from_utf8(key));
-        let mut buffer = [0u8; 512];
-        let buffer = self.build_key(&mut buffer, key);
-        self.db.delete_cf(self.cf, buffer).unwrap()
+        let mut b = self.batch_new(0);
+        b.del(key);
+        self.batch_write(b);
+    }
+
+    pub fn batch_new(&self, reserve: usize) -> StorageBatch {
+        StorageBatch {
+            storage: self,
+            wb: rocksdb::WriteBatch::with_capacity(reserve),
+        }
+    }
+
+    pub fn batch_write(&self, batch: StorageBatch) {
+        self.db.write(batch.wb).unwrap();
     }
 
     pub fn clear(&self) {
@@ -202,9 +265,15 @@ impl Storage {
         let mut to = [0u8; 2];
         (&mut from[..]).write_u16::<BigEndian>(self.num).unwrap();
         (&mut to[..]).write_u16::<BigEndian>(self.num + 1).unwrap();
-        self.db.delete_file_in_range(&from[..], &to[..]).unwrap();
-        for (key, _) in self.iterator().iter() {
-            self.del(key);
+
+        for &cf in &[self.cf, self.log_cf] {
+            self.db.delete_file_in_range_cf(cf, &from[..], &to[..]).unwrap();
+            let mut iter = self.db.iter_cf(cf);
+            iter.seek(rocksdb::SeekKey::Key(&from[..]));
+            while iter.valid() && iter.key()[..2] == from[..] {
+                self.db.delete_cf(cf, iter.key()).unwrap();
+                iter.next();
+            }
         }
     }
 
@@ -227,15 +296,30 @@ impl Drop for Storage {
     }
 }
 
-impl StorageIterator {
-    pub fn seek(&mut self, key: &[u8]) {
+impl<'a> StorageBatch<'a> {
+    pub fn set(&mut self, key: &[u8], value: &[u8]) {
+        trace!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
         let mut buffer = [0u8; 512];
-        (&mut buffer[0..2]).write(&self.key_prefix[..]).unwrap();
-        (&mut buffer[2..]).write(key).unwrap();
-        self.iterator
-            .seek(rocksdb::SeekKey::Key(&buffer[..2 + key.len()]));
+        let buffer = build_key(&mut buffer, self.storage.num, key);
+        self.wb.put_cf(self.storage.cf, buffer, value).unwrap();
     }
 
+    pub fn log_set(&mut self, key: (u64, u64), value: &[u8]) {
+        trace!("log_set {:?} ({} bytes)", key, value.len());
+        let mut buffer = [0u8; 512];
+        let buffer = build_log_key(&mut buffer, self.storage.num, key);
+        self.wb.put_cf(self.storage.log_cf, buffer, value).unwrap();
+    }
+
+    pub fn del(&mut self, key: &[u8]) {
+        trace!("del {:?}", str::from_utf8(key));
+        let mut buffer = [0u8; 512];
+        let buffer = build_key(&mut buffer, self.storage.num, key);
+        self.wb.delete_cf(self.storage.cf, buffer).unwrap()
+    }
+}
+
+impl StorageIterator {
     pub fn iter<'a>(&'a mut self) -> StorageIter<'a> {
         StorageIter { it: self }
     }
@@ -253,11 +337,51 @@ impl<'a> Iterator for StorageIter<'a> {
         } else {
             self.it.iterator.next();
         }
-        if self.it.iterator.valid() && self.it.iterator.key()[..2] == self.it.key_prefix[..] {
+        if self.it.iterator.valid() && self.it.iterator.key().starts_with(&self.it.key_prefix[..]) {
             unsafe {
                 // safe as slices are valid until the next call to next
                 Some((
                     mem::transmute(&self.it.iterator.key()[2..]),
+                    mem::transmute(self.it.iterator.value()),
+                ))
+            }
+        } else {
+            None
+        }
+    }
+}
+
+
+impl LogStorageIterator {
+    pub fn iter<'a>(&'a mut self) -> LogStorageIter<'a> {
+        LogStorageIter { it: self }
+    }
+}
+
+pub struct LogStorageIter<'a> {
+    it: &'a mut LogStorageIterator,
+}
+
+impl<'a> Iterator for LogStorageIter<'a> {
+    type Item = ((u64, u64), &'a [u8]);
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.it.first {
+            self.it.first = false;
+        } else {
+            self.it.iterator.next();
+        }
+        if self.it.iterator.valid() {
+            let key = self.it.iterator.key();
+            assert!(key.len() == 2+ 8 + 8);
+            if !key.starts_with(&self.it.key_prefix[..]) {
+                return None;
+            }
+            let first = (&self.it.iterator.key()[2..2+8]).read_u64::<BigEndian>().unwrap();
+            let second = (&self.it.iterator.key()[2+8..2+8+8]).read_u64::<BigEndian>().unwrap();
+            unsafe {
+                // safe as slices are valid until the next call to next
+                Some((
+                    (first, second),
                     mem::transmute(self.it.iterator.value()),
                 ))
             }
@@ -289,12 +413,14 @@ mod tests {
     fn test_simple_log() {
         let _ = fs::remove_dir_all("t/test_simple_log");
         let sm = StorageManager::new("t/test_simple_log").unwrap();
-        let storage = sm.open_log(1).unwrap();
+        let storage = sm.open(1).unwrap();
         assert_eq!(storage.get_vec(b"sample"), None);
-        storage.set(b"sample", b"sample_value");
+        let mut b = storage.batch_new(0);
+        b.set(b"sample", b"sample_value");
+        b.log_set((1, 1), b"sample");
+        storage.batch_write(b);
         assert_eq!(storage.get_vec(b"sample").unwrap(), b"sample_value");
-        storage.del(b"sample");
-        assert_eq!(storage.get_vec(b"sample"), None);
+        assert_eq!(storage.log_get_vec((1, 1)).unwrap(), b"sample");
     }
 
     #[test]
@@ -318,54 +444,44 @@ mod tests {
     fn test_iter_log() {
         let _ = fs::remove_dir_all("t/test_iter_log");
         let sm = StorageManager::new("t/test_iter_log").unwrap();
-        for &i in &[0, 1, 2] {
-            let storage = sm.open_log(i).unwrap();
-            storage.set(b"1", i.to_string().as_bytes());
-            storage.set(b"2", i.to_string().as_bytes());
-            storage.set(b"3", i.to_string().as_bytes());
+        for &i in &[0u64, 1, 2] {
+            let storage = sm.open(i as u16).unwrap();
+            let mut b = storage.batch_new(0);
+            b.log_set((i, i + 0), (i + 0).to_string().as_bytes());
+            b.log_set((i, i + 1), (i + 1).to_string().as_bytes());
+            b.log_set((i, i + 2), (i + 2).to_string().as_bytes());
+            b.log_set((i + 1, i), b"");
+            storage.batch_write(b);
         }
-        for &i in &[0, 1, 2] {
-            let storage = sm.open_log(i).unwrap();
-            let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
-            assert_eq!(results, vec![i.to_string().as_bytes(); 3]);
+        for &i in &[0u64, 1, 2] {
+            let storage = sm.open(i as u16).unwrap();
+            let results: Vec<(_, Vec<u8>)> = storage.log_iterator(i, i + 1).iter().map(|(k, v)| (k, v.into())).collect();
+            assert_eq!(results, vec![
+                ((i, i + 1), (i + 1).to_string().into_bytes()),
+                ((i, i + 2), (i + 2).to_string().into_bytes()),
+            ]);
+            assert_eq!(storage.log_iterator(i, i).iter().count(), 3);
         }
-    }
-
-    #[test]
-    fn test_iter_seek() {
-        let _ = fs::remove_dir_all("t/test_iter");
-        let sm = StorageManager::new("t/test_iter").unwrap();
-        let i = 1;
-        let storage = sm.open(i).unwrap();
-        storage.set(b"1", b"1");
-        storage.set(b"2", b"2");
-        storage.set(b"3", b"3");
-        let mut iterator = storage.iterator();
-        iterator.seek(b"2");
-        let results: Vec<Vec<u8>> = iterator.iter().map(|(k, v)| v.into()).collect();
-        assert_eq!(results, vec![b"2", b"3"]);
     }
 
     #[test]
     fn test_clear() {
         let _ = fs::remove_dir_all("t/test_clear");
         let sm = StorageManager::new("t/test_clear").unwrap();
-        for &i in &[0, 1, 2] {
-            let storage = sm.open(i).unwrap();
-            storage.set(b"1", i.to_string().as_bytes());
-            storage.set(b"2", i.to_string().as_bytes());
-            storage.set(b"3", i.to_string().as_bytes());
+        for &i in &[0u64, 1, 2] {
+            let storage = sm.open(i as u16).unwrap();
+            let mut b = storage.batch_new(0);
+            b.set(i.to_string().as_bytes(), i.to_string().as_bytes());
+            b.log_set((i, i), i.to_string().as_bytes());
+            storage.batch_write(b);
         }
-        for &i in &[0, 1, 2] {
-            let storage = sm.open(i).unwrap();
-            let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
-            assert_eq!(
-                results,
-                &[i.to_string().as_bytes(), i.to_string().as_bytes(), i.to_string().as_bytes()]
-            );
+        for &i in &[0u64, 1, 2] {
+            let storage = sm.open(i as u16).unwrap();
+            assert_eq!(storage.iterator().iter().count(), 1);
+            assert_eq!(storage.log_iterator(i, i).iter().count(), 1);
             storage.clear();
-            let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
-            assert_eq!(results.len(), 0);
+            assert_eq!(storage.iterator().iter().count(), 0);
+            assert_eq!(storage.log_iterator(i, i).iter().count(), 0);
         }
     }
 

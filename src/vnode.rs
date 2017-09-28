@@ -10,7 +10,6 @@ use fabric::*;
 use vnode_sync::*;
 use hash::hash_slot;
 use rand::{thread_rng, Rng};
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use bytes::Bytes;
 use utils::{IdHashMap, IdHashSet, IdHasherBuilder};
 
@@ -103,43 +102,15 @@ impl VNodeLogs {
         // self.gc();
     }
 
-    pub fn log(&mut self, node: NodeId, version: Version, key: &[u8]) {
-        let tail = self.tail.get(&node).cloned().unwrap_or(0);
-        if version > tail {
-            let mut buffer = [0u8; 16];
-            (&mut buffer[0..8]).write_u64::<BigEndian>(node).unwrap();
-            (&mut buffer[8..16])
-                .write_u64::<BigEndian>(version)
-                .unwrap();
-            self.storage.set(&buffer[..], key);
-        }
-    }
-
     pub fn iter_log<F: FnMut(Version, &[u8])>(&mut self, node: NodeId, version: Version, mut f: F) {
-        let mut buffer = [0u8; 16];
-        (&mut buffer[0..8]).write_u64::<BigEndian>(node).unwrap();
-        (&mut buffer[8..16])
-            .write_u64::<BigEndian>(version)
-            .unwrap();
-        let mut iterator = self.storage.iterator();
-        // iterator.seek(&buffer[..]);
-        for (k, dot_key) in iterator.iter() {
-            println!("{:?}", ::std::str::from_utf8(k));
-            if k[0..8] != buffer[0..8] {
-                break;
-            }
-            let dot = (&k[8..16]).read_u64::<BigEndian>().unwrap();
+        let mut iterator = self.storage.log_iterator(node, version);
+        for ((_, dot), dot_key) in iterator.iter() {
             f(dot, dot_key);
         }
     }
 
     pub fn get(&self, node: NodeId, version: Version) -> Option<Bytes> {
-        let mut buffer = [0u8; 16];
-        (&mut buffer[0..8]).write_u64::<BigEndian>(node).unwrap();
-        (&mut buffer[8..16])
-            .write_u64::<BigEndian>(version)
-            .unwrap();
-        self.storage.get(&buffer[..], |x| Bytes::from(x))
+        self.storage.log_get((node, version), |x| Bytes::from(x))
     }
 
     pub fn clear(&mut self) {
@@ -954,9 +925,8 @@ impl VNodeState {
     fn new_empty(num: u16, db: &Database, status: VNodeStatus) -> Self {
         db.meta_storage.del(num.to_string().as_bytes());
         let storage = db.storage_manager.open(num).unwrap();
-        let log_storage = db.storage_manager.open_log(num).unwrap();
+        let log_storage = db.storage_manager.open(num).unwrap();
         storage.clear();
-        log_storage.clear();
 
         VNodeState {
             num: num,
@@ -987,7 +957,7 @@ impl VNodeState {
         } = saved_state_opt.unwrap();
 
         let storage = db.storage_manager.open(num).unwrap();
-        let log_storage = db.storage_manager.open_log(num).unwrap();
+        let log_storage = db.storage_manager.open(num).unwrap();
         let mut logs = VNodeLogs::new(log_storage);
 
         if !clean_shutdown {
@@ -1051,15 +1021,16 @@ impl VNodeState {
         }
         dcc.strip(&self.clocks);
 
+        let mut batch = self.storage.batch_new(0);
         if dcc.is_dcc_empty() {
-            self.storage.del(key);
+            batch.del(key);
         } else {
             let bytes = bincode::serialize(&dcc, bincode::Infinite).unwrap();
-            self.storage.set(key, &bytes);
+            batch.set(key, &bytes);
         }
 
-        // this needs to go in a writebatch with the above
-        self.logs.log(db.dht.node(), dot, key.into());
+        batch.log_set((db.dht.node(), dot), key);
+        self.storage.batch_write(batch);
 
         // FIXME: we striped above so we have to fill again :(
         dcc.fill(&self.clocks);
@@ -1078,16 +1049,17 @@ impl VNodeState {
         new_dcc.sync(old_dcc);
         new_dcc.strip(&self.clocks);
 
+        let mut batch = self.storage.batch_new(0);
         if new_dcc.is_dcc_empty() {
-            self.storage.del(key);
+            batch.del(key);
         } else {
             let dcc_bytes = bincode::serialize(&new_dcc, bincode::Infinite).unwrap();
-            self.storage.set(key, &dcc_bytes);
+            batch.set(key, &dcc_bytes);
         }
 
-        // these need to go in a writebatch with the above
         for (&(node, version), _) in new_dcc.iter() {
-            self.logs.log(node, version, key.into());
+            batch.log_set((node, version), key);
         }
+        self.storage.batch_write(batch);
     }
 }
