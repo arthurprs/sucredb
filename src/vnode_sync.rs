@@ -61,7 +61,6 @@ type InFlightSyncMsgMap = InFlightMap<
 struct SyncKeysIterator {
     dots_delta: BitmappedVersionVectorDelta,
     keys: hash_set::IntoIter<Bytes>,
-    broken: bool,
 }
 
 // TODO: Refactor into trait objects
@@ -119,7 +118,6 @@ impl SyncKeysIterator {
         SyncKeysIterator {
             dots_delta: dots_delta,
             keys: HashSet::new().into_iter(),
-            broken: false,
         }
     }
 
@@ -128,26 +126,21 @@ impl SyncKeysIterator {
             if let Some(key) = self.keys.next() {
                 return Ok(key);
             }
-            if self.broken {
-                return Err(Err(()));
-            }
-            // fetch log in 1_000 key batches
-            // reserve a dedup hashmap with half of iter len + 1
-            // this way it will only resize once at the worst case
-            let mut keys = HashSet::with_capacity(self.dots_delta.size_hint().0 / 2 + 1);
+            // fetch log in batches of ~1_000 keys
+            let hint_size = self.dots_delta.size_hint().0.min(1_000);
+            let mut keys = HashSet::with_capacity(hint_size);
+            // consider up to 90% of the actual capacity as an alternative limit
+            let limit = (keys.capacity() * 9 / 10).max(1_000);
             for (n, v) in self.dots_delta.by_ref() {
                 if let Some(key) = state.logs.get(n, v) {
                     keys.insert(key);
-                    if keys.len() >= 1_000 {
+                    if keys.len() >= limit {
                         break;
                     }
                 } else {
-                    warn!("Can't find key for ({}, {}), stopping sync iterator", n, v);
-                    self.broken = true;
-                    return Err(Err(()));
+                    warn!("Can't find log key for ({}, {})", n, v);
                 }
             }
-            debug_assert!(!self.broken);
             if keys.is_empty() {
                 return Err(Ok(()));
             }
