@@ -6,6 +6,7 @@ use bytes::Bytes;
 pub enum FabricMsgType {
     Crud,
     Synch,
+    DHT,
     Unknown,
 }
 
@@ -27,6 +28,8 @@ pub enum FabricMsg {
     SyncSend(MsgSyncSend),
     SyncAck(MsgSyncAck),
     SyncFin(MsgSyncFin),
+    DHTSyncReq(VersionVector),
+    DHTSync(Bytes),
     Unknown,
 }
 
@@ -41,6 +44,7 @@ impl FabricMsg {
             FabricMsg::SyncSend(..) |
             FabricMsg::SyncAck(..) |
             FabricMsg::SyncFin(..) => FabricMsgType::Synch,
+            FabricMsg::DHTSync(..) | FabricMsg::DHTSyncReq(..) => FabricMsgType::DHT,
             _ => unreachable!(),
         }
     }

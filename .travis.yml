@@ -1,10 +1,7 @@
+dist: trusty
 sudo: false
 language: rust
-rust: nightly-2017-04-28
-addons:
-  apt:
-    sources: ['ubuntu-toolchain-r-test']
-    packages: ['g++-6', 'zlib1g-dev', 'libbz2-dev', 'libsnappy-dev', 'curl', 'libdw-dev', 'libelf-dev', 'elfutils', 'binutils-dev']
+rust: nightly
 
 env:
   global:
@@ -12,20 +9,10 @@ env:
     - RUST_TEST_THREADS=1
     - CARGO_BUILD_JOBS=1
     - MAKE_PARALLELISM=1
-    - COMPILER=g++-6
-    - CC=gcc-6
-    - CXX=g++-6
 
 cache:
   - cargo
-  - apt
-
-before_script: >
-  ulimit -n 8192 ;
-  wget https://github.com/coreos/etcd/releases/download/v3.1.7/etcd-v3.1.7-linux-amd64.tar.gz &&
-  tar xvzf etcd-v3.1.7-linux-amd64.tar.gz
 
 script:
   - travis_wait sleep 1000000000 &
-  - nohup ./etcd-v3.1.7-linux-amd64/etcd &
   - cargo test --verbose

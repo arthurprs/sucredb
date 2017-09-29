@@ -1,4 +1,4 @@
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 use std::collections::hash_map::Entry as HMEntry;
 use version_vector::*;
 use storage::*;
@@ -9,12 +9,11 @@ use inflightmap::InFlightMap;
 use fabric::*;
 use vnode_sync::*;
 use hash::hash_slot;
-use rand::{Rng, thread_rng};
-use byteorder::{WriteBytesExt, ReadBytesExt, BigEndian};
+use rand::{thread_rng, Rng};
 use bytes::Bytes;
-use utils::{IdHashMap, IdHasherBuilder, IdHashSet};
+use utils::{IdHashMap, IdHashSet, IdHasherBuilder};
 
-const ZOMBIE_TIMEOUT_MS: u64 = 30_000;
+const ZOMBIE_TIMEOUT_MS: u64 = 60 * 1_000;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum VNodeStatus {
@@ -103,37 +102,15 @@ impl VNodeLogs {
         // self.gc();
     }
 
-    pub fn log(&mut self, node:NodeId, version: Version, key: &[u8]) {
-        let tail = self.tail.get(&node).cloned().unwrap_or(0);
-        if version > tail {
-            let mut buffer = [0u8; 16];
-            (&mut buffer[0..8]).write_u64::<BigEndian>(node).unwrap();
-            (&mut buffer[8..16]).write_u64::<BigEndian>(version).unwrap();
-            self.storage.set(&buffer[..], key);
-        }
-    }
-
     pub fn iter_log<F: FnMut(Version, &[u8])>(&mut self, node: NodeId, version: Version, mut f: F) {
-        let mut buffer = [0u8; 16];
-        (&mut buffer[0..8]).write_u64::<BigEndian>(node).unwrap();
-        (&mut buffer[8..16]).write_u64::<BigEndian>(version).unwrap();
-        let mut iterator = self.storage.iterator();
-        // iterator.seek(&buffer[..]);
-        for (k, dot_key) in iterator.iter() {
-            println!("{:?}", ::std::str::from_utf8(k));
-            if k[0..8] != buffer[0..8] {
-                break;
-            }
-            let dot = (&k[8..16]).read_u64::<BigEndian>().unwrap();
+        let mut iterator = self.storage.log_iterator(node, version);
+        for ((_, dot), dot_key) in iterator.iter() {
             f(dot, dot_key);
         }
     }
 
     pub fn get(&self, node: NodeId, version: Version) -> Option<Bytes> {
-        let mut buffer = [0u8; 16];
-        (&mut buffer[0..8]).write_u64::<BigEndian>(node).unwrap();
-        (&mut buffer[8..16]).write_u64::<BigEndian>(version).unwrap();
-        self.storage.get(&buffer[..], |x| Bytes::from(x))
+        self.storage.log_get((node, version), |x| Bytes::from(x))
     }
 
     pub fn clear(&mut self) {
@@ -269,15 +246,15 @@ impl VNode {
 
     pub fn syncs_inflight(&self) -> (usize, usize) {
         let pend = if self.state.pending_bootstrap { 1 } else { 0 };
-        self.syncs.values().fold(
-            (pend, 0),
-            |(inc, out), s| match *s {
+        self.syncs
+            .values()
+            .fold((pend, 0), |(inc, out), s| match *s {
                 Synchronization::BootstrapReceiver { .. } |
                 Synchronization::SyncReceiver { .. } => (inc + 1, out),
-                Synchronization::BootstrapSender { .. } |
-                Synchronization::SyncSender { .. } => (inc, out + 1),
-            },
-        )
+                Synchronization::BootstrapSender { .. } | Synchronization::SyncSender { .. } => {
+                    (inc, out + 1)
+                }
+            })
     }
 
     fn gen_cookie(&self) -> Cookie {
@@ -300,13 +277,13 @@ impl VNode {
                     let state = &mut self.state;
                     let canceled = self.syncs
                         .iter_mut()
-                        .filter_map(|(&cookie, m)| if let SyncDirection::Incomming =
-                            m.direction()
-                        {
-                            m.on_cancel(db, state);
-                            Some(cookie)
-                        } else {
-                            None
+                        .filter_map(|(&cookie, m)| {
+                            if let SyncDirection::Incomming = m.direction() {
+                                m.on_cancel(db, state);
+                                Some(cookie)
+                            } else {
+                                None
+                            }
                         })
                         .collect::<Vec<_>>();
                     for cookie in canceled {
@@ -363,10 +340,10 @@ impl VNode {
                 .collect::<Vec<_>>()
         };
         for (cookie, result) in terminated_syncs {
-            self.syncs.remove(&cookie).unwrap().on_remove(
-                db,
-                &mut self.state,
-            );
+            self.syncs
+                .remove(&cookie)
+                .unwrap()
+                .on_remove(db, &mut self.state);
             if self.status() == VNodeStatus::Bootstrap {
                 self.handle_bootstrap_result(db, result);
             }
@@ -381,10 +358,9 @@ impl VNode {
         if self.state.pending_bootstrap {
             // check if there's a pending bootstrap we need to start
             self.start_bootstrap(db);
-        } else if self.status() == VNodeStatus::Zombie && self.requests.is_empty() &&
-                   self.syncs.is_empty() &&
-                   self.state.last_status_change.elapsed() >
-                       Duration::from_millis(ZOMBIE_TIMEOUT_MS)
+        } else if self.status() == VNodeStatus::Zombie && self.requests.is_empty()
+            && self.syncs.is_empty()
+            && self.state.last_status_change.elapsed() > Duration::from_millis(ZOMBIE_TIMEOUT_MS)
         {
             // go absent when zombie timeout
             self.state.set_status(db, VNodeStatus::Absent);
@@ -407,6 +383,10 @@ impl VNode {
         );
         // TODO: lots of optimizations to be done here
         let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
+        if nodes.is_empty() {
+            return db.respond_error(token, CommandError::Unavailable);
+        }
+
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(db.config.request_timeout as _);
         let req = ReqState::new(token, nodes.len(), consistency, false, true);
@@ -441,7 +421,7 @@ impl VNode {
         status: VNodeStatus,
         key: &[u8],
     ) {
-        let mut nodes = db.dht.write_members_for_vnode(self.state.num());
+        let mut nodes = db.dht.nodes_for_vnode_ex(self.state.num(), true, false);
         thread_rng().shuffle(&mut nodes);
         for (node, (_, addr)) in nodes {
             if node != db.dht.node() {
@@ -640,16 +620,16 @@ impl VNode {
 
     // SYNC
     pub fn handler_sync_start(&mut self, db: &Database, from: NodeId, msg: MsgSyncStart) {
-        if !(self.state.status == VNodeStatus::Ready ||
-                 (self.state.status == VNodeStatus::Zombie &&
-                      self.state.last_status_change.elapsed() <
-                          Duration::from_millis(ZOMBIE_TIMEOUT_MS)))
+        if !(self.state.status == VNodeStatus::Ready
+            || (self.state.status == VNodeStatus::Zombie
+                && self.state.last_status_change.elapsed()
+                    < Duration::from_millis(ZOMBIE_TIMEOUT_MS)))
         {
             debug!("Can't start sync when {:?}", self.state.status);
             let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::BadVNodeStatus);
         } else if !self.syncs.contains_key(&msg.cookie) {
             if !db.signal_sync_start(SyncDirection::Outgoing) {
-                debug!("Aborting handler_sync_start");
+                debug!("Aborting remote sync request, limit exceeded");
                 let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricMsgError::NotReady);
                 return;
             }
@@ -779,9 +759,9 @@ impl VNode {
         self.state.pending_bootstrap = false;
         let cookie = self.gen_cookie();
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
-        if nodes.is_empty() || nodes[0] == db.dht.node() {
+        if nodes.is_empty() || nodes == &[db.dht.node()] {
             // nothing to boostrap from
-            self.state.set_status(db, VNodeStatus::Ready);
+            self.handle_bootstrap_result(db, SyncResult::Done);
             return;
         }
 
@@ -830,7 +810,7 @@ impl VNode {
                 continue;
             }
             if !db.signal_sync_start(SyncDirection::Incomming) {
-                debug!("Aborting do_start_sync");
+                debug!("Aborting start sync, limit exceeded");
                 continue;
             }
 
@@ -852,6 +832,7 @@ impl VNode {
 
 impl Drop for VNode {
     fn drop(&mut self) {
+        info!("droping vnode {:?}", self.state.num);
         // clean up any references to the storage
         self.requests.clear();
         self.syncs.clear();
@@ -877,8 +858,7 @@ impl VNodeState {
     pub fn update_peer_knowledge(&mut self, peer: NodeId, bvv: &BitmappedVersionVector) {
         debug!("update_peer_knowledge {} {:?}", peer, bvv);
         for (&node, bv) in bvv.iter() {
-            self.logs
-                .advance_knowledge(node, peer, bv.base());
+            self.logs.advance_knowledge(node, peer, bv.base());
         }
     }
 
@@ -945,9 +925,8 @@ impl VNodeState {
     fn new_empty(num: u16, db: &Database, status: VNodeStatus) -> Self {
         db.meta_storage.del(num.to_string().as_bytes());
         let storage = db.storage_manager.open(num).unwrap();
-        let log_storage = db.storage_manager.open_log(num).unwrap();
+        let log_storage = db.storage_manager.open(num).unwrap();
         storage.clear();
-        log_storage.clear();
 
         VNodeState {
             num: num,
@@ -978,7 +957,7 @@ impl VNodeState {
         } = saved_state_opt.unwrap();
 
         let storage = db.storage_manager.open(num).unwrap();
-        let log_storage = db.storage_manager.open_log(num).unwrap();
+        let log_storage = db.storage_manager.open(num).unwrap();
         let mut logs = VNodeLogs::new(log_storage);
 
         if !clean_shutdown {
@@ -1009,10 +988,8 @@ impl VNodeState {
         };
         debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
         let serialized_saved_state = bincode::serialize(&saved_state, bincode::Infinite).unwrap();
-        db.meta_storage.set(
-            self.num.to_string().as_bytes(),
-            &serialized_saved_state,
-        );
+        db.meta_storage
+            .set(self.num.to_string().as_bytes(), &serialized_saved_state);
     }
 
     // STORAGE
@@ -1044,16 +1021,16 @@ impl VNodeState {
         }
         dcc.strip(&self.clocks);
 
+        let mut batch = self.storage.batch_new(0);
         if dcc.is_dcc_empty() {
-            self.storage.del(key);
+            batch.del(key);
         } else {
             let bytes = bincode::serialize(&dcc, bincode::Infinite).unwrap();
-            self.storage.set(key, &bytes);
+            batch.set(key, &bytes);
         }
 
-        // this needs to go in a writebatch with the above
-        self.logs
-            .log(db.dht.node(), dot, key.into());
+        batch.log_set((db.dht.node(), dot), key);
+        self.storage.batch_write(batch);
 
         // FIXME: we striped above so we have to fill again :(
         dcc.fill(&self.clocks);
@@ -1072,20 +1049,17 @@ impl VNodeState {
         new_dcc.sync(old_dcc);
         new_dcc.strip(&self.clocks);
 
+        let mut batch = self.storage.batch_new(0);
         if new_dcc.is_dcc_empty() {
-            self.storage.del(key);
+            batch.del(key);
         } else {
             let dcc_bytes = bincode::serialize(&new_dcc, bincode::Infinite).unwrap();
-            self.storage.set(key, &dcc_bytes);
+            batch.set(key, &dcc_bytes);
         }
 
-        // these need to go in a writebatch with the above
         for (&(node, version), _) in new_dcc.iter() {
-            self.logs.log(
-                node,
-                version,
-                key.into(),
-            );
+            batch.log_set((node, version), key);
         }
+        self.storage.batch_write(batch);
     }
 }

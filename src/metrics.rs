@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use rust_metrics::metrics::{StdMeter, StdGauge};
+use rust_metrics::metrics::{StdGauge, StdMeter};
 pub use rust_metrics::metrics::{Counter, Gauge, Meter, Metric};
 
 // TODO: Expose these metrics
@@ -7,13 +7,13 @@ lazy_static!{
     pub static ref CLIENT_CONNECTION: Arc<StdGauge> = {
         StdGauge::new()
     };
-    pub static ref REQUEST_READ: Arc<Meter> = {
+    pub static ref REQUEST_GET: Arc<Meter> = {
         StdMeter::new()
     };
-    pub static ref REQUEST_WRITE: Arc<StdMeter> = {
+    pub static ref REQUEST_PUT: Arc<StdMeter> = {
         StdMeter::new()
     };
-    pub static ref REQUEST_DELETE: Arc<StdMeter> = {
+    pub static ref REQUEST_DEL: Arc<StdMeter> = {
         StdMeter::new()
     };
     pub static ref SYNC_SEND: Arc<StdMeter> = {

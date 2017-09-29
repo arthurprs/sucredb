@@ -1,19 +1,20 @@
-use std::{str, time, net};
+use std::{net, time};
 use std::sync::{Arc, Mutex, RwLock};
-use dht::{self, DHT};
+use dht::{RingDescription, DHT};
 use version_vector::*;
 use fabric::*;
 use vnode::*;
 use workers::*;
 use resp::RespValue;
-use storage::{StorageManager, Storage};
+use storage::{Storage, StorageManager};
 use rand::{thread_rng, Rng};
-use utils::{IdHashMap, split_u64, join_u64, assume_str, is_dir_empty_or_absent};
+use utils::{assume_str, is_dir_empty_or_absent, IdHashMap, join_u64, split_u64};
 pub use types::*;
 use config::Config;
 use metrics::{self, Gauge};
 use vnode_sync::SyncDirection;
 
+// require sync as it can be called from any worker thread
 pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;
 
 #[derive(Default)]
@@ -26,12 +27,12 @@ struct Stats {
 // track deleted keys pending physical deletion (is this a good idea? maybe a compaction filter?)
 // pruning old nodes from node clocks (is it possible?)
 // inner vnode parallelism
-// track bad peers with the fabric or gossip and use that info
-// avoid fill/strip altogether, it saves just a bit of storage but not much
+// track dead peers with the fabric or gossip and use that info
+// avoid strip altogether, it saves just a bit of storage but not much
 
 pub struct Database {
     pub dht: DHT<net::SocketAddr>,
-    pub fabric: Fabric,
+    pub fabric: Arc<Fabric>,
     pub meta_storage: Storage,
     pub storage_manager: StorageManager,
     pub response_fn: DatabaseResponseFn,
@@ -67,20 +68,19 @@ macro_rules! vnode {
 
 impl Database {
     pub fn new(config: &Config, response_fn: DatabaseResponseFn) -> Arc<Database> {
-        if config.cmd_init.is_some() &&
-            !is_dir_empty_or_absent(&config.data_dir).expect("failed to open data dir")
+        info!("Initializing database");
+        if config.cmd_init.is_some()
+            && !is_dir_empty_or_absent(&config.data_dir).expect("Failed to open data dir")
         {
-            panic!("can't init cluster when data directory isn't clean");
+            panic!("Can't init cluster when data directory isn't clean");
         }
 
-        let storage_manager = StorageManager::new(&config.data_dir).unwrap();
+        let storage_manager =
+            StorageManager::new(&config.data_dir).expect("Failed to create storage manager");
         let meta_storage = storage_manager.open(u16::max_value()).unwrap();
 
         let (old_node, node) = if let Some(s_node) = meta_storage.get_vec(b"node") {
-            let prev_node = String::from_utf8(s_node)
-                .unwrap()
-                .parse::<NodeId>()
-                .unwrap();
+            let prev_node: NodeId = String::from_utf8(s_node).unwrap().parse().unwrap();
             if meta_storage.get_vec(b"clean_shutdown").is_some() {
                 (None, prev_node)
             } else {
@@ -99,35 +99,52 @@ impl Database {
                 );
             };
         }
+        // save init (1 of 2)
+        meta_storage.del(b"clean_shutdown");
         meta_storage.set(b"cluster", config.cluster_name.as_bytes());
         meta_storage.set(b"node", node.to_string().as_bytes());
-        meta_storage.del(b"clean_shutdown");
         meta_storage.sync();
 
         info!("Metadata loaded! node_id:{} previous:{:?}", node, old_node);
 
-        let fabric = Fabric::new(node, config).unwrap();
-        let dht = DHT::new(
-            node,
-            config.fabric_addr,
-            &config.cluster_name,
-            &config.etcd_addr,
-            config.listen_addr,
-            if let Some(init) = config.cmd_init.as_ref() {
-                Some(dht::RingDescription::new(
-                    init.replication_factor,
-                    init.partitions,
-                ))
-            } else {
-                None
-            },
-            old_node,
-        );
+        let fabric = Arc::new(Fabric::new(node, config).unwrap());
+
+        let dht = if let Some(init) = config.cmd_init.as_ref() {
+            DHT::init(
+                fabric.clone(),
+                &config.cluster_name,
+                config.listen_addr,
+                RingDescription::new(init.replication_factor, init.partitions),
+                old_node,
+            ).expect("can't init cluster")
+        } else if let Some(saved_ring) = meta_storage.get_vec(b"ring") {
+            DHT::restore(
+                fabric.clone(),
+                &config.cluster_name,
+                config.listen_addr,
+                &saved_ring,
+                old_node,
+            ).expect("can't restore cluster")
+        } else {
+            DHT::join_cluster(
+                fabric.clone(),
+                &config.cluster_name,
+                config.listen_addr,
+                &config.seed_nodes,
+                old_node,
+            ).expect("can't join cluster")
+        };
+
+        // save init (2 of 2)
+        meta_storage.set(b"ring", &dht.save_ring().unwrap());
+        meta_storage.sync();
+
         let workers = WorkerManager::new(
             node,
             config.worker_count as _,
             time::Duration::from_millis(config.worker_timer as _),
         );
+
         let db = Arc::new(Database {
             fabric: fabric,
             dht: dht,
@@ -142,53 +159,54 @@ impl Database {
 
         db.workers.lock().unwrap().start(|| {
             let cdb = Arc::downgrade(&db);
-            Box::new(move |chan| {
-                for wm in chan {
-                    let db = if let Some(db) = cdb.upgrade() {
-                        db
-                    } else {
-                        break;
-                    };
-                    trace!(
-                        "worker {} got msg {:?}",
-                        ::std::thread::current().name().unwrap(),
-                        wm
-                    );
-                    match wm {
-                        WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
-                        WorkerMsg::Tick(time) => db.handler_tick(time),
-                        WorkerMsg::Command(token, cmd) => db.handler_cmd(token, cmd),
-                        WorkerMsg::DHTChange => db.handler_dht_change(),
-                        WorkerMsg::Exit => break,
-                    }
+            Box::new(move |chan| for wm in chan {
+                let db = if let Some(db) = cdb.upgrade() {
+                    db
+                } else {
+                    break;
+                };
+                match wm {
+                    WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
+                    WorkerMsg::Command(token, cmd) => db.handler_cmd(token, cmd),
+                    WorkerMsg::Tick(time) => db.handler_tick(time),
+                    WorkerMsg::DHTFabric(from, m) => db.dht.handler_fabric_msg(from, m),
+                    WorkerMsg::DHTChange => db.handler_dht_change(),
+                    WorkerMsg::Exit => break,
                 }
-                info!("Exiting worker")
             })
         });
 
-        let mut dht_change_sender = db.sender();
-        db.dht.set_callback(Box::new(
-            move || { dht_change_sender.send(WorkerMsg::DHTChange); },
-        ));
-
-        // register nodes into fabric
+        // register dht nodes into fabric
         db.fabric.set_nodes(db.dht.members().into_iter());
-        // FIXME: fabric should have a start method that receives the callbacks
-        // set fabric callbacks
+        // fabric dht messages
+        let mut sender = db.sender();
+        let callback = move |f, m| {
+            sender.send(WorkerMsg::DHTFabric(f, m));
+        };
+        db.fabric
+            .register_msg_handler(FabricMsgType::DHT, Box::new(callback));
+
+        // setup dht change callback
+        let sender = Mutex::new(db.sender());
+        let callback = move || {
+            sender.lock().unwrap().send(WorkerMsg::DHTChange);
+        };
+        db.dht.set_callback(Box::new(callback));
+
+        // other types of fabric msgs
         for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch] {
             let mut sender = db.sender();
-            let callback = Box::new(move |f, m| {
-                // trace!("fabric callback {:?} {:?}", msg_type, m);
+            let callback = move |f, m| {
                 sender.send(WorkerMsg::Fabric(f, m));
-            });
-            db.fabric.register_msg_handler(msg_type, callback);
+            };
+            db.fabric.register_msg_handler(msg_type, Box::new(callback));
         }
 
+        // create vnodes
         {
             // acquire exclusive lock to vnodes to initialize them
             let mut vnodes = db.vnodes.write().unwrap();
             let (ready_vnodes, pending_vnodes) = db.dht.vnodes_for_node(db.dht.node());
-            // create vnodes
             // TODO: this can be done in parallel
             *vnodes = (0..db.dht.partitions() as VNodeId)
                 .map(|i| {
@@ -223,13 +241,17 @@ impl Database {
     }
 
     fn handler_dht_change(&self) {
+        // save dht
+        self.meta_storage
+            .set(b"ring", &self.dht.save_ring().unwrap());
+
         // register nodes
         self.fabric.set_nodes(self.dht.members().into_iter());
 
         for (&i, vn) in self.vnodes.read().unwrap().iter() {
-            let final_status = if self.dht.nodes_for_vnode(i, true, true).contains(
-                &self.dht.node(),
-            )
+            let final_status = if self.dht
+                .nodes_for_vnode(i, true, true)
+                .contains(&self.dht.node())
             {
                 VNodeStatus::Ready
             } else {
@@ -240,6 +262,8 @@ impl Database {
     }
 
     fn handler_tick(&self, time: time::Instant) {
+        self.dht.handler_tick(time);
+
         let mut incomming_syncs = 0usize;
         let vnodes = self.vnodes.read().unwrap();
         for vn in vnodes.values() {
@@ -320,24 +344,20 @@ impl Database {
     pub fn signal_sync_start(&self, direction: SyncDirection) -> bool {
         let mut stats = self.stats.lock().unwrap();
         match direction {
-            SyncDirection::Incomming => {
-                if stats.incomming_syncs < self.config.sync_incomming_max {
-                    stats.incomming_syncs += 1;
-                    metrics::SYNC_INCOMING.inc();
-                    true
-                } else {
-                    false
-                }
-            }
-            SyncDirection::Outgoing => {
-                if stats.outgoing_syncs < self.config.sync_outgoing_max {
-                    stats.outgoing_syncs += 1;
-                    metrics::SYNC_OUTGOING.inc();
-                    true
-                } else {
-                    false
-                }
-            }
+            SyncDirection::Incomming => if stats.incomming_syncs < self.config.sync_incomming_max {
+                stats.incomming_syncs += 1;
+                metrics::SYNC_INCOMING.inc();
+                true
+            } else {
+                false
+            },
+            SyncDirection::Outgoing => if stats.outgoing_syncs < self.config.sync_outgoing_max {
+                stats.outgoing_syncs += 1;
+                metrics::SYNC_OUTGOING.inc();
+                true
+            } else {
+                false
+            },
         }
     }
 
@@ -381,6 +401,7 @@ impl Database {
 
 impl Drop for Database {
     fn drop(&mut self) {
+        debug!("Droping database");
         // force dropping vnodes before other components
         let _ = self.vnodes.write().map(|mut vns| vns.clear());
     }
@@ -388,8 +409,8 @@ impl Drop for Database {
 
 #[cfg(test)]
 mod tests {
-    use std::{thread, net, fs, ops};
-    use std::sync::{Mutex, Arc};
+    use std::{fs, net, ops, thread};
+    use std::sync::{Arc, Mutex};
     use std::collections::HashMap;
     use super::*;
     use version_vector::VersionVector;
@@ -398,11 +419,7 @@ mod tests {
     use resp::RespValue;
     use config;
     use types::ConsistencyLevel::*;
-
-    fn sleep_ms(ms: u64) {
-        use std::time::Duration;
-        thread::sleep(Duration::from_millis(ms));
-    }
+    use utils::sleep_ms;
 
     struct TestDatabase {
         db: Arc<Database>,
@@ -428,6 +445,7 @@ mod tests {
                 } else {
                     None
                 },
+                seed_nodes: vec!["127.0.0.1:9000".parse().unwrap()],
                 ..Default::default()
             };
             let db = Database::new(
@@ -519,14 +537,14 @@ mod tests {
         assert!(db.values_response(1).len() == 1);
 
         db.get(1, b"test", One);
-        assert!(db.values_response(1).eq(&[b"value1"]));
+        assert_eq!(db.values_response(1), [b"value1"]);
 
         db.save(shutdown);
         drop(db);
         db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", false);
 
         db.get(1, b"test", One);
-        assert!(db.values_response(1).eq(&[b"value1"]));
+        assert_eq!(db.values_response(1), [b"value1"]);
 
         if shutdown {
             assert_eq!(db.dht.node(), prev_node);
@@ -560,6 +578,7 @@ mod tests {
         let _ = fs::remove_dir_all("t/");
         let _ = env_logger::init();
         let db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
+
         db.get(1, b"test", One);
         assert!(db.values_response(1).len() == 0);
 
@@ -567,21 +586,21 @@ mod tests {
         assert!(db.values_response(1).len() == 1);
 
         db.get(1, b"test", One);
-        assert!(db.values_response(1).eq(&[b"value1"]));
+        assert_eq!(db.values_response(1), [b"value1"]);
 
         db.set(1, b"test", Some(b"value2"), VersionVector::new(), One, true);
         assert!(db.values_response(1).len() == 2);
 
         db.get(1, b"test", One);
         let (values, vv) = db.response(1);
-        assert!(values.eq(&[b"value1", b"value2"]));
+        assert_eq!(values, [b"value1", b"value2"]);
 
         db.set(1, b"test", Some(b"value12"), vv, One, true);
         assert!(db.values_response(1).len() == 1);
 
         db.get(1, b"test", One);
         let (values, vv) = db.response(1);
-        assert!(values.eq(&[b"value12"]));
+        assert_eq!(values, [b"value12"]);
 
         db.set(1, b"test", None, vv, One, true);
         assert!(db.values_response(1).len() == 0);
@@ -598,11 +617,8 @@ mod tests {
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.rebalance();
 
-        sleep_ms(1000);
-        while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
-            warn!("waiting for syncs to finish");
-            sleep_ms(1000);
-        }
+        db1.wait_syncs();
+        db2.wait_syncs();
 
         db1.get(1, b"test", One);
         assert!(db1.values_response(1).len() == 0);
@@ -612,7 +628,7 @@ mod tests {
 
         for &db in &[&db1, &db2] {
             db.get(1, b"test", One);
-            assert!(db.values_response(1).eq(&[b"value1"]));
+            assert_eq!(db.values_response(1), [b"value1"]);
         }
     }
 
@@ -640,7 +656,7 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
+                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
             }
         }
 
@@ -650,7 +666,7 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
+                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
             }
         }
 
@@ -661,83 +677,21 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
+                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
             }
         }
     }
 
     #[test]
-    fn test_join_sync_recover() {
-        let _ = fs::remove_dir_all("t/");
-        let _ = env_logger::init();
-        let mut db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
-        let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        db2.dht.rebalance();
-
-        warn!("wait for rebalance");
-        db1.wait_syncs();
-        db2.wait_syncs();
-
-        warn!("inserting test data");
-        for i in 0..TEST_JOIN_SIZE {
-            db1.set(
-                i,
-                i.to_string().as_bytes(),
-                Some(i.to_string().as_bytes()),
-                VersionVector::new(),
-                One,
-                true,
-            );
-            db1.values_response(i);
-        }
-        // wait for all writes to be replicated
-        sleep_ms(5);
-        warn!("check before sync");
-        for i in 0..TEST_JOIN_SIZE {
-            for &db in &[&db1, &db2] {
-                db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
-            }
-        }
-
-        // sim unclean shutdown
-        warn!("killing db1");
-        drop(db1);
-        db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", false);
-
-        // {
-        //     // during recover ASK is expected
-        //     db1.set(0, b"k", None, VersionVector::new(), One, true);
-        //     let response = format!("{:?}", db1.resp_response(0));
-        //     assert!(response.starts_with("Error(\"ASK"), "{} is not an Error(\"ASK", response);
-        // }
-
-        // force some syncs
-        warn!("starting syncs");
-        db1.force_syncs();
-
-        warn!("will check after sync");
-        for i in 0..TEST_JOIN_SIZE {
-            for &db in &[&db1, &db2] {
-                db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
-            }
-        }
-    }
-
-    #[test]
-    fn test_join_sync_normal() {
+    fn test_join_sync() {
         let _ = fs::remove_dir_all("t/");
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.rebalance();
 
-        sleep_ms(1000);
-        while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
-            warn!("waiting for syncs to finish");
-            sleep_ms(1000);
-        }
+        db1.wait_syncs();
+        db2.wait_syncs();
 
         // sim partition
         warn!("droping db2");
@@ -762,12 +716,13 @@ mod tests {
         // sim partition heal
         warn!("bringing back db2");
         db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        sleep_ms(200); // wait for fabric to reconnect
 
         warn!("will check before sync");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), Quorum);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
+                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
             }
         }
 
@@ -775,17 +730,14 @@ mod tests {
         warn!("starting syncs");
         db2.force_syncs();
 
-        sleep_ms(1000);
-        while db1.syncs_inflight() + db2.syncs_inflight() > 0 {
-            warn!("waiting for syncs to finish");
-            sleep_ms(1000);
-        }
+        db1.wait_syncs();
+        db2.wait_syncs();
 
         warn!("will check after balancing");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.get(i, i.to_string().as_bytes(), One);
-                assert!(db.values_response(i).eq(&[i.to_string().as_bytes()]));
+                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
             }
         }
     }
@@ -799,19 +751,17 @@ mod tests {
         let db3 = TestDatabase::new("127.0.0.1:9002".parse().unwrap(), "t/db3", false);
         db1.dht.rebalance();
 
-        sleep_ms(1000);
-        while db1.syncs_inflight() + db2.syncs_inflight() + db3.syncs_inflight() > 0 {
-            warn!("waiting for syncs to finish");
-            sleep_ms(1000);
-        }
+        db1.wait_syncs();
+        db2.wait_syncs();
+        db3.wait_syncs();
 
         // test data
         db1.set(0, b"key", Some(b"value"), VersionVector::new(), All, true);
-        assert!(db1.values_response(0).eq(&[b"value"]));
+        assert_eq!(db1.values_response(0), [b"value"]);
 
         for &cl in &[One, Quorum, All] {
             db1.get(0, b"key", cl);
-            assert!(db1.values_response(0).eq(&[b"value"]));
+            assert_eq!(db1.values_response(0), [b"value"]);
             db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
             db1.values_response(0);
         }
@@ -819,7 +769,7 @@ mod tests {
         drop(db3);
         for &cl in &[One, Quorum] {
             db1.get(0, b"key", cl);
-            assert!(db1.values_response(0).eq(&[b"value"]));
+            assert_eq!(db1.values_response(0), [b"value"]);
             db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
             db1.values_response(0);
         }
@@ -834,7 +784,7 @@ mod tests {
         drop(db2);
         for &cl in &[One] {
             db1.get(0, b"key", cl);
-            assert!(db1.values_response(0).eq(&[b"value"]));
+            assert_eq!(db1.values_response(0), [b"value"]);
             db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
             db1.values_response(0);
         }
@@ -844,7 +794,6 @@ mod tests {
             db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
             assert_eq!(db1.resp_response(0), RespValue::Error("Unavailable".into()));
         }
-
     }
 
 }

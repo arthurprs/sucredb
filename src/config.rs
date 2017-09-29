@@ -16,7 +16,6 @@ use types::ConsistencyLevel;
 // Remember to update defaults in sucredb.yaml!
 pub const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:6379";
 pub const DEFAULT_FABRIC_ADDR: &str = "127.0.0.1:16379";
-pub const DEFAULT_ETCD_ADDR: &str = "http://127.0.0.1:2379";
 pub const DEFAULT_CLUSTER_NAME: &str = "default";
 pub const DEFAULT_DATA_DIR: &str = "./data";
 pub const DEFAULT_REPLICATION_FACTOR: &str = "3";
@@ -28,7 +27,6 @@ pub struct Config {
     pub cluster_name: String,
     pub listen_addr: SocketAddr,
     pub fabric_addr: SocketAddr,
-    pub etcd_addr: String,
     pub cmd_init: Option<InitCommand>,
     pub worker_timer: u32,
     pub worker_count: u16,
@@ -42,6 +40,7 @@ pub struct Config {
     pub request_timeout: u32,
     pub client_connection_max: u32,
     pub value_version_max: u16,
+    pub seed_nodes: Vec<SocketAddr>,
     // TODO: these should be in the cluster config instead
     pub consistency_read: ConsistencyLevel,
     pub consistency_write: ConsistencyLevel,
@@ -55,7 +54,6 @@ impl Default for Config {
             cluster_name: DEFAULT_CLUSTER_NAME.into(),
             listen_addr: DEFAULT_LISTEN_ADDR.parse().unwrap(),
             fabric_addr: DEFAULT_FABRIC_ADDR.parse().unwrap(),
-            etcd_addr: DEFAULT_ETCD_ADDR.into(),
             cmd_init: None,
             worker_timer: 500,
             worker_count: max(4, num_cpus::get() as u16 * 2),
@@ -69,6 +67,7 @@ impl Default for Config {
             request_timeout: 1000,
             client_connection_max: 100,
             value_version_max: 100,
+            seed_nodes: Vec::new(),
             consistency_read: ConsistencyLevel::One,
             consistency_write: ConsistencyLevel::One,
         }
@@ -82,9 +81,10 @@ pub struct InitCommand {
 }
 
 fn split_number_suffix(s: &str) -> Result<(i64, &str), GenericError> {
-    let digits_end = s.trim().chars().position(|c| !c.is_digit(10)).unwrap_or(
-        s.len(),
-    );
+    let digits_end = s.trim()
+        .chars()
+        .position(|c| !c.is_digit(10))
+        .unwrap_or(s.len());
     let (digits, suffix) = s.split_at(digits_end);
     Ok((digits.parse::<i64>()?, suffix.trim_left()))
 }
@@ -115,32 +115,29 @@ pub fn parse_size(size_text: &str) -> Result<i64, GenericError> {
 
 macro_rules! cfg {
     ($yaml: ident, $target: ident, $string: ident, $method: ident) => (
-        if let Some(v) = $yaml.get(stringify!($string)).and_then(|v| v.$method()) {
+        if let Some(v) = $yaml.get(stringify!($string)) {
+            let v = v.$method().expect(concat!("Can't access field with", stringify!($method)));
             $target.$string = v.into();
         }
     );
     ($yaml: ident, $target: ident, $string: ident, $method: ident, try_into) => (
-        if let Some(v) = $yaml.get(stringify!($string)).and_then(|v| v.$method()) {
-            $target.$string = v.try_into().expect("Can't convert");
+        if let Some(v) = $yaml.get(stringify!($string)) {
+            let v = v.$method().expect(concat!("Can't access field with", stringify!($method)));
+            $target.$string = v.try_into().expect(concat!("Can't convert ", stringify!($string)));
         }
     );
-    ($yaml: ident, $target: ident, $string: ident, $method: ident, $convert: ident) => (
-        if let Some(v) = $yaml.get(stringify!($string)).and_then(|v| v.$method()) {
+    ($yaml: ident, $target: ident, $string: ident, $method: ident, $convert: expr) => (
+        if let Some(v) = $yaml.get(stringify!($string)) {
+            let v = v.$method().expect(concat!("Can't access key ", stringify!($string), " with", stringify!($method)));
             $target.$string =
-                $convert(v).expect(concat!("Can't parse with ", stringify!($convert)))
-        }
-    );
-    ($yaml: ident, $target: ident, $string: ident, $method: ident, $convert: ident, try_into) => (
-        if let Some(v) = $yaml.get(stringify!($string)).and_then(|v| v.$method()) {
-            $target.$string =
-                $convert(v).expect(concat!("Can't parse with ", stringify!($convert)))
-                .try_into().expect("Can't convert");
+                $convert(v).expect(concat!("Can't convert ", stringify!($string), " with ", stringify!($convert)))
+                .try_into().expect(concat!("Can't convert ", stringify!($string)));
         }
     );
 }
 
 pub fn read_config_file(path: &Path, config: &mut Config) {
-    debug!("reading config file");
+    debug!("Reading config file");
     let yaml = {
         let mut s = String::new();
         File::open(path)
@@ -148,49 +145,40 @@ pub fn read_config_file(path: &Path, config: &mut Config) {
             .expect("Error reading config file");
         yaml::from_str::<yaml::Value>(&s).expect("Error parsing config file")
     };
-    debug!("done reading config file: {:?}", config);
+    debug!("Done reading config file: {:?}", config);
 
     cfg!(yaml, config, data_dir, as_str);
     cfg!(yaml, config, cluster_name, as_str);
     cfg!(yaml, config, listen_addr, as_str, try_into);
     cfg!(yaml, config, fabric_addr, as_str, try_into);
-    cfg!(yaml, config, etcd_addr, as_str, try_into);
     // pub cmd_init: Option<InitCommand>,
-    cfg!(yaml, config, worker_timer, as_str, parse_duration, try_into);
+    cfg!(yaml, config, worker_timer, as_str, parse_duration);
     cfg!(yaml, config, worker_count, as_u64, try_into);
     cfg!(yaml, config, sync_incomming_max, as_u64, try_into);
     cfg!(yaml, config, sync_outgoing_max, as_u64, try_into);
-    // cfg!(yaml, config, sync_auto, as_bool);
-    cfg!(yaml, config, sync_timeout, as_str, parse_duration, try_into);
-    cfg!(
-        yaml,
-        config,
-        sync_msg_timeout,
-        as_str,
-        parse_duration,
-        try_into
-    );
+    cfg!(yaml, config, sync_auto, as_bool);
+    cfg!(yaml, config, sync_timeout, as_str, parse_duration);
+    cfg!(yaml, config, sync_msg_timeout, as_str, parse_duration);
     cfg!(yaml, config, sync_msg_inflight, as_u64, try_into);
-    cfg!(
-        yaml,
-        config,
-        fabric_timeout,
-        as_str,
-        parse_duration,
-        try_into
-    );
-    cfg!(
-        yaml,
-        config,
-        request_timeout,
-        as_str,
-        parse_duration,
-        try_into
-    );
+    cfg!(yaml, config, fabric_timeout, as_str, parse_duration);
+    cfg!(yaml, config, request_timeout, as_str, parse_duration);
     cfg!(yaml, config, client_connection_max, as_u64, try_into);
     cfg!(yaml, config, value_version_max, as_u64, try_into);
     cfg!(yaml, config, consistency_read, as_str, try_into);
     cfg!(yaml, config, consistency_write, as_str, try_into);
+
+    if let Some(v) = yaml.get("seed_nodes") {
+        config.seed_nodes = v.as_sequence()
+            .expect("seed_nodes is not a sequence")
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .expect("seed_nodes element is not a string")
+                    .try_into()
+                    .expect("seed_nodes element can't be parsed")
+            })
+            .collect();
+    }
 
     if let Some(config_value) = yaml.get("logging") {
         setup_logging(config_value);
@@ -235,9 +223,7 @@ pub fn setup_default_logging() {
                 .appender("console")
                 .build("sucredb", log::LogLevelFilter::Info),
         )
-        .build(log4rs::config::Root::builder().build(
-            log::LogLevelFilter::Off,
-        ))
+        .build(log4rs::config::Root::builder().build(log::LogLevelFilter::Off))
         .expect("failed to setup default logging");
 
     log4rs::init_config(config).expect("failed to init logging");

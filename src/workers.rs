@@ -1,6 +1,5 @@
-use std::{time, thread};
+use std::{thread, time};
 use std::sync::mpsc;
-use std::boxed::FnBox;
 use fabric::FabricMsg;
 use database::{NodeId, Token};
 use rand::{thread_rng, Rng};
@@ -9,8 +8,9 @@ use resp::RespValue;
 #[derive(Debug)]
 pub enum WorkerMsg {
     Fabric(NodeId, FabricMsg),
-    Tick(time::Instant),
     Command(Token, RespValue),
+    Tick(time::Instant),
+    DHTFabric(NodeId, FabricMsg),
     DHTChange,
     Exit,
 }
@@ -41,24 +41,29 @@ impl WorkerManager {
             ticker_thread: None,
             ticker_chan: None,
             thread_count: thread_count,
-            threads: Vec::new(),
-            channels: Vec::new(),
+            threads: Default::default(),
+            channels: Default::default(),
             node: node,
         }
     }
 
     pub fn start<F>(&mut self, mut worker_fn_gen: F)
     where
-        F: FnMut() -> Box<FnBox(mpsc::Receiver<WorkerMsg>) + Send>,
+        F: FnMut()
+            -> Box<FnMut(mpsc::Receiver<WorkerMsg>) + Send>,
     {
         assert!(self.channels.is_empty());
         for i in 0..self.thread_count {
-            let worker_fn = worker_fn_gen();
+            // since neither closure cloning or Box<FnOnce> are stable use Box<FnMut>
+            let mut worker_fn = worker_fn_gen();
             let (tx, rx) = mpsc::channel();
             self.threads.push(
                 thread::Builder::new()
                     .name(format!("Worker:{}:{}", i, self.node))
-                    .spawn(move || worker_fn(rx))
+                    .spawn(move || {
+                        worker_fn(rx);
+                        info!("Exiting worker");
+                    })
                     .unwrap(),
             );
             self.channels.push(tx);
@@ -98,19 +103,19 @@ impl WorkerSender {
         let _ = self.try_send(msg);
     }
     pub fn try_send(&mut self, msg: WorkerMsg) -> Result<(), mpsc::SendError<WorkerMsg>> {
-        let i = self.cursor;
+        debug!("try_send {:?}", msg);
         self.cursor = self.cursor.wrapping_add(1);
-        self.channels[i % self.channels.len()].send(msg)
+        self.channels[self.cursor % self.channels.len()].send(msg)
     }
 }
 
 impl Drop for WorkerManager {
     fn drop(&mut self) {
-        if let Some(chan) = self.ticker_chan.take() {
-            let _ = chan.send(());
+        for c in &*self.channels {
+            let _ = c.send(WorkerMsg::Exit);
         }
-        for chan in self.channels.drain(..) {
-            let _ = chan.send(WorkerMsg::Exit);
+        if let Some(c) = self.ticker_chan.take() {
+            let _ = c.send(());
         }
         if let Some(t) = self.ticker_thread.take() {
             let _ = t.join();

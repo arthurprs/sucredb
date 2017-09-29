@@ -1,6 +1,6 @@
-use std::hash::{Hasher, BuildHasherDefault};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::collections::{HashMap, HashSet};
-use std::{io, path, fs};
+use std::{fs, io, path};
 use std::error::Error;
 
 pub type GenericError = Box<Error + Send + Sync + 'static>;
@@ -25,7 +25,6 @@ impl Hasher for IdHasher {
 
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-
         #[inline]
         fn mix(mut x: u64) -> u64 {
             // Seahash diffuse method
@@ -71,6 +70,11 @@ pub fn is_dir_empty_or_absent<P: AsRef<path::Path>>(path: P) -> io::Result<bool>
         Err(ref err) if err.kind() == io::ErrorKind::NotFound => Ok(true),
         Err(err) => Err(err),
     }
+}
+
+#[cfg(test)]
+pub fn sleep_ms(ms: u64) {
+    ::std::thread::sleep(::std::time::Duration::from_millis(ms));
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 use std::collections::{hash_set, HashSet};
 use vnode::VNodeState;
 use fabric::*;
@@ -47,9 +47,10 @@ pub enum SyncDirection {
 
 type IteratorFn = Box<
     FnMut(&VNodeState)
-          -> Result<(Bytes, DottedCausalContainer<Bytes>), Result<(), ()>>
+        -> Result<(Bytes, DottedCausalContainer<Bytes>), Result<(), ()>>
         + Send,
 >;
+
 type InFlightSyncMsgMap = InFlightMap<
     u64,
     (Bytes, DottedCausalContainer<Bytes>),
@@ -130,14 +131,14 @@ impl SyncKeysIterator {
             if self.broken {
                 return Err(Err(()));
             }
-            // fetch log in 10_000 key batches
+            // fetch log in 1_000 key batches
             // reserve a dedup hashmap with half of iter len + 1
             // this way it will only resize once at the worst case
             let mut keys = HashSet::with_capacity(self.dots_delta.size_hint().0 / 2 + 1);
             for (n, v) in self.dots_delta.by_ref() {
                 if let Some(key) = state.logs.get(n, v) {
                     keys.insert(key);
-                    if keys.len() >= 10_000 {
+                    if keys.len() >= 1_000 {
                         break;
                     }
                 } else {
@@ -150,7 +151,7 @@ impl SyncKeysIterator {
             if keys.is_empty() {
                 return Err(Ok(()));
             }
-            debug!("sync will send key batch {:?}", keys);
+            debug!("Sync will send key batch with {:?} keys", keys.len());
             self.keys = keys.into_iter();
         }
     }
@@ -181,7 +182,7 @@ impl Synchronization {
         msg: MsgSyncStart,
     ) -> Self {
         let mut storage_iterator = state.storage.iterator();
-        let iterator: IteratorFn = Box::new(move |_| {
+        let iterator_fn: IteratorFn = Box::new(move |_| {
             storage_iterator
                 .iter()
                 .map(|(k, v)| {
@@ -197,7 +198,7 @@ impl Synchronization {
         BootstrapSender {
             cookie: msg.cookie,
             clocks_snapshot: state.clocks.clone(),
-            iterator: iterator,
+            iterator: iterator_fn,
             inflight: InFlightMap::new(),
             peer: peer,
             count: 0,
@@ -249,58 +250,29 @@ impl Synchronization {
 
         let dots_delta = state.clocks.delta(&clocks_in_peer);
         debug!("Delta from {:?} to {:?}", state.clocks, clocks_in_peer);
-        // let log_uptodate = dots_delta.min_versions().iter().all(|&(n, v)| {
-        //     state
-        //         .logs
-        //         .get(&n)
-        //         .and_then(|log| log.min_version())
-        //         .unwrap_or(0) <= v
-        // });
-        let log_uptodate = true;
 
-        let iterator: IteratorFn = if log_uptodate {
-            let mut sync_keys = SyncKeysIterator::new(dots_delta);
-            Box::new(move |state| {
-                loop {
-                    match sync_keys.next(state) {
-                        Ok(k) => {
-                            if let Some(v) = state.storage.get(&k, |v| Bytes::from(v)) {
-                                let mut dcc: DottedCausalContainer<_> = bincode::deserialize(&v)
-                                    .unwrap();
-                                // TODO: fill should be done in the remote?
-                                dcc.fill(&clocks_snapshot);
-                                return Ok((k, dcc));
-                            }
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-            })
-        } else {
-            warn!("SyncSender {:?} using a scan", cookie);
-            let mut storage_iterator = state.storage.iterator();
-            Box::new(move |_| {
-                storage_iterator
-                    .iter()
-                    .filter_map(|(k, v)| {
-                        let mut dcc = bincode::deserialize::<DottedCausalContainer<_>>(v).unwrap();
-                        if !dcc.contained(&clocks_in_peer) {
+        let mut sync_keys = SyncKeysIterator::new(dots_delta);
+        let iterator_fn: IteratorFn = Box::new(move |state| {
+            loop {
+                match sync_keys.next(state) {
+                    Ok(k) => {
+                        if let Some(v) = state.storage.get(&k, |v| Bytes::from(v)) {
+                            let mut dcc: DottedCausalContainer<_> =
+                                bincode::deserialize(&v).unwrap();
                             // TODO: fill should be done in the remote?
                             dcc.fill(&clocks_snapshot);
-                            Some((k.into(), dcc))
-                        } else {
-                            None
+                            return Ok((k, dcc));
                         }
-                    })
-                    .next()
-                    .ok_or(Ok(()))
-            })
-        };
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        });
 
         SyncSender {
             clocks_in_peer: clocks_in_peer2,
             clocks_snapshot: clocks_snapshot2,
-            iterator: iterator,
+            iterator: iterator_fn,
             inflight: InFlightMap::new(),
             cookie: cookie,
             peer: peer,
@@ -513,8 +485,7 @@ impl Synchronization {
     // only valid for Receivers right now
     pub fn on_cancel(&mut self, db: &Database, state: &mut VNodeState) {
         match *self {
-            BootstrapReceiver { .. } |
-            SyncReceiver { .. } => {
+            BootstrapReceiver { .. } | SyncReceiver { .. } => {
                 let _ = self.send_error_fin(db, state, FabricMsgError::BadVNodeStatus);
             }
             _ => unreachable!(),
@@ -535,15 +506,17 @@ impl Synchronization {
 
     pub fn on_tick(&mut self, db: &Database, state: &mut VNodeState) -> SyncResult {
         match *self {
-            SyncSender { last_recv, cookie, .. } |
-            BootstrapSender { last_recv, cookie, .. } => {
-                if last_recv.elapsed() > Duration::from_millis(db.config.sync_timeout as _) {
-                    warn!("sync/boostrap sender timed out {:?}", cookie);
-                    SyncResult::Error
-                } else {
-                    self.send_next(db, state)
-                }
-            }
+            SyncSender {
+                last_recv, cookie, ..
+            } |
+            BootstrapSender {
+                last_recv, cookie, ..
+            } => if last_recv.elapsed() > Duration::from_millis(db.config.sync_timeout as _) {
+                warn!("sync/boostrap sender timed out {:?}", cookie);
+                SyncResult::Error
+            } else {
+                self.send_next(db, state)
+            },
             SyncReceiver {
                 last_recv,
                 recv_count,
@@ -557,29 +530,24 @@ impl Synchronization {
                 last_send,
                 cookie,
                 ..
-            } => {
-                if last_recv.elapsed() > Duration::from_millis(db.config.sync_timeout as _) {
-                    warn!("sync/boostrap receiver timed out {:?}", cookie);
-                    SyncResult::Error
-                } else if recv_count == 0 &&
-                           last_send.elapsed() >
-                               Duration::from_millis(db.config.sync_msg_timeout as _)
-                {
-                    self.send_start(db, state)
-                } else {
-                    SyncResult::Continue
-                }
-            }
+            } => if last_recv.elapsed() > Duration::from_millis(db.config.sync_timeout as _) {
+                warn!("sync/boostrap receiver timed out {:?}", cookie);
+                SyncResult::Error
+            } else if recv_count == 0
+                && last_send.elapsed() > Duration::from_millis(db.config.sync_msg_timeout as _)
+            {
+                self.send_start(db, state)
+            } else {
+                SyncResult::Continue
+            },
         }
     }
 
     // called by vnode as soon as the sync is registered (after creation)
     pub fn on_start(&mut self, db: &Database, state: &mut VNodeState) {
         let _ = match *self {
-            SyncReceiver { .. } |
-            BootstrapReceiver { .. } => self.send_start(db, state),
-            SyncSender { .. } |
-            BootstrapSender { .. } => self.send_next(db, state),
+            SyncReceiver { .. } | BootstrapReceiver { .. } => self.send_start(db, state),
+            SyncSender { .. } | BootstrapSender { .. } => self.send_next(db, state),
         };
     }
 
@@ -696,10 +664,8 @@ impl Synchronization {
 
     pub fn direction(&self) -> SyncDirection {
         match *self {
-            BootstrapReceiver { .. } |
-            SyncReceiver { .. } => SyncDirection::Incomming,
-            BootstrapSender { .. } |
-            SyncSender { .. } => SyncDirection::Outgoing,
+            BootstrapReceiver { .. } | SyncReceiver { .. } => SyncDirection::Incomming,
+            BootstrapSender { .. } | SyncSender { .. } => SyncDirection::Outgoing,
         }
     }
 }

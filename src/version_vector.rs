@@ -1,20 +1,21 @@
-use std::{str, cmp};
-use linear_map::{self, LinearMap, Entry};
-use roaring::{RoaringTreemap, RoaringBitmap};
-use byteorder::{WriteBytesExt, ReadBytesExt, LittleEndian};
+use std::{cmp, str};
+use linear_map::{self, Entry, LinearMap};
+use roaring::{RoaringBitmap, RoaringTreemap};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use serde;
 
 pub type Version = u64;
 pub type Id = u64;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VersionVector(LinearMap<Id, Version>);
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BitmappedVersion {
     base: Version,
     #[serde(serialize_with = "serialize_bitmap", deserialize_with = "deserialize_bitmap")]
-    bitmap: RoaringTreemap,
+    bitmap:
+        RoaringTreemap,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,8 +63,8 @@ impl BitmappedVersion {
             self.base += 1;
         } else if version > self.base {
             self.bitmap.insert(version);
-            self.norm();
         }
+        self.norm();
     }
 
     fn norm(&mut self) {
@@ -166,9 +167,9 @@ where
         buffer_len += 4 + b.serialized_size();
     }
     let mut buffer = Vec::with_capacity(buffer_len);
-    buffer.write_u32::<LittleEndian>(bitmap_count).map_err(
-        Error::custom,
-    )?;
+    buffer
+        .write_u32::<LittleEndian>(bitmap_count)
+        .map_err(Error::custom)?;
     for (p, b) in value.bitmaps() {
         buffer.write_u32::<LittleEndian>(p).map_err(Error::custom)?;
         b.serialize_into(&mut buffer).map_err(Error::custom)?;
@@ -209,21 +210,19 @@ where
         }
     }
 
-    deserializer.deserialize_byte_buf(ByteBufVisitor).and_then(
-        |buffer| {
+    deserializer
+        .deserialize_byte_buf(ByteBufVisitor)
+        .and_then(|buffer| {
             let mut buffer = &buffer[..];
             let bitmap_count = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
             let mut bitmaps = Vec::with_capacity(bitmap_count as usize);
             for _ in 0..bitmap_count {
                 let p = buffer.read_u32::<LittleEndian>().map_err(Error::custom)?;
-                let b = RoaringBitmap::deserialize_from(&mut buffer).map_err(
-                    Error::custom,
-                )?;
+                let b = RoaringBitmap::deserialize_from(&mut buffer).map_err(Error::custom)?;
                 bitmaps.push((p, b));
             }
             Ok(RoaringTreemap::from_bitmaps(bitmaps))
-        },
-    )
+        })
 }
 
 impl BitmappedVersionVector {
@@ -248,9 +247,10 @@ impl BitmappedVersionVector {
     }
 
     pub fn add(&mut self, id: Id, version: Version) {
-        self.0.entry(id).or_insert_with(Default::default).add(
-            version,
-        );
+        self.0
+            .entry(id)
+            .or_insert_with(Default::default)
+            .add(version);
     }
 
     pub fn add_bv(&mut self, id: Id, bv: &BitmappedVersion) {
@@ -375,24 +375,34 @@ impl VersionVector {
         }
     }
 
+    pub fn descends(&self, other: &Self) -> bool {
+        other
+            .0
+            .iter()
+            .all(|(k, ov)| self.0.get(k).map(|v| v >= ov).unwrap_or(false))
+    }
+
     pub fn add(&mut self, id: Id, version: Version) {
         match self.0.entry(id) {
             Entry::Vacant(vac) => {
                 vac.insert(version);
             }
-            Entry::Occupied(mut ocu) => {
-                if *ocu.get() < version {
-                    ocu.insert(version);
-                }
-            }
+            Entry::Occupied(mut ocu) => if *ocu.get() < version {
+                ocu.insert(version);
+            },
         }
     }
 
-    // pub fn reset(&mut self) {
-    //     for (_, v) in &mut self.0 {
-    //         *v = 0;
-    //     }
-    // }
+    pub fn event(&mut self, id: Id) {
+        match self.0.entry(id) {
+            Entry::Vacant(vac) => {
+                vac.insert(1);
+            }
+            Entry::Occupied(mut ocu) => {
+                *ocu.get_mut() += 1;
+            }
+        }
+    }
 
     pub fn iter(&self) -> linear_map::Iter<Id, Version> {
         self.0.iter()
@@ -407,8 +417,8 @@ impl<T> Dots<T> {
     fn merge(&mut self, other: &mut Self, vv1: &VersionVector, vv2: &VersionVector) {
         // retain in self what's not outdated or also exists in other
         self.0.retain(|&(id, version), _| {
-            version > vv1.get(id).unwrap_or(0) || version > vv2.get(id).unwrap_or(0) ||
-                other.0.remove(&(id, version)).is_some()
+            version > vv1.get(id).unwrap_or(0) || version > vv2.get(id).unwrap_or(0)
+                || other.0.remove(&(id, version)).is_some()
         });
 
         // drain other into self filtering outdated versions
@@ -452,9 +462,9 @@ impl<T> DottedCausalContainer<T> {
     }
 
     pub fn discard(&mut self, vv: &VersionVector) {
-        self.dots.0.retain(|&(id, version), _| {
-            version > vv.get(id).unwrap_or(0)
-        });
+        self.dots
+            .0
+            .retain(|&(id, version), _| version > vv.get(id).unwrap_or(0));
         self.vv.merge(vv);
     }
 

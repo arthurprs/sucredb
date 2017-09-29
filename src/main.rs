@@ -1,37 +1,39 @@
-#![feature(
-    slice_patterns,
-    fnbox,
-    try_from)]
+#![feature(slice_patterns, try_from)]
 #![allow(dead_code)]
-#![cfg_attr(feature = "cargo-clippy", allow(
-    cast_lossless,
-))]
+#![cfg_attr(feature = "cargo-clippy", allow(cast_lossless))]
 
-#[macro_use]
-extern crate log;
-extern crate log4rs;
-extern crate rand;
-extern crate roaring;
-extern crate linear_map;
-extern crate serde;
-extern crate serde_json;
-extern crate serde_yaml;
-#[macro_use]
-extern crate serde_derive;
+// #![feature(alloc_system, global_allocator, allocator_api)]
+//
+// extern crate alloc_system;
+//
+// use alloc_system::System;
+//
+// #[global_allocator]
+// static A: System = System;
+
 extern crate bincode;
-extern crate rocksdb;
 extern crate byteorder;
-extern crate etcd;
+extern crate bytes;
 extern crate clap;
 extern crate crc16;
-extern crate metrics as rust_metrics;
+extern crate futures;
 #[macro_use]
 extern crate lazy_static;
-extern crate futures;
+extern crate linear_map;
+extern crate log4rs;
+#[macro_use]
+extern crate log;
+extern crate metrics as rust_metrics;
+extern crate num_cpus;
+extern crate rand;
+extern crate roaring;
+extern crate rocksdb;
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
+extern crate serde_yaml;
 extern crate tokio_core;
 extern crate tokio_io;
-extern crate bytes;
-extern crate num_cpus;
 
 #[cfg(test)]
 extern crate env_logger;
@@ -60,7 +62,7 @@ mod metrics;
 
 fn configure() -> config::Config {
     use config::*;
-    use clap::{Arg, App, SubCommand};
+    use clap::{App, Arg, SubCommand};
     use std::path::Path;
 
     let matches = App::new("SucreDB")
@@ -74,8 +76,8 @@ fn configure() -> config::Config {
                 .help(".yaml config file")
                 .long_help(
                     "Path to the .yaml config file. Note that configuration \
-                    set through the command line will take precedence \
-                    over the config file.",
+                     set through the command line will take precedence \
+                     over the config file.",
                 )
                 .display_order(0),
         )
@@ -85,13 +87,6 @@ fn configure() -> config::Config {
                 .long("data")
                 .takes_value(true)
                 .help("Data directory"),
-        )
-        .arg(
-            Arg::with_name("etcd_addr")
-                .short("e")
-                .long("etcd")
-                .help("etcd addres")
-                .takes_value(true),
         )
         .arg(
             Arg::with_name("cluster_name")
@@ -114,6 +109,13 @@ fn configure() -> config::Config {
                 .help("Fabric listen addr")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("seed_nodes")
+                .short("s")
+                .long("seeds")
+                .multiple(true)
+                .takes_value(true),
+        )
         .subcommand(
             SubCommand::with_name("init")
                 .about("Init and configure the cluster")
@@ -129,7 +131,7 @@ fn configure() -> config::Config {
                         .help("Number of partitions")
                         .long_help(
                             "Number of partitions, the recommended value is \
-                            `expected node count * 10` rounded up to the next power of 2.",
+                             `expected node count * 10` rounded up to the next power of 2.",
                         )
                         .default_value(DEFAULT_PARTITIONS),
                 )
@@ -154,21 +156,28 @@ fn configure() -> config::Config {
     }
 
     if let Some(v) = matches.value_of("listen_addr") {
-        config.listen_addr = v.parse().unwrap();
+        config.listen_addr = v.parse().expect("Can't parse listen_addr");
+    }
+
+    if let Some(v) = matches.values_of("seed_nodes") {
+        config.seed_nodes = v.map(|v| v.parse().expect("Can't parse seed_nodes"))
+            .collect();
     }
 
     if let Some(v) = matches.value_of("fabric_addr") {
-        config.fabric_addr = v.parse().unwrap();
-    }
-
-    if let Some(v) = matches.value_of("etcd_addr") {
-        config.etcd_addr = v.parse().unwrap();
+        config.fabric_addr = v.parse().expect("Can't parse fabric_addr");
     }
 
     if let Some(sub) = matches.subcommand_matches("init") {
         config.cmd_init = Some(InitCommand {
-            partitions: sub.value_of("partitions").unwrap().parse().unwrap(),
-            replication_factor: sub.value_of("replication_factor").unwrap().parse().unwrap(),
+            partitions: sub.value_of("partitions")
+                .unwrap()
+                .parse()
+                .expect("Can't parse partitions"),
+            replication_factor: sub.value_of("replication_factor")
+                .unwrap()
+                .parse()
+                .expect("Can't parse replication_factor"),
         });
     }
 

@@ -1,5 +1,5 @@
 use std::num::ParseIntError;
-use std::{str, net};
+use std::net;
 use std::convert::TryInto;
 use resp::RespValue;
 use database::Database;
@@ -16,7 +16,7 @@ pub enum CommandError {
     UnknownCommand,
     TooManyVersions,
     InvalidArgCount,
-    InvalidKey, // TODO: max key length
+    InvalidKey,   // TODO: max key length
     InvalidValue, // TODO: max value length
     InvalidConsistencyValue,
     InvalidIntValue,
@@ -50,17 +50,15 @@ impl Database {
         let mut arg_: [&[u8]; 8] = [b""; 8];
         let mut argc = 0;
         match cmd {
-            RespValue::Array(ref a) if a.len() > 0 && a.len() <= arg_.len() => {
-                for v in a {
-                    if let &RespValue::Data(ref d) = v {
-                        arg_[argc] = d.as_ref();
-                        argc += 1;
-                    } else {
-                        argc = 0;
-                        break;
-                    };
-                }
-            }
+            RespValue::Array(ref a) if a.len() > 0 && a.len() <= arg_.len() => for v in a {
+                if let &RespValue::Data(ref d) = v {
+                    arg_[argc] = d.as_ref();
+                    argc += 1;
+                } else {
+                    argc = 0;
+                    break;
+                };
+            },
             _ => (),
         }
 
@@ -90,7 +88,7 @@ impl Database {
             }
             b"CONFIG" | b"config" => self.cmd_config(token, args),
             _ => {
-                debug!("unknown command {:?}", cmd);
+                debug!("Unknown command {:?}", cmd);
                 Err(CommandError::UnknownCommand)
             }
         };
@@ -111,7 +109,7 @@ impl Database {
         } else {
             self.config.consistency_read
         };
-        metrics::REQUEST_READ.mark(1);
+        metrics::REQUEST_GET.mark(1);
         Ok(self.get(token, args[0], consistency))
     }
 
@@ -127,7 +125,7 @@ impl Database {
         } else {
             self.config.consistency_write
         };
-        metrics::REQUEST_WRITE.mark(1);
+        metrics::REQUEST_PUT.mark(1);
         Ok(self.set(
             token,
             args[0],
@@ -150,7 +148,7 @@ impl Database {
         } else {
             self.config.consistency_write
         };
-        metrics::REQUEST_DELETE.mark(1);
+        metrics::REQUEST_DEL.mark(1);
         Ok(self.set(token, args[0], None, vv, consistency, false))
     }
 
@@ -166,9 +164,7 @@ impl Database {
                     let mut slot = vec![RespValue::Int(start as _), RespValue::Int(end as _)];
                     slot.extend(members.iter().map(|&(node, (_, ext_addr))| {
                         RespValue::Array(vec![
-                            RespValue::Data(
-                                ext_addr.ip().to_string().as_bytes().into()
-                            ),
+                            RespValue::Data(ext_addr.ip().to_string().as_bytes().into()),
                             RespValue::Int(ext_addr.port() as _),
                             RespValue::Data(node.to_string().as_bytes().into()),
                         ])
