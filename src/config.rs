@@ -20,6 +20,8 @@ pub const DEFAULT_CLUSTER_NAME: &str = "default";
 pub const DEFAULT_DATA_DIR: &str = "./data";
 pub const DEFAULT_REPLICATION_FACTOR: &str = "3";
 pub const DEFAULT_PARTITIONS: &str = "64";
+pub const MAX_KEY_LEN: usize = 500;
+pub const MAX_VALUE_LEN: usize = 10 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Config {

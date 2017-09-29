@@ -10,7 +10,7 @@ lazy_static!{
     pub static ref REQUEST_GET: Arc<Meter> = {
         StdMeter::new()
     };
-    pub static ref REQUEST_PUT: Arc<StdMeter> = {
+    pub static ref REQUEST_SET: Arc<StdMeter> = {
         StdMeter::new()
     };
     pub static ref REQUEST_DEL: Arc<StdMeter> = {

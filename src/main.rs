@@ -1,4 +1,4 @@
-#![feature(slice_patterns, try_from)]
+#![feature(try_from)]
 #![allow(dead_code)]
 #![cfg_attr(feature = "cargo-clippy", allow(cast_lossless))]
 

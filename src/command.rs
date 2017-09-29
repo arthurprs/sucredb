@@ -1,11 +1,12 @@
 use std::num::ParseIntError;
 use std::net;
 use std::convert::TryInto;
+use bincode;
 use resp::RespValue;
 use database::Database;
 use types::*;
+use config;
 use version_vector::*;
-use bincode;
 use metrics::{self, Meter};
 use bytes::Bytes;
 
@@ -16,8 +17,8 @@ pub enum CommandError {
     UnknownCommand,
     TooManyVersions,
     InvalidArgCount,
-    InvalidKey,   // TODO: max key length
-    InvalidValue, // TODO: max value length
+    InvalidKey,
+    InvalidValue,
     InvalidConsistencyValue,
     InvalidIntValue,
     Unavailable,
@@ -38,6 +39,22 @@ impl From<ParseIntError> for CommandError {
 fn check_arg_count(count: usize, min: usize, max: usize) -> Result<(), CommandError> {
     if count < min || count > max {
         Err(CommandError::InvalidArgCount)
+    } else {
+        Ok(())
+    }
+}
+
+fn check_key_len(key_len: usize) -> Result<(), CommandError> {
+    if key_len > config::MAX_KEY_LEN {
+        Err(CommandError::InvalidKey)
+    } else {
+        Ok(())
+    }
+}
+
+fn check_value_len(value_len: usize) -> Result<(), CommandError> {
+    if value_len > config::MAX_VALUE_LEN {
+        Err(CommandError::InvalidKey)
     } else {
         Ok(())
     }
@@ -104,6 +121,7 @@ impl Database {
 
     fn cmd_get(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
         check_arg_count(args.len(), 1, 2)?;
+        check_key_len(args[0].len())?;
         let consistency: ConsistencyLevel = if args.len() >= 2 {
             args[1].try_into()?
         } else {
@@ -115,6 +133,8 @@ impl Database {
 
     fn cmd_set(&self, token: u64, args: &[&[u8]], reply_result: bool) -> Result<(), CommandError> {
         check_arg_count(args.len(), 2, 4)?;
+        check_key_len(args[0].len())?;
+        check_value_len(args[1].len())?;
         let vv: VersionVector = if args.len() >= 3 && !args[2].is_empty() {
             bincode::deserialize(args[2]).unwrap()
         } else {
@@ -125,7 +145,7 @@ impl Database {
         } else {
             self.config.consistency_write
         };
-        metrics::REQUEST_PUT.mark(1);
+        metrics::REQUEST_SET.mark(1);
         Ok(self.set(
             token,
             args[0],
@@ -138,6 +158,7 @@ impl Database {
 
     fn cmd_del(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
         check_arg_count(args.len(), 1, 3)?;
+        check_key_len(args[0].len())?;
         let vv: VersionVector = if args.len() >= 2 && !args[1].is_empty() {
             bincode::deserialize(args[1]).unwrap()
         } else {
@@ -153,12 +174,13 @@ impl Database {
     }
 
     fn cmd_cluster(&self, token: u64, args: &[&[u8]]) -> Result<(), CommandError> {
-        match args {
-            &[b"REBALANCE"] | &[b"rebalance"] => {
+        check_arg_count(args.len(), 1, 1)?;
+        match args[0] {
+            b"REBALANCE" | b"rebalance" => {
                 self.dht.rebalance().unwrap();
                 Ok(self.respond_ok(token))
             }
-            &[b"SLOTS"] | &[b"slots"] => {
+            b"SLOTS" | b"slots" => {
                 let mut slots = Vec::new();
                 for (&(start, end), members) in &self.dht.slots() {
                     let mut slot = vec![RespValue::Int(start as _), RespValue::Int(end as _)];
