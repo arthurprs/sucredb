@@ -69,7 +69,6 @@ pub struct StorageIterator {
     db: Arc<rocksdb::DB>,
     iterator: Box<rocksdb::rocksdb::DBIterator<'static>>,
     iterators_handle: Arc<()>,
-    key_prefix: [u8; 2],
     first: bool,
 }
 
@@ -77,7 +76,6 @@ pub struct LogStorageIterator {
     db: Arc<rocksdb::DB>,
     iterator: Box<rocksdb::rocksdb::DBIterator<'static>>,
     iterators_handle: Arc<()>,
-    key_prefix: [u8; 2 + 8],
     first: bool,
 }
 
@@ -169,15 +167,17 @@ impl Drop for StorageManager {
 impl Storage {
     pub fn iterator(&self) -> StorageIterator {
         let mut key_prefix = [0u8; 2];
-        build_key(&mut key_prefix, self.num, b"").len();
+        build_key(&mut key_prefix, self.num, b"");
         unsafe {
-            let mut iterator = Box::new(self.db.iter_cf(self.cf));
+            let mut ro = rocksdb::ReadOptions::new();
+            ro.set_total_order_seek(false);
+            ro.set_prefix_same_as_start(true);
+            let mut iterator = Box::new(self.db.iter_cf_opt(self.cf, ro));
             iterator.seek(rocksdb::SeekKey::Key(&key_prefix[..]));
             let result = StorageIterator {
                 db: self.db.clone(),
                 iterator: mem::transmute(iterator),
                 iterators_handle: self.iterators_handle.clone(),
-                key_prefix: key_prefix,
                 first: true,
             };
             result
@@ -185,18 +185,19 @@ impl Storage {
     }
 
     pub fn log_iterator(&self, prefix: u64, start: u64) -> LogStorageIterator {
+        let mut end_prefix = [0u8; 2 + 8];
+        build_log_prefix(&mut end_prefix, self.num, prefix + 1);
+        let mut start_key = [0u8; 2 + 8 + 8];
+        build_log_key(&mut start_key, self.num, (prefix, start));
         unsafe {
-            let mut iterator = Box::new(self.db.iter_cf(self.log_cf));
-            let mut key = [0u8; 2 + 8 + 8];
-            build_log_key(&mut key, self.num, (prefix, start)).len();
-            iterator.seek(rocksdb::SeekKey::Key(&key[..]));
-            let mut key_prefix = [0u8; 2 + 8];
-            build_log_prefix(&mut key_prefix, self.num, prefix).len();
+            let mut ro = rocksdb::ReadOptions::new();
+            ro.set_iterate_upper_bound(&end_prefix[..]);
+            let mut iterator = Box::new(self.db.iter_cf_opt(self.log_cf, ro));
+            iterator.seek(rocksdb::SeekKey::Key(&start_key[..]));
             let result = LogStorageIterator {
                 db: self.db.clone(),
                 iterator: mem::transmute(iterator),
                 iterators_handle: self.iterators_handle.clone(),
-                key_prefix: key_prefix,
                 first: true,
             };
             result
@@ -268,9 +269,13 @@ impl Storage {
 
         for &cf in &[self.cf, self.log_cf] {
             self.db.delete_file_in_range_cf(cf, &from[..], &to[..]).unwrap();
-            let mut iter = self.db.iter_cf(cf);
+            let mut ro = rocksdb::ReadOptions::new();
+            ro.set_total_order_seek(false);
+            ro.set_prefix_same_as_start(true);
+            ro.set_iterate_upper_bound(&to[..]);
+            let mut iter = self.db.iter_cf_opt(cf, ro);
             iter.seek(rocksdb::SeekKey::Key(&from[..]));
-            while iter.valid() && iter.key()[..2] == from[..] {
+            while iter.valid() {
                 self.db.delete_cf(cf, iter.key()).unwrap();
                 iter.next();
             }
@@ -306,7 +311,7 @@ impl<'a> StorageBatch<'a> {
 
     pub fn log_set(&mut self, key: (u64, u64), value: &[u8]) {
         trace!("log_set {:?} ({} bytes)", key, value.len());
-        let mut buffer = [0u8; 512];
+        let mut buffer = [0u8; 2 + 8 + 8];
         let buffer = build_log_key(&mut buffer, self.storage.num, key);
         self.wb.put_cf(self.storage.log_cf, buffer, value).unwrap();
     }
@@ -337,7 +342,7 @@ impl<'a> Iterator for StorageIter<'a> {
         } else {
             self.it.iterator.next();
         }
-        if self.it.iterator.valid() && self.it.iterator.key().starts_with(&self.it.key_prefix[..]) {
+        if self.it.iterator.valid() {
             unsafe {
                 // safe as slices are valid until the next call to next
                 Some((
@@ -372,10 +377,7 @@ impl<'a> Iterator for LogStorageIter<'a> {
         }
         if self.it.iterator.valid() {
             let key = self.it.iterator.key();
-            assert!(key.len() == 2+ 8 + 8);
-            if !key.starts_with(&self.it.key_prefix[..]) {
-                return None;
-            }
+            assert!(key.len() == 2 + 8 + 8);
             let first = (&self.it.iterator.key()[2..2+8]).read_u64::<BigEndian>().unwrap();
             let second = (&self.it.iterator.key()[2+8..2+8+8]).read_u64::<BigEndian>().unwrap();
             unsafe {
