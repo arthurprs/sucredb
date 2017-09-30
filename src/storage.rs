@@ -34,15 +34,21 @@ fn build_key<'a>(buffer: &'a mut [u8], num: u16, key: &[u8]) -> &'a [u8] {
 #[inline]
 fn build_log_key<'a>(buffer: &'a mut [u8], num: u16, log_key: (u64, u64)) -> &'a [u8] {
     (&mut buffer[..2]).write_u16::<BigEndian>(num).unwrap();
-    (&mut buffer[2..2 + 8]).write_u64::<BigEndian>(log_key.0).unwrap();
-    (&mut buffer[2 + 8..2 + 8 + 8]).write_u64::<BigEndian>(log_key.1).unwrap();
+    (&mut buffer[2..2 + 8])
+        .write_u64::<BigEndian>(log_key.0)
+        .unwrap();
+    (&mut buffer[2 + 8..2 + 8 + 8])
+        .write_u64::<BigEndian>(log_key.1)
+        .unwrap();
     &buffer[..2 + 8 + 8]
 }
 
 #[inline]
 fn build_log_prefix<'a>(buffer: &'a mut [u8], num: u16, prefix: u64) -> &'a [u8] {
     (&mut buffer[..2]).write_u16::<BigEndian>(num).unwrap();
-    (&mut buffer[2..2 + 8]).write_u64::<BigEndian>(prefix).unwrap();
+    (&mut buffer[2..2 + 8])
+        .write_u64::<BigEndian>(prefix)
+        .unwrap();
     &buffer[..2 + 8]
 }
 
@@ -268,7 +274,9 @@ impl Storage {
         (&mut to[..]).write_u16::<BigEndian>(self.num + 1).unwrap();
 
         for &cf in &[self.cf, self.log_cf] {
-            self.db.delete_file_in_range_cf(cf, &from[..], &to[..]).unwrap();
+            self.db
+                .delete_file_in_range_cf(cf, &from[..], &to[..])
+                .unwrap();
             let mut ro = rocksdb::ReadOptions::new();
             ro.set_total_order_seek(false);
             ro.set_prefix_same_as_start(true);
@@ -378,14 +386,15 @@ impl<'a> Iterator for LogStorageIter<'a> {
         if self.it.iterator.valid() {
             let key = self.it.iterator.key();
             assert!(key.len() == 2 + 8 + 8);
-            let first = (&self.it.iterator.key()[2..2+8]).read_u64::<BigEndian>().unwrap();
-            let second = (&self.it.iterator.key()[2+8..2+8+8]).read_u64::<BigEndian>().unwrap();
+            let first = (&self.it.iterator.key()[2..2 + 8])
+                .read_u64::<BigEndian>()
+                .unwrap();
+            let second = (&self.it.iterator.key()[2 + 8..2 + 8 + 8])
+                .read_u64::<BigEndian>()
+                .unwrap();
             unsafe {
                 // safe as slices are valid until the next call to next
-                Some((
-                    (first, second),
-                    mem::transmute(self.it.iterator.value()),
-                ))
+                Some(((first, second), mem::transmute(self.it.iterator.value())))
             }
         } else {
             None
@@ -457,11 +466,18 @@ mod tests {
         }
         for &i in &[0u64, 1, 2] {
             let storage = sm.open(i as u16).unwrap();
-            let results: Vec<(_, Vec<u8>)> = storage.log_iterator(i, i + 1).iter().map(|(k, v)| (k, v.into())).collect();
-            assert_eq!(results, vec![
-                ((i, i + 1), (i + 1).to_string().into_bytes()),
-                ((i, i + 2), (i + 2).to_string().into_bytes()),
-            ]);
+            let results: Vec<(_, Vec<u8>)> = storage
+                .log_iterator(i, i + 1)
+                .iter()
+                .map(|(k, v)| (k, v.into()))
+                .collect();
+            assert_eq!(
+                results,
+                vec![
+                    ((i, i + 1), (i + 1).to_string().into_bytes()),
+                    ((i, i + 2), (i + 2).to_string().into_bytes()),
+                ]
+            );
             assert_eq!(storage.log_iterator(i, i).iter().count(), 3);
         }
     }

@@ -34,6 +34,7 @@ impl<
 
 // after each interval dht will broadcast it's version
 // so that peers can reply with their version if different
+// TODO: send to a single node and use smaller interval
 const BROADCAST_REQ_INTERVAL_MS: u64 = 5_000;
 
 /// The Cluster controller, it knows how to map keys to their vnodes and
