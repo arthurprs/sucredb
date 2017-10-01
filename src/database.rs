@@ -426,6 +426,8 @@ mod tests {
         responses: Arc<Mutex<HashMap<Token, RespValue>>>,
     }
 
+    const PARTITIONS: usize = 64;
+
     impl TestDatabase {
         fn new(fabric_addr: net::SocketAddr, data_dir: &str, create: bool) -> Self {
             let responses1 = Arc::new(Mutex::new(HashMap::new()));
@@ -440,7 +442,7 @@ mod tests {
                 cmd_init: if create {
                     Some(config::InitCommand {
                         replication_factor: 3,
-                        partitions: 64,
+                        partitions: PARTITIONS,
                     })
                 } else {
                     None
@@ -463,7 +465,7 @@ mod tests {
         }
 
         fn force_syncs(&self) {
-            for i in 0..64u16 {
+            for i in 0..PARTITIONS as u16 {
                 while !self._start_sync(i) {
                     sleep_ms(200);
                 }

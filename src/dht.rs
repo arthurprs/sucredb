@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry as HMEntry;
 
+use rand::{thread_rng, Rng};
 use linear_map::{Entry as LMEntry, LinearMap};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -32,10 +33,10 @@ impl<
 > Metadata for T {
 }
 
-// after each interval dht will broadcast it's version
-// so that peers can reply with their version if different
-// TODO: send to a single node and use smaller interval
-const BROADCAST_REQ_INTERVAL_MS: u64 = 5_000;
+// *pseudo* interval used to calculate anti entropy msg rate
+const DHT_AE_INTERVAL_MS: u64 = 1_000;
+// interval for anti entropy checks
+const DHT_AE_TRIGGER_INTERVAL_MS: u64 = 1_000;
 
 /// The Cluster controller, it knows how to map keys to their vnodes and
 /// whose nodes hold data for each vnodes.
@@ -756,10 +757,11 @@ impl<T: Metadata> DHT<T> {
 
     fn on_message(inner: &mut Inner<T>, from: NodeId, msg: FabricMsg) {
         match msg {
-            FabricMsg::DHTSyncReq(version) => if inner.ring.vnodes.is_empty() {
-                warn!("Can't reply DHTSyncReq while starting up");
-            } else if inner.ring.version != version {
-                debug!("Replying DHTSyncReq");
+            FabricMsg::DHTAE(version) => if inner.ring.vnodes.is_empty() {
+                warn!("Can't reply DHTAE while starting up");
+            } else if !version.descends(&inner.ring.version) {
+                // received version precends the local version
+                debug!("Replying DHTAE");
                 let _ = inner.fabric.send_msg(
                     from,
                     FabricMsg::DHTSync(Ring::serialize(&inner.ring).unwrap().into()),
@@ -800,13 +802,22 @@ impl<T: Metadata> DHT<T> {
     }
 
     fn broadcast_req(inner: &Inner<T>) {
+        let peers = inner.ring.nodes.len() - 1;
+        if peers == 0 {
+            return;
+        }
+        // calculate a chance that gives on avg BROADCAST_REQ_RATE_PER_MIN
+        let msgs_per_call = DHT_AE_TRIGGER_INTERVAL_MS as f32 / DHT_AE_INTERVAL_MS as f32;
+        let chance = msgs_per_call / (peers as f32);
+
+        let mut rng = thread_rng();
         for &node in inner.ring.nodes.keys() {
-            if node == inner.node {
+            if node == inner.node || rng.next_f32() < chance {
                 continue;
             }
             let _ = inner
                 .fabric
-                .send_msg(node, FabricMsg::DHTSyncReq(inner.ring.version.clone()));
+                .send_msg(node, FabricMsg::DHTAE(inner.ring.version.clone()));
         }
     }
 
@@ -815,11 +826,11 @@ impl<T: Metadata> DHT<T> {
     }
 
     pub fn handler_tick(&self, time: Instant) {
-        let next_req_broadcast = self.inner.read().unwrap().next_req_broadcast;
-        if time >= next_req_broadcast {
-            let mut inner = self.inner.write().unwrap();
-            inner.next_req_broadcast += Duration::from_millis(BROADCAST_REQ_INTERVAL_MS);
-            Self::broadcast_req(&mut *inner);
+        let r_inner = self.inner.read().unwrap();
+        if time >= r_inner.next_req_broadcast {
+            Self::broadcast_req(&*r_inner);
+            drop(r_inner);
+            self.inner.write().unwrap().next_req_broadcast += Duration::from_millis(DHT_AE_TRIGGER_INTERVAL_MS);
         }
     }
 
