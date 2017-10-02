@@ -88,7 +88,7 @@ impl Database {
         let args = &arg_[1..argc];
 
         let ret = match arg0 {
-            b"GET" | b"MGET" | b"get" | b"mget" => self.cmd_get(token, args),
+            b"GET" | b"MGET" | b"HGET" | b"get" | b"mget" | b"hget" => self.cmd_get(token, args),
             b"SET" | b"MSET" | b"HSET" | b"set" | b"mset" | b"hset" => {
                 self.cmd_set(token, args, false)
             }
