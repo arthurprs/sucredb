@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::convert::TryInto;
 use std::cmp::max;
+use std::str::FromStr;
 
 use log;
 use log4rs;
@@ -155,8 +156,8 @@ pub fn read_config_file(path: &Path, config: &mut Config) {
 
     cfg!(yaml, config, data_dir, as_str);
     cfg!(yaml, config, cluster_name, as_str);
-    cfg!(yaml, config, listen_addr, as_str, try_into);
-    cfg!(yaml, config, fabric_addr, as_str, try_into);
+    cfg!(yaml, config, listen_addr, as_str, SocketAddr::from_str);
+    cfg!(yaml, config, fabric_addr, as_str, SocketAddr::from_str);
     // pub cmd_init: Option<InitCommand>,
     cfg!(yaml, config, worker_timer, as_str, parse_duration);
     cfg!(yaml, config, worker_count, as_u64, try_into);
@@ -170,8 +171,8 @@ pub fn read_config_file(path: &Path, config: &mut Config) {
     cfg!(yaml, config, request_timeout, as_str, parse_duration);
     cfg!(yaml, config, client_connection_max, as_u64, try_into);
     cfg!(yaml, config, value_version_max, as_u64, try_into);
-    cfg!(yaml, config, consistency_read, as_str, try_into);
-    cfg!(yaml, config, consistency_write, as_str, try_into);
+    cfg!(yaml, config, consistency_read, as_str, ConsistencyLevel::from_str);
+    cfg!(yaml, config, consistency_write, as_str, ConsistencyLevel::from_str);
 
     if let Some(v) = yaml.get("seed_nodes") {
         config.seed_nodes = v.as_sequence()
@@ -180,7 +181,7 @@ pub fn read_config_file(path: &Path, config: &mut Config) {
             .map(|v| {
                 v.as_str()
                     .expect("seed_nodes element is not a string")
-                    .try_into()
+                    .parse()
                     .expect("seed_nodes element can't be parsed")
             })
             .collect();
