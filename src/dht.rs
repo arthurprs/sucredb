@@ -13,6 +13,7 @@ use serde::de::DeserializeOwned;
 use bincode;
 use bytes::Bytes;
 
+use config::Config;
 use hash::{hash_slot, HASH_SLOTS};
 use database::{NodeId, VNodeId};
 use version_vector::VersionVector;
@@ -33,10 +34,10 @@ impl<
 > Metadata for T {
 }
 
-// *pseudo* interval used to calculate anti entropy msg rate
-const DHT_AE_INTERVAL_MS: u64 = 1_000;
-// interval for anti entropy checks
-const DHT_AE_TRIGGER_INTERVAL_MS: u64 = 1_000;
+// *pseudo* interval used to calculate aae msg rate
+const DHT_AAE_INTERVAL_MS: u64 = 1_000;
+// interval for active anti entropy checks
+const DHT_AAE_TRIGGER_INTERVAL_MS: u64 = 1_000;
 
 /// The Cluster controller, it knows how to map keys to their vnodes and
 /// whose nodes hold data for each vnodes.
@@ -55,6 +56,8 @@ struct Inner<T: Metadata> {
     callback: Option<DHTChangeFn>,
     fabric: Arc<Fabric>,
     next_req_broadcast: Instant,
+    sync_on_connect: bool,
+    sync_aae: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
@@ -619,7 +622,7 @@ impl<T: Metadata> Ring<T> {
 impl<T: Metadata> DHT<T> {
     pub fn init(
         fabric: Arc<Fabric>,
-        cluster: &str,
+        config: &Config,
         meta: T,
         ring: RingDescription,
         old_node: Option<NodeId>,
@@ -636,8 +639,8 @@ impl<T: Metadata> DHT<T> {
         assert!(replication_factor >= 1, "Replication factor must be >= 1");
         assert!(replication_factor <= 6, "Replication factor must be <= 6");
 
-        let dht = Self::new(fabric, cluster);
-        let ring = Ring::new(cluster, partitions, replication_factor);
+        let dht = Self::new(fabric, config);
+        let ring = Ring::new(&config.cluster_name, partitions, replication_factor);
         dht.inner.write().unwrap().ring = ring;
 
         if let Some(old_node) = old_node {
@@ -652,13 +655,13 @@ impl<T: Metadata> DHT<T> {
 
     pub fn restore(
         fabric: Arc<Fabric>,
-        cluster: &str,
+        config: &Config,
         meta: T,
         serialized_ring: &[u8],
         old_node: Option<NodeId>,
     ) -> Result<DHT<T>, GenericError> {
         let addr = fabric.addr();
-        let dht = Self::new(fabric, cluster);
+        let dht = Self::new(fabric, config);
         let ring = Ring::deserialize(serialized_ring)?;
         dht.inner.write().unwrap().ring = ring;
 
@@ -673,13 +676,13 @@ impl<T: Metadata> DHT<T> {
 
     pub fn join_cluster(
         fabric: Arc<Fabric>,
-        cluster: &str,
+        config: &Config,
         meta: T,
         seeds: &[SocketAddr],
         old_node: Option<NodeId>,
     ) -> Result<DHT<T>, GenericError> {
         let addr = fabric.addr();
-        let dht = Self::new(fabric.clone(), cluster);
+        let dht = Self::new(fabric.clone(), config);
 
         info!("Registering seeds {:?}", seeds);
         for &seed in seeds {
@@ -718,14 +721,15 @@ impl<T: Metadata> DHT<T> {
         Ok(dht)
     }
 
-    fn new(fabric: Arc<Fabric>, cluster: &str) -> DHT<T> {
+    fn new(fabric: Arc<Fabric>, config: &Config) -> DHT<T> {
         let inner = Arc::new(RwLock::new(Inner {
             node: fabric.node(),
-            ring: Ring::new(cluster, 0, 0),
-
+            ring: Ring::new(&config.cluster_name, 0, 0),
             callback: Default::default(),
             fabric: fabric.clone(),
             next_req_broadcast: Instant::now(),
+            sync_aae: config.dht_sync_aae,
+            sync_on_connect: config.dht_sync_on_connect,
         }));
 
         // TODO: move this to Database
@@ -747,7 +751,7 @@ impl<T: Metadata> DHT<T> {
     }
 
     fn on_connection(inner: &Inner<T>, from: NodeId) {
-        if !inner.ring.vnodes.is_empty() {
+        if inner.sync_on_connect && !inner.ring.vnodes.is_empty() {
             let _ = inner.fabric.send_msg(
                 from,
                 FabricMsg::DHTSync(Ring::serialize(&inner.ring).unwrap().into()),
@@ -806,13 +810,14 @@ impl<T: Metadata> DHT<T> {
         if peers == 0 {
             return;
         }
-        // calculate a chance that gives on avg BROADCAST_REQ_RATE_PER_MIN
-        let msgs_per_call = DHT_AE_TRIGGER_INTERVAL_MS as f32 / DHT_AE_INTERVAL_MS as f32;
+        // calculate a chance that gives a rate of DHT_AAE_INTERVAL_MS ^ -1
+        let msgs_per_call = DHT_AAE_TRIGGER_INTERVAL_MS as f32 / DHT_AAE_INTERVAL_MS as f32;
         let chance = msgs_per_call / (peers as f32);
+        trace!("AAE peers {} chance {}", peers, chance);
 
         let mut rng = thread_rng();
         for &node in inner.ring.nodes.keys() {
-            if node == inner.node || rng.next_f32() < chance {
+            if node == inner.node || rng.next_f32() > chance {
                 continue;
             }
             let _ = inner
@@ -827,10 +832,12 @@ impl<T: Metadata> DHT<T> {
 
     pub fn handler_tick(&self, time: Instant) {
         let r_inner = self.inner.read().unwrap();
-        if time >= r_inner.next_req_broadcast {
+        if r_inner.sync_aae && time >= r_inner.next_req_broadcast {
+            debug!("Triggered AAE");
             Self::broadcast_req(&*r_inner);
             drop(r_inner);
-            self.inner.write().unwrap().next_req_broadcast += Duration::from_millis(DHT_AE_TRIGGER_INTERVAL_MS);
+            self.inner.write().unwrap().next_req_broadcast +=
+                Duration::from_millis(DHT_AAE_TRIGGER_INTERVAL_MS);
         }
     }
 
@@ -1053,7 +1060,7 @@ mod tests {
         let addr = config.fabric_addr;
         for rf in 1u8..4 {
             let fabric = Arc::new(Fabric::new(node, &config).unwrap());
-            let dht = DHT::init(fabric, "test", (), RingDescription::new(rf, 32), None).unwrap();
+            let dht = DHT::init(fabric, &config, (), RingDescription::new(rf, 32), None).unwrap();
             assert_eq!(dht.nodes_for_vnode(0, true, false), &[node]);
             assert_eq!(dht.nodes_for_vnode(0, false, false), &[node]);
             assert_eq!(dht.nodes_for_vnode(0, false, false), &[node]);
@@ -1075,10 +1082,10 @@ mod tests {
         };
 
         let fabric1 = Arc::new(Fabric::new(1, &config1).unwrap());
-        let dht1 = DHT::init(fabric1, "test", (), RingDescription::new(2, 32), None).unwrap();
+        let dht1 = DHT::init(fabric1, &config1, (), RingDescription::new(2, 32), None).unwrap();
 
         let fabric2 = Arc::new(Fabric::new(2, &config2).unwrap());
-        let dht2 = DHT::join_cluster(fabric2, "test", (), &[config1.fabric_addr], None).unwrap();
+        let dht2 = DHT::join_cluster(fabric2, &config2, (), &[config1.fabric_addr], None).unwrap();
 
         sleep_ms(100);
         for dht in &[&dht1, &dht2] {
@@ -1122,7 +1129,6 @@ mod tests {
         }
     }
 
-
     #[test]
     #[should_panic]
     fn test_dht_join_wrong_cluster() {
@@ -1133,22 +1139,56 @@ mod tests {
         };
         let config2: Config = Config {
             fabric_addr: "127.0.0.1:3332".parse().unwrap(),
+            cluster_name: "anything but default".into(),
             ..Default::default()
         };
 
         let fabric1 = Arc::new(Fabric::new(1, &config1).unwrap());
-        let dht1 = DHT::init(fabric1, "test", (), RingDescription::new(2, 32), None).unwrap();
+        let dht1 = DHT::init(fabric1, &config1, (), RingDescription::new(2, 32), None).unwrap();
 
         let fabric2 = Arc::new(Fabric::new(2, &config2).unwrap());
-        let dht2 = DHT::join_cluster(
-            fabric2,
-            "anything but test",
-            (),
-            &[config1.fabric_addr],
-            None,
-        ).unwrap();
+        let dht2 = DHT::join_cluster(fabric2, &config2, (), &[config1.fabric_addr], None).unwrap();
 
         sleep_ms(100);
+    }
+
+    #[test]
+    fn test_dht_aae() {
+        let _ = env_logger::init();
+        let config1: Config = Config {
+            fabric_addr: "127.0.0.1:3331".parse().unwrap(),
+            ..Default::default()
+        };
+        let mut config2: Config = Config {
+            fabric_addr: "127.0.0.1:3332".parse().unwrap(),
+            ..Default::default()
+        };
+
+        let fabric1 = Arc::new(Fabric::new(1, &config1).unwrap());
+        let dht1 = DHT::init(fabric1, &config1, (), RingDescription::new(2, 32), None).unwrap();
+
+        let fabric2 = Arc::new(Fabric::new(2, &config2).unwrap());
+        let dht2 = DHT::join_cluster(fabric2.clone(), &config2, (), &[config1.fabric_addr], None).unwrap();
+
+        sleep_ms(100);
+
+        use fabric::{FabricMsg, FabricMsgType};
+        use std::sync::{Arc, Mutex};
+
+        let msgs: Arc<Mutex<Vec<FabricMsg>>> = Default::default();
+        let msgs_ = msgs.clone();
+        fabric2.register_msg_handler(FabricMsgType::DHT, Box::new(move |_, m| {
+            msgs_.lock().unwrap().push(m);
+        }));
+
+        dht1.handler_tick(Instant::now() + Duration::from_millis(DHT_AAE_TRIGGER_INTERVAL_MS + 1));
+        sleep_ms(100);
+
+        let mut msgs = msgs.lock().unwrap();
+        match msgs.pop() {
+            Some(FabricMsg::DHTAE(..)) => (),
+            _ => panic!("fabric2 didn't get a DHTAE"),
+        }
     }
 
     #[test]

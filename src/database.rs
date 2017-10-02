@@ -112,7 +112,7 @@ impl Database {
         let dht = if let Some(init) = config.cmd_init.as_ref() {
             DHT::init(
                 fabric.clone(),
-                &config.cluster_name,
+                config,
                 config.listen_addr,
                 RingDescription::new(init.replication_factor, init.partitions),
                 old_node,
@@ -120,7 +120,7 @@ impl Database {
         } else if let Some(saved_ring) = meta_storage.get_vec(b"ring") {
             DHT::restore(
                 fabric.clone(),
-                &config.cluster_name,
+                config,
                 config.listen_addr,
                 &saved_ring,
                 old_node,
@@ -128,7 +128,7 @@ impl Database {
         } else {
             DHT::join_cluster(
                 fabric.clone(),
-                &config.cluster_name,
+                config,
                 config.listen_addr,
                 &config.seed_nodes,
                 old_node,
@@ -409,7 +409,7 @@ impl Drop for Database {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, net, ops, thread};
+    use std::{fs, net, ops};
     use std::sync::{Arc, Mutex};
     use std::collections::HashMap;
     use super::*;
@@ -442,7 +442,7 @@ mod tests {
                 cmd_init: if create {
                     Some(config::InitCommand {
                         replication_factor: 3,
-                        partitions: PARTITIONS,
+                        partitions: PARTITIONS as _,
                     })
                 } else {
                     None

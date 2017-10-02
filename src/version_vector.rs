@@ -7,10 +7,10 @@ use serde;
 pub type Version = u64;
 pub type Id = u64;
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VersionVector(LinearMap<Id, Version>);
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BitmappedVersion {
     base: Version,
     #[serde(serialize_with = "serialize_bitmap", deserialize_with = "deserialize_bitmap")]
@@ -18,13 +18,13 @@ pub struct BitmappedVersion {
         RoaringTreemap,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BitmappedVersionVector(LinearMap<Id, BitmappedVersion>);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dots<T>(LinearMap<(Id, Version), T>);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DottedCausalContainer<T> {
     dots: Dots<T>,
     vv: VersionVector,
