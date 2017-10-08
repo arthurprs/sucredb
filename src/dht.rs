@@ -457,8 +457,8 @@ impl<T: Metadata> Ring<T> {
         }
 
         // simple 2-steps eager rebalancing
-        // 1. take from who is doing too much work
-        // 2. assing replicas for under replicated vnodes
+        // 1. assing replicas for under replicated vnodes
+        // 2. take from who is doing too much work
 
         // map of active nodes to vnodes
         let mut node_map = IdHashMap::default();
@@ -481,29 +481,7 @@ impl<T: Metadata> Ring<T> {
         let vnpn = ((self.vnodes.len() * self.replication_factor) as f64 / node_map.len() as f64)
             .ceil() as usize;
 
-        // 1. robin-hood
-        for (vn_no, vn) in self.vnodes.iter_mut().enumerate() {
-            let doing_much: IdHashSet<_> = vn.owners
-                .iter()
-                .filter(|&(n, &s)| {
-                    s != Retiring && node_map.get(n).unwrap().len() > vnpn
-                })
-                .map(|(n, _)| *n)
-                .collect();
-            let candidates: IdHashSet<_> = node_map
-                .iter()
-                .filter(|&(n, vns)| vns.len() < vnpn && !vn.owners.contains_key(n))
-                .map(|(n, _)| *n)
-                .collect();
-            for (from, to) in doing_much.into_iter().zip(candidates) {
-                assert!(vn.owners.insert(to, Pending).is_none());
-                assert!(vn.owners.insert(from, Retiring).is_some());
-                assert!(node_map.get_mut(&from).unwrap().remove(&vn_no));
-                assert!(node_map.get_mut(&to).unwrap().insert(vn_no));
-            }
-        }
-
-        // 2. complete replicas
+        // 1. complete replicas
         for (vn_no, vn) in self.vnodes.iter_mut().enumerate() {
             let replicas = vn.owners.values().filter(|&&s| s != Retiring).count();
             for _ in replicas..self.replication_factor {
@@ -538,6 +516,28 @@ impl<T: Metadata> Ring<T> {
                     vn.owners,
                     self.replication_factor
                 );
+            }
+        }
+
+        // 2. robin-hood
+        for (vn_no, vn) in self.vnodes.iter_mut().enumerate() {
+            let doing_much: IdHashSet<_> = vn.owners
+                .iter()
+                .filter(|&(n, &s)| {
+                    s != Retiring && node_map.get(n).unwrap().len() > vnpn
+                })
+                .map(|(n, _)| *n)
+                .collect();
+            let candidates: IdHashSet<_> = node_map
+                .iter()
+                .filter(|&(n, vns)| vns.len() < vnpn && !vn.owners.contains_key(n))
+                .map(|(n, _)| *n)
+                .collect();
+            for (from, to) in doing_much.into_iter().zip(candidates) {
+                assert!(vn.owners.insert(to, Pending).is_none());
+                assert!(vn.owners.insert(from, Retiring).is_some());
+                assert!(node_map.get_mut(&from).unwrap().remove(&vn_no));
+                assert!(node_map.get_mut(&to).unwrap().insert(vn_no));
             }
         }
 
@@ -602,13 +602,13 @@ impl<T: Metadata> Ring<T> {
         }
 
         for (&n, &count) in &node_map {
-            if count > vnpn + vnpn_rest + 1 {
+            if count > vnpn + vnpn_rest {
                 return Err(
                     format!(
                         "node {} is a replica for {} vnodes, expected {} max, {:?}",
                         n,
                         count,
-                        vnpn + vnpn_rest + 1,
+                        vnpn + vnpn_rest,
                         node_map
                     ).into(),
                 );
