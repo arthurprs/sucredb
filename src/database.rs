@@ -276,7 +276,8 @@ impl Database {
             let vnodes_len = vnodes.len() as u16;
             let rnd = thread_rng().gen::<u16>() % vnodes_len;
             for vnode in (0..vnodes_len).map(|i| vnodes.get(&((i + rnd) % vnodes_len))) {
-                incomming_syncs += vnode.unwrap().lock().unwrap().start_sync_if_ready(self) as usize;
+                incomming_syncs +=
+                    vnode.unwrap().lock().unwrap().start_sync_if_ready(self) as usize;
                 if incomming_syncs >= self.config.sync_incomming_max as usize {
                     break;
                 }

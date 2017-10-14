@@ -30,6 +30,161 @@ pub struct DottedCausalContainer<T> {
     vv: VersionVector,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct DeltaVersionVector(Vec<(Id, Version)>);
+
+impl PartialEq for DeltaVersionVector {
+    fn eq(&self, other: &Self) -> bool {
+        if self.0.len() != other.0.len() {
+            return false;
+        }
+        // FIXME: inefficient
+        let mut v: Vec<(Id, Version)> = Vec::with_capacity(self.0.len() * 2);
+        v.extend(&self.0);
+        v.extend(&other.0);
+        v.sort_unstable();
+        v.dedup();
+        v.len() == self.0.len()
+    }
+}
+
+impl DeltaVersionVector {
+    fn new() -> Self {
+        DeltaVersionVector(Default::default())
+    }
+
+    fn contains(&self, id: Id, version: Version) -> bool {
+        assert!(version != 0, "Can't check for version 0");
+        let mut p = if let Some(p) = self.0.iter().position(|x| x.0 == id) {
+            p
+        } else {
+            return false;
+        };
+        if self.0[p].1 <= version {
+            return true;
+        }
+        p += 1;
+        while p < self.0.len() {
+            if self.0[p].0 != id {
+                return false;
+            }
+            if self.0[p].1 == version {
+                return true;
+            }
+            p += 1;
+        }
+
+        false
+    }
+
+    fn add_base(&mut self, id: Id, version: Version) {
+        let base_p = if let Some(p) = self.0.iter().position(|x| x.0 == id) {
+            p
+        } else {
+            self.0.push((id, version));
+            return;
+        };
+        if self.0[base_p].1 >= version {
+            return;
+        }
+        // V > base
+        // remove any version <= V
+        // remove X continuous versions starting from V + 1
+        // new base = V + X
+        let mut new_base = version;
+        let mut p = base_p + 1;
+        while p < self.0.len() {
+            if self.0[p].0 != id {
+                break;
+            }
+            if self.0[p].1 > new_base {
+                break;
+            }
+            p += 1;
+        }
+        while p < self.0.len() {
+            if self.0[p].0 != id {
+                break;
+            }
+            if self.0[p].1 != new_base + 1 {
+                break;
+            }
+            new_base += 1;
+            p += 1;
+        }
+
+        self.0[base_p].1 = new_base;
+        self.0.drain(base_p + 1..p);
+    }
+
+    fn add_single(&mut self, id: Id, version: Version) {
+        assert!(version != 0, "Version 0 is not valid");
+        let base_p = if let Some(p) = self.0.iter().position(|x| x.0 == id) {
+            p
+        } else {
+            if version != 1 {
+                self.0.push((id, 0)); // 0 as a base may be problematic
+            }
+            self.0.push((id, version));
+            return;
+        };
+        if self.0[base_p].1 >= version {
+            return;
+        }
+
+        if self.0[base_p].1 + 1 == version {
+            // adding a V == base + 1
+            // remove X continuous versions starting from V + 1
+            // new base = version + X
+            let mut new_base = version;
+            let mut p = base_p + 1;
+            while p < self.0.len() {
+                if self.0[p].0 != id {
+                    break;
+                }
+                if self.0[p].1 != new_base + 1 {
+                    break;
+                }
+                new_base += 1;
+                p += 1;
+            }
+            self.0[base_p].1 = new_base;
+            self.0.drain(base_p + 1..p);
+        } else {
+            // adding a version > base + 1
+            // no summarization can happen
+            let mut p = base_p + 1;
+            while p < self.0.len() {
+                if self.0[p].0 != id {
+                    break;
+                }
+                if self.0[p].1 >= version {
+                    if self.0[p].1 == version {
+                        // no change
+                        return;
+                    }
+                    break;
+                }
+                p += 1;
+            }
+            self.0.insert(p, (id, version));
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        let mut p = 0;
+        while p < other.0.len() {
+            let id = other.0[p].0;
+            self.add_base(id, other.0[p].1);
+            p += 1;
+            while p < other.0.len() && other.0[p].0 == id {
+                self.add_single(id, other.0[p].1);
+                p += 1;
+            }
+        }
+    }
+}
+
 impl BitmappedVersion {
     fn int_to_bitmap(base: Version, bitmap: u32) -> RoaringTreemap {
         let mut result = RoaringTreemap::new();
@@ -361,13 +516,13 @@ impl VersionVector {
         VersionVector(Default::default())
     }
 
-    pub fn get(&self, id: Id) -> Option<Version> {
-        self.0.get(&id).cloned()
+    pub fn contains(&self, id: Id, version: Version) -> bool {
+        self.0.get(&id).map(|&x| x >= version).unwrap_or(false)
     }
 
-    pub fn remove(&mut self, id: Id) -> Option<Version> {
-        self.0.remove(&id)
-    }
+    // pub fn remove(&mut self, id: Id) -> Option<Version> {
+    //     self.0.remove(&id)
+    // }
 
     pub fn merge(&mut self, other: &Self) {
         for (&id, &version) in &other.0 {
@@ -418,16 +573,15 @@ impl<T> Dots<T> {
         Dots(Default::default())
     }
 
-    fn merge(&mut self, other: &mut Self, vv1: &VersionVector, vv2: &VersionVector) {
+    fn merge(&mut self, other: &mut Self, s_vv: &VersionVector, o_vv: &VersionVector) {
         // retain in self what's not outdated or also exists in other
         self.0.retain(|&(id, version), _| {
-            version > vv1.get(id).unwrap_or(0) || version > vv2.get(id).unwrap_or(0)
-                || other.0.remove(&(id, version)).is_some()
+            !o_vv.contains(id, version) || other.0.remove(&(id, version)).is_some()
         });
 
         // drain other into self filtering outdated versions
         for ((id, version), value) in other.0.drain() {
-            if version > vv1.get(id).unwrap_or(0) || version > vv2.get(id).unwrap_or(0) {
+            if !s_vv.contains(id, version) {
                 self.0.insert((id, version), value);
             }
         }
@@ -468,7 +622,7 @@ impl<T> DottedCausalContainer<T> {
     pub fn discard(&mut self, vv: &VersionVector) {
         self.dots
             .0
-            .retain(|&(id, version), _| version > vv.get(id).unwrap_or(0));
+            .retain(|&(id, version), _| !vv.contains(id, version));
         self.vv.merge(vv);
     }
 
@@ -652,8 +806,96 @@ mod test_bvv {
 }
 
 #[cfg(test)]
+mod test_dvv {
+    use super::*;
+
+    #[test]
+    fn test_add_base() {
+        let mut dvv = DeltaVersionVector::new();
+        dvv.add_base(1, 0);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 0)]));
+        dvv.add_base(1, 5);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 5)]));
+        dvv.add_base(1, 5);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 5)]));
+        dvv.add_base(1, 1);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 5)]));
+        dvv.add_base(2, 2);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 5), (2, 2)]));
+        dvv.add_base(2, 3);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 5), (2, 3)]));
+        dvv.add_base(2, 1);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 5), (2, 3)]));
+
+        let mut dvv = DeltaVersionVector(vec![(1, 0), (1, 3)]);
+        dvv.add_base(1, 2);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 3)]));
+    }
+
+    #[test]
+    fn test_add_single() {
+        let mut dvv = DeltaVersionVector::new();
+        dvv.add_single(1, 1);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 1)]));
+        dvv.add_single(1, 3);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 1), (1, 3)]));
+        dvv.add_single(1, 3);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 1), (1, 3)]));
+        dvv.add_single(1, 4);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 1), (1, 3), (1, 4)]));
+        dvv.add_single(2, 2);
+        assert_eq!(
+            dvv,
+            DeltaVersionVector(vec![(1, 1), (1, 3), (1, 4), (2, 0), (2, 2)])
+        );
+        dvv.add_single(1, 2);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 4), (2, 0), (2, 2)]));
+        dvv.add_single(2, 1);
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 4), (2, 2)]));
+    }
+
+    #[test]
+    fn test_merge() {
+        let mut dvv = DeltaVersionVector(vec![(1, 1), (1, 3), (1, 4), (2, 0), (2, 2)]);
+        let dvv_ = dvv.clone();
+        dvv.merge(&dvv_);
+        assert_eq!(dvv, dvv);
+
+        dvv.merge(&DeltaVersionVector(
+            vec![(1, 0), (1, 2), (2, 1), (3, 0), (3, 3)],
+        ));
+        assert_eq!(
+            dvv,
+            DeltaVersionVector(vec![(1, 4), (2, 2), (3, 0), (3, 3)])
+        );
+
+        dvv.merge(&DeltaVersionVector(vec![(3, 5), (3, 7)]));
+        assert_eq!(
+            dvv,
+            DeltaVersionVector(vec![(1, 4), (2, 2), (3, 5), (3, 7)])
+        );
+
+        dvv.merge(&DeltaVersionVector(vec![(3, 6)]));
+        assert_eq!(dvv, DeltaVersionVector(vec![(1, 4), (2, 2), (3, 7)]));
+    }
+}
+
+#[cfg(test)]
 mod test_vv {
     use super::*;
+
+    fn contains() {
+        let mut a1 = VersionVector::new();
+        a1.add(1, 2);
+        a1.add(2, 4);
+        assert!(a1.contains(1, 1));
+        assert!(a1.contains(1, 2));
+        assert!(!a1.contains(1, 3));
+        assert!(a1.contains(2, 4));
+        assert!(!a1.contains(2, 5));
+        assert!(!a1.contains(3, 1));
+
+    }
 
     // #[test]
     // fn reset() {
@@ -667,19 +909,19 @@ mod test_vv {
     //     assert_eq!(a1.get(3), Some(0));
     // }
 
-    #[test]
-    fn remove() {
-        let mut a1 = VersionVector::new();
-        a1.add(1, 2);
-        a1.add(2, 4);
-        a1.add(3, 4);
-        assert_eq!(a1.remove(1), Some(2));
-        assert_eq!(a1.remove(2), Some(4));
-        assert_eq!(a1.remove(3), Some(4));
-        assert_eq!(a1.remove(1), None);
-        assert_eq!(a1.remove(2), None);
-        assert_eq!(a1.remove(3), None);
-    }
+    // #[test]
+    // fn remove() {
+    //     let mut a1 = VersionVector::new();
+    //     a1.add(1, 2);
+    //     a1.add(2, 4);
+    //     a1.add(3, 4);
+    //     assert_eq!(a1.remove(1), Some(2));
+    //     assert_eq!(a1.remove(2), Some(4));
+    //     assert_eq!(a1.remove(3), Some(4));
+    //     assert_eq!(a1.remove(1), None);
+    //     assert_eq!(a1.remove(2), None);
+    //     assert_eq!(a1.remove(3), None);
+    // }
 }
 
 #[cfg(test)]

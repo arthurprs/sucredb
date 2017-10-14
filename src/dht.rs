@@ -1168,7 +1168,8 @@ mod tests {
         let dht1 = DHT::init(fabric1, &config1, (), RingDescription::new(2, 32), None).unwrap();
 
         let fabric2 = Arc::new(Fabric::new(2, &config2).unwrap());
-        let dht2 = DHT::join_cluster(fabric2.clone(), &config2, (), &[config1.fabric_addr], None).unwrap();
+        let dht2 =
+            DHT::join_cluster(fabric2.clone(), &config2, (), &[config1.fabric_addr], None).unwrap();
 
         sleep_ms(100);
 
@@ -1177,9 +1178,12 @@ mod tests {
 
         let msgs: Arc<Mutex<Vec<FabricMsg>>> = Default::default();
         let msgs_ = msgs.clone();
-        fabric2.register_msg_handler(FabricMsgType::DHT, Box::new(move |_, m| {
-            msgs_.lock().unwrap().push(m);
-        }));
+        fabric2.register_msg_handler(
+            FabricMsgType::DHT,
+            Box::new(move |_, m| {
+                msgs_.lock().unwrap().push(m);
+            }),
+        );
 
         dht1.handler_tick(Instant::now() + Duration::from_millis(DHT_AAE_TRIGGER_INTERVAL_MS + 1));
         sleep_ms(100);
