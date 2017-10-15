@@ -1,14 +1,13 @@
 use std::{cmp, str};
 use linear_map::{self, Entry, LinearMap};
+use linear_map::set::LinearSet;
 use roaring::{RoaringBitmap, RoaringTreemap};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use std::hash::Hash;
 use serde;
 
 pub type Version = u64;
 pub type Id = u64;
-
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VersionVector(LinearMap<Id, Version>);
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BitmappedVersion {
@@ -18,172 +17,41 @@ pub struct BitmappedVersion {
         RoaringTreemap,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default,Serialize, Deserialize)]
 pub struct BitmappedVersionVector(LinearMap<Id, BitmappedVersion>);
 
+// same as DotMap<()> but this serializes better (unit is not emited)
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DotSet(LinearSet<(Id, Version)>);
+
+#[derive(Debug, Clone, PartialEq,Serialize, Deserialize)]
+pub struct DotMap<T>(LinearMap<(Id, Version), T>);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Dots<T>(LinearMap<(Id, Version), T>);
+pub struct CausalMap<K: Eq + Hash, V: CausalValue>(LinearMap<K, V>);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DottedCausalContainer<T> {
-    dots: Dots<T>,
+    dots: DotMap<T>,
     vv: VersionVector,
 }
 
+pub trait AbsVersionVector {
+    fn contains(&self, id: Id, version: Version) -> bool;
+}
+
+pub trait CausalValue: Default {
+    fn merge<VV: AbsVersionVector>(&mut self, other: &mut Self, s_vv: &VV, o_vv: &VV);
+    fn dots<CB: FnMut((Id, Version))>(&self, cb: &mut CB);
+    fn is_default(&self) -> bool;
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VersionVector(LinearMap<Id, Version>);
+
+// A VersionVector with exceptions (non continuous dots)
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct DeltaVersionVector(Vec<(Id, Version)>);
-
-impl PartialEq for DeltaVersionVector {
-    fn eq(&self, other: &Self) -> bool {
-        if self.0.len() != other.0.len() {
-            return false;
-        }
-        // FIXME: inefficient
-        let mut v: Vec<(Id, Version)> = Vec::with_capacity(self.0.len() * 2);
-        v.extend(&self.0);
-        v.extend(&other.0);
-        v.sort_unstable();
-        v.dedup();
-        v.len() == self.0.len()
-    }
-}
-
-impl DeltaVersionVector {
-    fn new() -> Self {
-        DeltaVersionVector(Default::default())
-    }
-
-    fn contains(&self, id: Id, version: Version) -> bool {
-        assert!(version != 0, "Can't check for version 0");
-        let mut p = if let Some(p) = self.0.iter().position(|x| x.0 == id) {
-            p
-        } else {
-            return false;
-        };
-        if self.0[p].1 <= version {
-            return true;
-        }
-        p += 1;
-        while p < self.0.len() {
-            if self.0[p].0 != id {
-                return false;
-            }
-            if self.0[p].1 == version {
-                return true;
-            }
-            p += 1;
-        }
-
-        false
-    }
-
-    fn add_base(&mut self, id: Id, version: Version) {
-        let base_p = if let Some(p) = self.0.iter().position(|x| x.0 == id) {
-            p
-        } else {
-            self.0.push((id, version));
-            return;
-        };
-        if self.0[base_p].1 >= version {
-            return;
-        }
-        // V > base
-        // remove any version <= V
-        // remove X continuous versions starting from V + 1
-        // new base = V + X
-        let mut new_base = version;
-        let mut p = base_p + 1;
-        while p < self.0.len() {
-            if self.0[p].0 != id {
-                break;
-            }
-            if self.0[p].1 > new_base {
-                break;
-            }
-            p += 1;
-        }
-        while p < self.0.len() {
-            if self.0[p].0 != id {
-                break;
-            }
-            if self.0[p].1 != new_base + 1 {
-                break;
-            }
-            new_base += 1;
-            p += 1;
-        }
-
-        self.0[base_p].1 = new_base;
-        self.0.drain(base_p + 1..p);
-    }
-
-    fn add_single(&mut self, id: Id, version: Version) {
-        assert!(version != 0, "Version 0 is not valid");
-        let base_p = if let Some(p) = self.0.iter().position(|x| x.0 == id) {
-            p
-        } else {
-            if version != 1 {
-                self.0.push((id, 0)); // 0 as a base may be problematic
-            }
-            self.0.push((id, version));
-            return;
-        };
-        if self.0[base_p].1 >= version {
-            return;
-        }
-
-        if self.0[base_p].1 + 1 == version {
-            // adding a V == base + 1
-            // remove X continuous versions starting from V + 1
-            // new base = version + X
-            let mut new_base = version;
-            let mut p = base_p + 1;
-            while p < self.0.len() {
-                if self.0[p].0 != id {
-                    break;
-                }
-                if self.0[p].1 != new_base + 1 {
-                    break;
-                }
-                new_base += 1;
-                p += 1;
-            }
-            self.0[base_p].1 = new_base;
-            self.0.drain(base_p + 1..p);
-        } else {
-            // adding a version > base + 1
-            // no summarization can happen
-            let mut p = base_p + 1;
-            while p < self.0.len() {
-                if self.0[p].0 != id {
-                    break;
-                }
-                if self.0[p].1 >= version {
-                    if self.0[p].1 == version {
-                        // no change
-                        return;
-                    }
-                    break;
-                }
-                p += 1;
-            }
-            self.0.insert(p, (id, version));
-        }
-    }
-
-    fn merge(&mut self, other: &Self) {
-        let mut p = 0;
-        while p < other.0.len() {
-            let id = other.0[p].0;
-            self.add_base(id, other.0[p].1);
-            p += 1;
-            while p < other.0.len() && other.0[p].0 == id {
-                self.add_single(id, other.0[p].1);
-                p += 1;
-            }
-        }
-    }
-}
 
 impl BitmappedVersion {
     fn int_to_bitmap(base: Version, bitmap: u32) -> RoaringTreemap {
@@ -511,6 +379,165 @@ impl BitmappedVersionVector {
     // }
 }
 
+
+impl PartialEq for DeltaVersionVector {
+    fn eq(&self, other: &Self) -> bool {
+        if self.0.len() != other.0.len() {
+            return false;
+        }
+        // FIXME: inefficient
+        let mut v: Vec<(Id, Version)> = Vec::with_capacity(self.0.len() * 2);
+        v.extend(&self.0);
+        v.extend(&other.0);
+        v.sort_unstable();
+        v.dedup();
+        v.len() == self.0.len()
+    }
+}
+
+impl DeltaVersionVector {
+    fn new() -> Self {
+        DeltaVersionVector(Default::default())
+    }
+
+    fn contains(&self, id: Id, version: Version) -> bool {
+        assert!(version != 0, "Can't check for version 0");
+        let mut p = if let Some(p) = self.0.iter().position(|x| x.0 == id) {
+            p
+        } else {
+            return false;
+        };
+        if self.0[p].1 <= version {
+            return true;
+        }
+        p += 1;
+        while p < self.0.len() {
+            if self.0[p].0 != id {
+                return false;
+            }
+            if self.0[p].1 == version {
+                return true;
+            }
+            p += 1;
+        }
+
+        false
+    }
+
+    fn add_base(&mut self, id: Id, version: Version) {
+        let base_p = if let Some(p) = self.0.iter().position(|x| x.0 == id) {
+            p
+        } else {
+            self.0.push((id, version));
+            return;
+        };
+        if self.0[base_p].1 >= version {
+            return;
+        }
+        // V > base
+        // remove any version <= V
+        // remove X continuous versions starting from V + 1
+        // new base = V + X
+        let mut new_base = version;
+        let mut p = base_p + 1;
+        while p < self.0.len() {
+            if self.0[p].0 != id {
+                break;
+            }
+            if self.0[p].1 > new_base {
+                break;
+            }
+            p += 1;
+        }
+        while p < self.0.len() {
+            if self.0[p].0 != id {
+                break;
+            }
+            if self.0[p].1 != new_base + 1 {
+                break;
+            }
+            new_base += 1;
+            p += 1;
+        }
+
+        self.0[base_p].1 = new_base;
+        self.0.drain(base_p + 1..p);
+    }
+
+    fn add_single(&mut self, id: Id, version: Version) {
+        assert!(version != 0, "Version 0 is not valid");
+        let base_p = if let Some(p) = self.0.iter().position(|x| x.0 == id) {
+            p
+        } else {
+            if version != 1 {
+                self.0.push((id, 0)); // 0 as a base may be problematic
+            }
+            self.0.push((id, version));
+            return;
+        };
+        if self.0[base_p].1 >= version {
+            return;
+        }
+
+        if self.0[base_p].1 + 1 == version {
+            // adding a V == base + 1
+            // remove X continuous versions starting from V + 1
+            // new base = version + X
+            let mut new_base = version;
+            let mut p = base_p + 1;
+            while p < self.0.len() {
+                if self.0[p].0 != id {
+                    break;
+                }
+                if self.0[p].1 != new_base + 1 {
+                    break;
+                }
+                new_base += 1;
+                p += 1;
+            }
+            self.0[base_p].1 = new_base;
+            self.0.drain(base_p + 1..p);
+        } else {
+            // adding a version > base + 1
+            // no summarization can happen
+            let mut p = base_p + 1;
+            while p < self.0.len() {
+                if self.0[p].0 != id {
+                    break;
+                }
+                if self.0[p].1 >= version {
+                    if self.0[p].1 == version {
+                        // no change
+                        return;
+                    }
+                    break;
+                }
+                p += 1;
+            }
+            self.0.insert(p, (id, version));
+        }
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        let mut p = 0;
+        while p < other.0.len() {
+            let id = other.0[p].0;
+            self.add_base(id, other.0[p].1);
+            p += 1;
+            while p < other.0.len() && other.0[p].0 == id {
+                self.add_single(id, other.0[p].1);
+                p += 1;
+            }
+        }
+    }
+}
+
+impl AbsVersionVector for DeltaVersionVector {
+    fn contains(&self, id: Id, version: Version) -> bool {
+        self.contains(id, version)
+    }
+}
+
 impl VersionVector {
     pub fn new() -> Self {
         VersionVector(Default::default())
@@ -568,12 +595,66 @@ impl VersionVector {
     }
 }
 
-impl<T> Dots<T> {
-    fn new() -> Dots<T> {
-        Dots(Default::default())
+impl AbsVersionVector for VersionVector {
+    fn contains(&self, id: Id, version: Version) -> bool {
+        self.contains(id, version)
+    }
+}
+
+impl DotSet {
+    pub fn new() -> Self {
+        DotSet(Default::default())
     }
 
-    fn merge(&mut self, other: &mut Self, s_vv: &VersionVector, o_vv: &VersionVector) {
+    pub fn discard<VV: AbsVersionVector>(&mut self, o_vv: &VV) {
+        self.0.retain(|&(id, version)| {
+            !o_vv.contains(id, version)
+        });
+    }
+}
+
+impl CausalValue for DotSet {
+    fn merge<VV: AbsVersionVector>(&mut self, other: &mut Self, s_vv: &VV, o_vv: &VV) {
+        // retain in self what's not outdated or also exists in other
+        self.0.retain(|&(id, version)| {
+            !o_vv.contains(id, version) || other.0.remove(&(id, version))
+        });
+
+        // drain other into self filtering outdated versions
+        for &(id, version) in &other.0 {
+            if !s_vv.contains(id, version) {
+                self.0.insert((id, version));
+            }
+        }
+    }
+
+    fn dots<CB: FnMut((Id, Version))>(&self, cb: &mut CB) {
+        self.0.iter().cloned().for_each(|x| cb(x));
+    }
+
+    fn is_default(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<T> DotMap<T> {
+    pub fn new() -> DotMap<T> {
+        DotMap(Default::default())
+    }
+
+    pub fn add(&mut self, dot: (Id, Version), value: T) {
+        self.0.insert(dot, value);
+    }
+}
+
+impl<T> Default for DotMap<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> CausalValue for DotMap<T> {
+    fn merge<VV: AbsVersionVector>(&mut self, other: &mut Self, s_vv: &VV, o_vv: &VV) {
         // retain in self what's not outdated or also exists in other
         self.0.retain(|&(id, version), _| {
             !o_vv.contains(id, version) || other.0.remove(&(id, version)).is_some()
@@ -587,15 +668,61 @@ impl<T> Dots<T> {
         }
     }
 
-    fn add(&mut self, dot: (Id, Version), value: T) {
-        self.0.insert(dot, value);
+    fn dots<CB: FnMut((Id, Version))>(&self, cb: &mut CB) {
+        self.0.keys().cloned().for_each(|x| cb(x));
+    }
+
+    fn is_default(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<K: Eq + Hash, V: CausalValue> CausalMap<K, V> {
+    pub fn new() -> Self {
+        CausalMap(Default::default())
+    }
+}
+
+impl<K: Eq + Hash, V: CausalValue> Default for CausalMap<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K: Eq + Hash, V: CausalValue> CausalValue for CausalMap<K, V> {
+    fn merge<VV: AbsVersionVector>(&mut self, other: &mut Self, s_vv: &VV, o_vv: &VV) {
+        // retain in self what's not outdated or also exists in other
+        self.0.retain(|v, dot_set| {
+            if let Some(mut other_dot_set) = other.0.remove(v) {
+                dot_set.merge(&mut other_dot_set, s_vv, o_vv);
+                !dot_set.is_default()
+            } else {
+                true
+            }
+        });
+
+        // drain other into self filtering outdated versions
+        for (v, mut other_dot_set) in other.0.drain() {
+            other_dot_set.merge(&mut Default::default(), o_vv, s_vv);
+            if !other_dot_set.is_default() {
+                self.0.insert(v, other_dot_set);
+            }
+        }
+    }
+
+    fn dots<CB: FnMut((Id, Version))>(&self, cb: &mut CB) {
+        self.0.values().for_each(|x| x.dots(cb));
+    }
+
+    fn is_default(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
 impl<T> DottedCausalContainer<T> {
     pub fn new() -> DottedCausalContainer<T> {
         DottedCausalContainer {
-            dots: Dots::new(),
+            dots: DotMap::new(),
             vv: VersionVector::new(),
         }
     }
