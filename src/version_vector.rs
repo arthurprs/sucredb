@@ -4,10 +4,13 @@ use linear_map::set::LinearSet;
 use roaring::{RoaringBitmap, RoaringTreemap};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::hash::Hash;
+use types::NodeId;
 use serde;
 
+pub type Id = NodeId;
 pub type Version = u64;
-pub type Id = u64;
+/// A Dot is a Node Version Pair
+// pub type Dot = (NodeId, Version);
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BitmappedVersion {
@@ -17,24 +20,18 @@ pub struct BitmappedVersion {
         RoaringTreemap,
 }
 
-#[derive(Debug, Clone, PartialEq, Default,Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BitmappedVersionVector(LinearMap<Id, BitmappedVersion>);
 
 // same as DotMap<()> but this serializes better (unit is not emited)
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DotSet(LinearSet<(Id, Version)>);
 
-#[derive(Debug, Clone, PartialEq,Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DotMap<T>(LinearMap<(Id, Version), T>);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CausalMap<K: Eq + Hash, V: CausalValue>(LinearMap<K, V>);
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DottedCausalContainer<T> {
-    dots: DotMap<T>,
-    vv: VersionVector,
-}
 
 pub trait AbsVersionVector {
     fn contains(&self, id: Id, version: Version) -> bool;
@@ -42,8 +39,7 @@ pub trait AbsVersionVector {
 
 pub trait CausalValue: Default {
     fn merge<VV: AbsVersionVector>(&mut self, other: &mut Self, s_vv: &VV, o_vv: &VV);
-    fn dots<CB: FnMut((Id, Version))>(&self, cb: &mut CB);
-    fn is_default(&self) -> bool;
+    fn is_empty(&self) -> bool;
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,13 +77,18 @@ impl BitmappedVersion {
         self.norm();
     }
 
-    pub fn add(&mut self, version: Version) {
+    pub fn add(&mut self, version: Version) -> bool {
         if version == self.base + 1 {
             self.base += 1;
         } else if version > self.base {
-            self.bitmap.insert(version);
-        }
+            if !self.bitmap.insert(version) {
+                return false;
+            }
+        } else {
+            return false;
+        };
         self.norm();
+        true
     }
 
     fn norm(&mut self) {
@@ -109,6 +110,10 @@ impl BitmappedVersion {
 
     pub fn contains(&self, version: Version) -> bool {
         self.base >= version || self.bitmap.contains(version)
+    }
+
+    pub fn contains_all(&self, version: Version) -> bool {
+        self.base >= version
     }
 
     /// self - other
@@ -263,17 +268,11 @@ impl BitmappedVersionVector {
         bvv
     }
 
-    pub fn add_dots<T>(&mut self, dcc: &DottedCausalContainer<T>) {
-        for &(id, version) in dcc.dots.0.keys() {
-            self.add(id, version);
-        }
-    }
-
-    pub fn add(&mut self, id: Id, version: Version) {
+    pub fn add(&mut self, id: Id, version: Version) -> bool {
         self.0
             .entry(id)
             .or_insert_with(Default::default)
-            .add(version);
+            .add(version)
     }
 
     pub fn add_bv(&mut self, id: Id, bv: &BitmappedVersion) {
@@ -332,6 +331,10 @@ impl BitmappedVersionVector {
         self.0.get(&id).map_or(false, |bv| bv.contains(v))
     }
 
+    pub fn contains_all(&self, id: Id, v: Version) -> bool {
+        self.0.get(&id).map_or(false, |bv| bv.contains_all(v))
+    }
+
     pub fn iter_mut(&mut self) -> linear_map::IterMut<Id, BitmappedVersion> {
         self.0.iter_mut()
     }
@@ -362,23 +365,7 @@ impl BitmappedVersionVector {
             min_versions: min_versions,
         }
     }
-
-    // pub fn reset(&mut self) {
-    //     for (_, bitmap_version) in &mut self.0 {
-    //         bitmap_version.bitmap = ramp::Int::zero();
-    //     }
-    // }
-
-    // pub fn clone_base(&self) -> Self {
-    //     let mut new = Self::new();
-    //     new.0.reserve(self.0.len());
-    //     for (&id, bitmap_version) in &self.0 {
-    //         new.0.insert(id, BitmappedVersion::new(bitmap_version.base, 0));
-    //     }
-    //     new
-    // }
 }
-
 
 impl PartialEq for DeltaVersionVector {
     fn eq(&self, other: &Self) -> bool {
@@ -398,6 +385,12 @@ impl PartialEq for DeltaVersionVector {
 impl DeltaVersionVector {
     fn new() -> Self {
         DeltaVersionVector(Default::default())
+    }
+
+    pub fn from_vv(vv: VersionVector) -> Self {
+        DeltaVersionVector(unsafe {
+            ::std::mem::transmute::<LinearMap<_, _>, Vec<_>>(vv.0)
+        })
     }
 
     fn contains(&self, id: Id, version: Version) -> bool {
@@ -464,7 +457,7 @@ impl DeltaVersionVector {
         self.0.drain(base_p + 1..p);
     }
 
-    fn add_single(&mut self, id: Id, version: Version) {
+    pub fn add_single(&mut self, id: Id, version: Version) {
         assert!(version != 0, "Version 0 is not valid");
         let base_p = if let Some(p) = self.0.iter().position(|x| x.0 == id) {
             p
@@ -521,8 +514,8 @@ impl DeltaVersionVector {
     pub fn merge(&mut self, other: &Self) {
         let mut p = 0;
         while p < other.0.len() {
-            let id = other.0[p].0;
-            self.add_base(id, other.0[p].1);
+            let (id, v) = other.0[p];
+            self.add_base(id, v);
             p += 1;
             while p < other.0.len() && other.0[p].0 == id {
                 self.add_single(id, other.0[p].1);
@@ -530,11 +523,38 @@ impl DeltaVersionVector {
             }
         }
     }
+
+    pub fn iter<'a>(&'a self) -> impl 'a + Iterator<Item = (Id, Version)> {
+        self.0.iter().cloned()
+    }
+
+    pub fn contained(&self, bvv: &BitmappedVersionVector) -> bool {
+        let mut p = 0;
+        while p < self.0.len() {
+            let (id, v) = self.0[p];
+            let bv = if let Some(bv) = bvv.get(id) {
+                bv
+            } else {
+                return false;
+            };
+            if !bv.contains_all(v) {
+                return false;
+            }
+            p += 1;
+            while p < self.0.len() && self.0[p].0 == id {
+                if !bv.contains(self.0[p].1) {
+                    return false;
+                }
+                p += 1;
+            }
+        }
+        true
+    }
 }
 
 impl AbsVersionVector for DeltaVersionVector {
     fn contains(&self, id: Id, version: Version) -> bool {
-        self.contains(id, version)
+        Self::contains(self, id, version)
     }
 }
 
@@ -546,10 +566,6 @@ impl VersionVector {
     pub fn contains(&self, id: Id, version: Version) -> bool {
         self.0.get(&id).map(|&x| x >= version).unwrap_or(false)
     }
-
-    // pub fn remove(&mut self, id: Id) -> Option<Version> {
-    //     self.0.remove(&id)
-    // }
 
     pub fn merge(&mut self, other: &Self) {
         for (&id, &version) in &other.0 {
@@ -590,14 +606,18 @@ impl VersionVector {
         }
     }
 
-    pub fn iter(&self) -> linear_map::Iter<Id, Version> {
-        self.0.iter()
+    pub fn iter<'a>(&'a self) -> impl 'a + Iterator<Item = (Id, Version)> {
+        self.0.iter().map(|(&i, &v)| (i, v))
+    }
+
+    pub fn contained(&self, bvv: &BitmappedVersionVector) -> bool {
+        self.0.iter().all(|(&i, &v)| bvv.contains_all(i, v))
     }
 }
 
 impl AbsVersionVector for VersionVector {
     fn contains(&self, id: Id, version: Version) -> bool {
-        self.contains(id, version)
+        Self::contains(self, id, version)
     }
 }
 
@@ -606,10 +626,10 @@ impl DotSet {
         DotSet(Default::default())
     }
 
-    pub fn discard<VV: AbsVersionVector>(&mut self, o_vv: &VV) {
-        self.0.retain(|&(id, version)| {
-            !o_vv.contains(id, version)
-        });
+    pub fn from_dot(dot: (Id, Version)) -> Self {
+        let mut result = Self::new();
+        result.0.insert(dot);
+        result
     }
 }
 
@@ -628,11 +648,7 @@ impl CausalValue for DotSet {
         }
     }
 
-    fn dots<CB: FnMut((Id, Version))>(&self, cb: &mut CB) {
-        self.0.iter().cloned().for_each(|x| cb(x));
-    }
-
-    fn is_default(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 }
@@ -642,8 +658,24 @@ impl<T> DotMap<T> {
         DotMap(Default::default())
     }
 
-    pub fn add(&mut self, dot: (Id, Version), value: T) {
-        self.0.insert(dot, value);
+    pub fn discard(&mut self, vv: &VersionVector) {
+        self.0.retain(|&(id, version), _| !vv.contains(id, version));
+    }
+
+    pub fn insert(&mut self, id: Id, version: Version, value: T) {
+        self.0.insert((id, version), value);
+    }
+
+    pub fn into_iter(self) -> impl Iterator<Item = ((Id, Version), T)> {
+        self.0.into_iter()
+    }
+}
+
+impl<T> ::std::ops::Deref for DotMap<T> {
+    type Target = LinearMap<(NodeId, Version), T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -668,11 +700,7 @@ impl<T> CausalValue for DotMap<T> {
         }
     }
 
-    fn dots<CB: FnMut((Id, Version))>(&self, cb: &mut CB) {
-        self.0.keys().cloned().for_each(|x| cb(x));
-    }
-
-    fn is_default(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 }
@@ -680,6 +708,33 @@ impl<T> CausalValue for DotMap<T> {
 impl<K: Eq + Hash, V: CausalValue> CausalMap<K, V> {
     pub fn new() -> Self {
         CausalMap(Default::default())
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear()
+    }
+
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        self.0.insert(key, value)
+    }
+
+    pub fn remove<Q: Eq + ?Sized>(&mut self, key: &Q) -> Option<V>
+    where
+        K: ::std::borrow::Borrow<Q>,
+    {
+        self.0.remove(key)
+    }
+
+    pub fn into_iter(self) -> impl Iterator<Item = (K, V)> {
+        self.0.into_iter()
+    }
+}
+
+impl<K: Eq + Hash, V: CausalValue> ::std::ops::Deref for CausalMap<K, V> {
+    type Target = LinearMap<K, V>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -695,7 +750,7 @@ impl<K: Eq + Hash, V: CausalValue> CausalValue for CausalMap<K, V> {
         self.0.retain(|v, dot_set| {
             if let Some(mut other_dot_set) = other.0.remove(v) {
                 dot_set.merge(&mut other_dot_set, s_vv, o_vv);
-                !dot_set.is_default()
+                !dot_set.is_empty()
             } else {
                 true
             }
@@ -704,81 +759,14 @@ impl<K: Eq + Hash, V: CausalValue> CausalValue for CausalMap<K, V> {
         // drain other into self filtering outdated versions
         for (v, mut other_dot_set) in other.0.drain() {
             other_dot_set.merge(&mut Default::default(), o_vv, s_vv);
-            if !other_dot_set.is_default() {
+            if !other_dot_set.is_empty() {
                 self.0.insert(v, other_dot_set);
             }
         }
     }
 
-    fn dots<CB: FnMut((Id, Version))>(&self, cb: &mut CB) {
-        self.0.values().for_each(|x| x.dots(cb));
-    }
-
-    fn is_default(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.0.is_empty()
-    }
-}
-
-impl<T> DottedCausalContainer<T> {
-    pub fn new() -> DottedCausalContainer<T> {
-        DottedCausalContainer {
-            dots: DotMap::new(),
-            vv: VersionVector::new(),
-        }
-    }
-
-    /// Returns true if dcc has no values AND causal context is empty
-    pub fn is_dcc_empty(&self) -> bool {
-        self.dots.0.is_empty() && self.vv.0.is_empty()
-    }
-
-    pub fn sync(&mut self, mut other: Self) {
-        self.dots.merge(&mut other.dots, &self.vv, &other.vv);
-        self.vv.merge(&other.vv);
-    }
-
-    pub fn add(&mut self, id: Id, version: Version, value: T) {
-        self.dots.add((id, version), value);
-        self.vv.add(id, version);
-    }
-
-    pub fn contained(&self, bvv: &BitmappedVersionVector) -> bool {
-        self.dots.0.keys().all(|&(id, v)| bvv.contains(id, v))
-    }
-
-    pub fn discard(&mut self, vv: &VersionVector) {
-        self.dots
-            .0
-            .retain(|&(id, version), _| !vv.contains(id, version));
-        self.vv.merge(vv);
-    }
-
-    pub fn strip(&mut self, bvv: &BitmappedVersionVector) {
-        self.vv.0.retain(|&id, &mut version| {
-            version > bvv.get(id).map(|b| b.base).unwrap_or(0)
-        });
-    }
-
-    pub fn fill(&mut self, bvv: &BitmappedVersionVector) {
-        for (&id, bitmap_version) in &bvv.0 {
-            self.vv.add(id, bitmap_version.base);
-        }
-    }
-
-    pub fn iter(&self) -> linear_map::Iter<(Id, Version), T> {
-        self.dots.0.iter()
-    }
-
-    pub fn into_iter(self) -> linear_map::IntoIter<(Id, Version), T> {
-        self.dots.0.into_iter()
-    }
-
-    pub fn values(&self) -> linear_map::Values<(Id, Version), T> {
-        self.dots.0.values()
-    }
-
-    pub fn version_vector(&self) -> &VersionVector {
-        &self.vv
     }
 }
 
@@ -830,18 +818,6 @@ mod test_bv {
 #[cfg(test)]
 mod test_bvv {
     use super::*;
-
-    // #[test]
-    // fn values() {
-    //     let mut a = BitmappedVersion::new(0, 0);
-    //     assert!(a.values().is_empty());
-    //     a.base = 2;
-    //     assert_eq!(a.values(), [1 as Version, 2]);
-    //     a.bitmap = 3.into();
-    //     assert_eq!(a.values(), [1 as Version, 2, 3, 4]);
-    //     a.bitmap = 5.into();
-    //     assert_eq!(a.values(), [1 as Version, 2, 3, 5]);
-    // }
 
     #[test]
     fn add_get() {
@@ -1021,165 +997,138 @@ mod test_vv {
         assert!(a1.contains(2, 4));
         assert!(!a1.contains(2, 5));
         assert!(!a1.contains(3, 1));
-
-    }
-
-    // #[test]
-    // fn reset() {
-    //     let mut a1 = VersionVector::new();
-    //     a1.add(1, 2);
-    //     a1.add(2, 4);
-    //     a1.add(3, 4);
-    //     a1.reset();
-    //     assert_eq!(a1.get(1), Some(0));
-    //     assert_eq!(a1.get(2), Some(0));
-    //     assert_eq!(a1.get(3), Some(0));
-    // }
-
-    // #[test]
-    // fn remove() {
-    //     let mut a1 = VersionVector::new();
-    //     a1.add(1, 2);
-    //     a1.add(2, 4);
-    //     a1.add(3, 4);
-    //     assert_eq!(a1.remove(1), Some(2));
-    //     assert_eq!(a1.remove(2), Some(4));
-    //     assert_eq!(a1.remove(3), Some(4));
-    //     assert_eq!(a1.remove(1), None);
-    //     assert_eq!(a1.remove(2), None);
-    //     assert_eq!(a1.remove(3), None);
-    // }
-}
-
-#[cfg(test)]
-mod test_dcc {
-    use super::*;
-
-    fn data() -> [DottedCausalContainer<&'static str>; 5] {
-        let mut d1 = DottedCausalContainer::new();
-        d1.dots.0.insert((1, 8), "red");
-        d1.dots.0.insert((2, 2), "green");
-        let mut d2 = DottedCausalContainer::new();
-        d2.vv.0.insert(1, 4);
-        d2.vv.0.insert(2, 20);
-        let mut d3 = DottedCausalContainer::new();
-        d3.dots.0.insert((1, 1), "black");
-        d3.dots.0.insert((1, 3), "red");
-        d3.dots.0.insert((2, 1), "green");
-        d3.dots.0.insert((2, 2), "green");
-        d3.vv.0.insert(1, 4);
-        d3.vv.0.insert(2, 7);
-        let mut d4 = DottedCausalContainer::new();
-        d4.dots.0.insert((1, 2), "gray");
-        d4.dots.0.insert((1, 3), "red");
-        d4.dots.0.insert((1, 5), "red");
-        d4.dots.0.insert((2, 2), "green");
-        d4.vv.0.insert(1, 5);
-        d4.vv.0.insert(2, 5);
-        let mut d5 = DottedCausalContainer::new();
-        d5.dots.0.insert((1, 5), "gray");
-        d5.vv.0.insert(1, 5);
-        d5.vv.0.insert(2, 5);
-        d5.vv.0.insert(3, 4);
-        [d1, d2, d3, d4, d5]
-    }
-
-    #[test]
-    fn sync() {
-        let d = data();
-        let mut d34: DottedCausalContainer<&'static str> = DottedCausalContainer::new();
-        d34.dots.0.insert((1, 3), "red");
-        d34.dots.0.insert((1, 5), "red");
-        d34.dots.0.insert((2, 2), "green");
-        d34.vv.0.insert(1, 5);
-        d34.vv.0.insert(2, 7);
-
-        for d in &d {
-            let mut ds = d.clone();
-            ds.sync(d.clone());
-            assert_eq!(&ds, d);
-        }
-        let mut ds = d[2].clone();
-        ds.sync(d[3].clone());
-        assert_eq!(&ds, &d34);
-        ds = d[3].clone();
-        ds.sync(d[2].clone());
-        assert_eq!(&ds, &d34);
-    }
-
-    #[test]
-    fn add_dots() {
-        let d1 = data()[0].clone();
-        let mut bvv0 = BitmappedVersionVector::new();
-        bvv0.0.insert(1, BitmappedVersion::new(5, 3));
-        bvv0.add_dots(&d1);
-        let mut bvv1 = BitmappedVersionVector::new();
-        bvv1.0.insert(1, BitmappedVersion::new(8, 0));
-        bvv1.0.insert(2, BitmappedVersion::new(0, 2));
-        assert_eq!(bvv0, bvv1);
-    }
-
-    #[test]
-    fn add() {
-        let mut d1 = data()[0].clone();
-        d1.add(1, 11, "purple");
-        let mut d1e = DottedCausalContainer::new();
-        d1e.dots.0.insert((1, 8), "red");
-        d1e.dots.0.insert((2, 2), "green");
-        d1e.dots.0.insert((1, 11), "purple");
-        d1e.vv.0.insert(1, 11);
-        assert_eq!(d1, d1e);
-
-        let mut d2 = data()[1].clone();
-        d2.add(2, 11, "purple");
-        let mut d2e = DottedCausalContainer::new();
-        d2e.dots.0.insert((2, 11), "purple");
-        d2e.vv.0.insert(1, 4);
-        d2e.vv.0.insert(2, 20);
-        assert_eq!(d2, d2e);
-    }
-
-    #[test]
-    fn discard() {
-        let mut d3 = data()[2].clone();
-        d3.discard(&VersionVector::new());
-        assert_eq!(&d3, &data()[2]);
-
-        let mut vv = VersionVector::new();
-        vv.add(1, 2);
-        vv.add(2, 15);
-        vv.add(3, 15);
-        let mut d3 = data()[2].clone();
-        d3.discard(&vv);
-        let mut d3e = DottedCausalContainer::new();
-        d3e.dots.0.insert((1, 3), "red");
-        d3e.vv.0.insert(1, 4);
-        d3e.vv.0.insert(2, 15);
-        d3e.vv.0.insert(3, 15);
-        assert_eq!(d3, d3e);
-
-        let mut vv = VersionVector::new();
-        vv.add(1, 3);
-        vv.add(2, 15);
-        vv.add(3, 15);
-        let mut d3 = data()[2].clone();
-        d3.discard(&vv);
-        let mut d3e = DottedCausalContainer::new();
-        d3e.vv.0.insert(1, 4);
-        d3e.vv.0.insert(2, 15);
-        d3e.vv.0.insert(3, 15);
-        assert_eq!(d3, d3e);
-    }
-
-    #[test]
-    #[ignore]
-    fn fill() {
-        unimplemented!()
-    }
-
-    #[test]
-    #[ignore]
-    fn strip() {
-        unimplemented!()
     }
 }
+//
+// #[cfg(test)]
+// mod test_dcc {
+//     use super::*;
+//
+//     fn data() -> [DottedCausalContainer<&'static str>; 5] {
+//         let mut d1 = DottedCausalContainer::new();
+//         d1.dots.0.insert((1, 8), "red");
+//         d1.dots.0.insert((2, 2), "green");
+//         let mut d2 = DottedCausalContainer::new();
+//         d2.vv.0.insert(1, 4);
+//         d2.vv.0.insert(2, 20);
+//         let mut d3 = DottedCausalContainer::new();
+//         d3.dots.0.insert((1, 1), "black");
+//         d3.dots.0.insert((1, 3), "red");
+//         d3.dots.0.insert((2, 1), "green");
+//         d3.dots.0.insert((2, 2), "green");
+//         d3.vv.0.insert(1, 4);
+//         d3.vv.0.insert(2, 7);
+//         let mut d4 = DottedCausalContainer::new();
+//         d4.dots.0.insert((1, 2), "gray");
+//         d4.dots.0.insert((1, 3), "red");
+//         d4.dots.0.insert((1, 5), "red");
+//         d4.dots.0.insert((2, 2), "green");
+//         d4.vv.0.insert(1, 5);
+//         d4.vv.0.insert(2, 5);
+//         let mut d5 = DottedCausalContainer::new();
+//         d5.dots.0.insert((1, 5), "gray");
+//         d5.vv.0.insert(1, 5);
+//         d5.vv.0.insert(2, 5);
+//         d5.vv.0.insert(3, 4);
+//         [d1, d2, d3, d4, d5]
+//     }
+//
+//     #[test]
+//     fn sync() {
+//         let d = data();
+//         let mut d34: DottedCausalContainer<&'static str> = DottedCausalContainer::new();
+//         d34.dots.0.insert((1, 3), "red");
+//         d34.dots.0.insert((1, 5), "red");
+//         d34.dots.0.insert((2, 2), "green");
+//         d34.vv.0.insert(1, 5);
+//         d34.vv.0.insert(2, 7);
+//
+//         for d in &d {
+//             let mut ds = d.clone();
+//             ds.sync(d.clone());
+//             assert_eq!(&ds, d);
+//         }
+//         let mut ds = d[2].clone();
+//         ds.sync(d[3].clone());
+//         assert_eq!(&ds, &d34);
+//         ds = d[3].clone();
+//         ds.sync(d[2].clone());
+//         assert_eq!(&ds, &d34);
+//     }
+//
+//     #[test]
+//     fn add_dots() {
+//         let d1 = data()[0].clone();
+//         let mut bvv0 = BitmappedVersionVector::new();
+//         bvv0.0.insert(1, BitmappedVersion::new(5, 3));
+//         bvv0.add_dots(&d1);
+//         let mut bvv1 = BitmappedVersionVector::new();
+//         bvv1.0.insert(1, BitmappedVersion::new(8, 0));
+//         bvv1.0.insert(2, BitmappedVersion::new(0, 2));
+//         assert_eq!(bvv0, bvv1);
+//     }
+//
+//     #[test]
+//     fn add() {
+//         let mut d1 = data()[0].clone();
+//         d1.add(1, 11, "purple");
+//         let mut d1e = DottedCausalContainer::new();
+//         d1e.dots.0.insert((1, 8), "red");
+//         d1e.dots.0.insert((2, 2), "green");
+//         d1e.dots.0.insert((1, 11), "purple");
+//         d1e.vv.0.insert(1, 11);
+//         assert_eq!(d1, d1e);
+//
+//         let mut d2 = data()[1].clone();
+//         d2.add(2, 11, "purple");
+//         let mut d2e = DottedCausalContainer::new();
+//         d2e.dots.0.insert((2, 11), "purple");
+//         d2e.vv.0.insert(1, 4);
+//         d2e.vv.0.insert(2, 20);
+//         assert_eq!(d2, d2e);
+//     }
+//
+//     #[test]
+//     fn discard() {
+//         let mut d3 = data()[2].clone();
+//         d3.discard(&VersionVector::new());
+//         assert_eq!(&d3, &data()[2]);
+//
+//         let mut vv = VersionVector::new();
+//         vv.add(1, 2);
+//         vv.add(2, 15);
+//         vv.add(3, 15);
+//         let mut d3 = data()[2].clone();
+//         d3.discard(&vv);
+//         let mut d3e = DottedCausalContainer::new();
+//         d3e.dots.0.insert((1, 3), "red");
+//         d3e.vv.0.insert(1, 4);
+//         d3e.vv.0.insert(2, 15);
+//         d3e.vv.0.insert(3, 15);
+//         assert_eq!(d3, d3e);
+//
+//         let mut vv = VersionVector::new();
+//         vv.add(1, 3);
+//         vv.add(2, 15);
+//         vv.add(3, 15);
+//         let mut d3 = data()[2].clone();
+//         d3.discard(&vv);
+//         let mut d3e = DottedCausalContainer::new();
+//         d3e.vv.0.insert(1, 4);
+//         d3e.vv.0.insert(2, 15);
+//         d3e.vv.0.insert(3, 15);
+//         assert_eq!(d3, d3e);
+//     }
+//
+//     #[test]
+//     #[ignore]
+//     fn fill() {
+//         unimplemented!()
+//     }
+//
+//     #[test]
+//     #[ignore]
+//     fn strip() {
+//         unimplemented!()
+//     }
+// }

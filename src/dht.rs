@@ -795,18 +795,18 @@ impl<T: Metadata> DHT<T> {
 
     fn broadcast(inner: &Inner<T>) {
         let serialized_ring: Bytes = Ring::serialize(&inner.ring).unwrap().into();
-        for &node in inner.ring.nodes.keys() {
-            if node == inner.node {
+        for (&node_id, node) in inner.ring.nodes.iter() {
+            if node_id == inner.node || node.status != NodeStatus::Valid {
                 continue;
             }
             let _ = inner
                 .fabric
-                .send_msg(node, FabricMsg::DHTSync(serialized_ring.clone()));
+                .send_msg(node_id, FabricMsg::DHTSync(serialized_ring.clone()));
         }
     }
 
     fn broadcast_req(inner: &Inner<T>) {
-        let peers = inner.ring.nodes.len() - 1;
+        let peers = inner.ring.valid_nodes_count();
         if peers == 0 {
             return;
         }
@@ -816,13 +816,15 @@ impl<T: Metadata> DHT<T> {
         trace!("AAE peers {} chance {}", peers, chance);
 
         let mut rng = thread_rng();
-        for &node in inner.ring.nodes.keys() {
-            if node == inner.node || rng.next_f32() > chance {
+        for (&node_id, node) in inner.ring.nodes.iter() {
+            if node_id == inner.node || node.status != NodeStatus::Valid {
                 continue;
             }
-            let _ = inner
-                .fabric
-                .send_msg(node, FabricMsg::DHTAE(inner.ring.version.clone()));
+            if rng.next_f32() < chance {
+                let _ = inner
+                    .fabric
+                    .send_msg(node_id, FabricMsg::DHTAE(inner.ring.version.clone()));
+            }
         }
     }
 

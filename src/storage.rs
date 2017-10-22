@@ -310,6 +310,10 @@ impl Drop for Storage {
 }
 
 impl<'a> StorageBatch<'a> {
+    pub fn is_empty(&self) -> bool {
+        self.wb.is_empty()
+    }
+
     pub fn set(&mut self, key: &[u8], value: &[u8]) {
         trace!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
         let mut buffer = [0u8; 512];

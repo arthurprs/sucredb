@@ -9,6 +9,7 @@ use resp::RespValue;
 use storage::{Storage, StorageManager};
 use rand::{thread_rng, Rng};
 use utils::{assume_str, is_dir_empty_or_absent, IdHashMap, join_u64, split_u64};
+use cubes::*;
 pub use types::*;
 use config::Config;
 use metrics::{self, Gauge};
@@ -381,21 +382,37 @@ impl Database {
         &self,
         token: Token,
         key: &[u8],
-        value: Option<&[u8]>,
+        mutator_fn: MutatorFn,
         vv: VersionVector,
         consistency: ConsistencyLevel,
         reply_result: bool,
+        response_fn: ResponseFn,
     ) {
         let vnode = self.dht.key_vnode(key);
         vnode!(self, vnode, |mut vn| {
-            vn.do_set(self, token, key, value, vv, consistency, reply_result);
+            vn.do_set(
+                self,
+                token,
+                key,
+                mutator_fn,
+                vv,
+                consistency,
+                reply_result,
+                response_fn,
+            );
         });
     }
 
-    pub fn get(&self, token: Token, key: &[u8], consistency: ConsistencyLevel) {
+    pub fn get(
+        &self,
+        token: Token,
+        key: &[u8],
+        consistency: ConsistencyLevel,
+        response_fn: ResponseFn,
+    ) {
         let vnode = self.dht.key_vnode(key);
         vnode!(self, vnode, |mut vn| {
-            vn.do_get(self, token, key, consistency);
+            vn.do_get(self, token, key, consistency, response_fn);
         });
     }
 }

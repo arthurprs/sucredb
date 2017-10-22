@@ -48,7 +48,13 @@ Results are returned as an array containing the values (zero, one or more if the
 
 < `1`
 
-#### {consistency} parameter
+#### HGETALL
+
+#### HGET
+
+#### HSET
+
+#### `consistency` parameter
 
 `{consistency}` follows the dynamo/cassandra/riak style:
 
