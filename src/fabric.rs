@@ -520,7 +520,7 @@ impl Drop for Fabric {
 mod tests {
     use super::*;
     use config::Config;
-    use std::{net, thread};
+    use std::thread;
     use std::time::Duration;
     use env_logger;
     use std::sync::{atomic, Arc};
@@ -546,7 +546,7 @@ mod tests {
         let counter_ = counter.clone();
         fabric2.register_msg_handler(
             FabricMsgType::Crud,
-            Box::new(move |_, m| {
+            Box::new(move |_, _| {
                 counter_.fetch_add(1, atomic::Ordering::Relaxed);
             }),
         );
@@ -557,7 +557,7 @@ mod tests {
                     MsgRemoteSetAck {
                         cookie: Default::default(),
                         vnode: Default::default(),
-                        result: Ok(()),
+                        result: Ok(None),
                     },
                 )
                 .unwrap();
