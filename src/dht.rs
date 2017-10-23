@@ -807,12 +807,13 @@ impl<T: Metadata> DHT<T> {
 
     fn broadcast_req(inner: &Inner<T>) {
         let peers = inner.ring.valid_nodes_count();
-        if peers == 0 {
+        if peers <= 1 {
+            // if it's only this node, bail
             return;
         }
         // calculate a chance that gives a rate of DHT_AAE_INTERVAL_MS ^ -1
         let msgs_per_call = DHT_AAE_TRIGGER_INTERVAL_MS as f32 / DHT_AAE_INTERVAL_MS as f32;
-        let chance = msgs_per_call / (peers as f32);
+        let chance = msgs_per_call / (peers - 1) as f32;
         trace!("AAE peers {} chance {}", peers, chance);
 
         let mut rng = thread_rng();
