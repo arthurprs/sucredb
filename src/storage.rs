@@ -310,6 +310,10 @@ impl Drop for Storage {
 }
 
 impl<'a> StorageBatch<'a> {
+    pub fn is_empty(&self) -> bool {
+        self.wb.is_empty()
+    }
+
     pub fn set(&mut self, key: &[u8], value: &[u8]) {
         trace!("set {:?} ({} bytes)", str::from_utf8(key), value.len());
         let mut buffer = [0u8; 512];
@@ -405,7 +409,6 @@ impl<'a> Iterator for LogStorageIter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
     use std::fs;
 
     #[test]
@@ -446,7 +449,7 @@ mod tests {
         }
         for &i in &[0, 1, 2] {
             let storage = sm.open(i).unwrap();
-            let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(k, v)| v.into()).collect();
+            let results: Vec<Vec<u8>> = storage.iterator().iter().map(|(_, v)| v.into()).collect();
             assert_eq!(results, vec![i.to_string().as_bytes(); 3]);
         }
     }

@@ -9,6 +9,7 @@ use resp::RespValue;
 use storage::{Storage, StorageManager};
 use rand::{thread_rng, Rng};
 use utils::{assume_str, is_dir_empty_or_absent, IdHashMap, join_u64, split_u64};
+use cubes::*;
 pub use types::*;
 use config::Config;
 use metrics::{self, Gauge};
@@ -276,7 +277,8 @@ impl Database {
             let vnodes_len = vnodes.len() as u16;
             let rnd = thread_rng().gen::<u16>() % vnodes_len;
             for vnode in (0..vnodes_len).map(|i| vnodes.get(&((i + rnd) % vnodes_len))) {
-                incomming_syncs += vnode.unwrap().lock().unwrap().start_sync_if_ready(self) as usize;
+                incomming_syncs +=
+                    vnode.unwrap().lock().unwrap().start_sync_if_ready(self) as usize;
                 if incomming_syncs >= self.config.sync_incomming_max as usize {
                     break;
                 }
@@ -380,21 +382,37 @@ impl Database {
         &self,
         token: Token,
         key: &[u8],
-        value: Option<&[u8]>,
+        mutator_fn: MutatorFn,
         vv: VersionVector,
         consistency: ConsistencyLevel,
         reply_result: bool,
+        response_fn: ResponseFn,
     ) {
         let vnode = self.dht.key_vnode(key);
         vnode!(self, vnode, |mut vn| {
-            vn.do_set(self, token, key, value, vv, consistency, reply_result);
+            vn.do_set(
+                self,
+                token,
+                key,
+                mutator_fn,
+                vv,
+                consistency,
+                reply_result,
+                response_fn,
+            );
         });
     }
 
-    pub fn get(&self, token: Token, key: &[u8], consistency: ConsistencyLevel) {
+    pub fn get(
+        &self,
+        token: Token,
+        key: &[u8],
+        consistency: ConsistencyLevel,
+        response_fn: ResponseFn,
+    ) {
         let vnode = self.dht.key_vnode(key);
         vnode!(self, vnode, |mut vn| {
-            vn.do_get(self, token, key, consistency);
+            vn.do_get(self, token, key, consistency, response_fn);
         });
     }
 }
@@ -418,8 +436,14 @@ mod tests {
     use bincode;
     use resp::RespValue;
     use config;
-    use types::ConsistencyLevel::*;
     use utils::sleep_ms;
+
+    #[allow(non_upper_case_globals)]
+    const One: &[u8] = b"One";
+    #[allow(non_upper_case_globals)]
+    const Quorum: &[u8] = b"Quorum";
+    #[allow(non_upper_case_globals)]
+    const All: &[u8] = b"All";
 
     struct TestDatabase {
         db: Arc<Database>,
@@ -481,7 +505,7 @@ mod tests {
             }
         }
 
-        fn resp_response(&self, token: Token) -> RespValue {
+        fn response_resp(&self, token: Token) -> RespValue {
             (0..1000)
                 .filter_map(|_| {
                     sleep_ms(10);
@@ -491,12 +515,15 @@ mod tests {
                 .unwrap()
         }
 
-        fn response(&self, token: Token) -> (Vec<Vec<u8>>, VersionVector) {
-            decode_response(self.resp_response(token))
+        fn response_values(&self, token: Token) -> (Vec<Vec<u8>>, VersionVector) {
+            decode_values(self.response_resp(token))
         }
 
-        fn values_response(&self, token: Token) -> Vec<Vec<u8>> {
-            self.response(token).0
+        fn do_cmd(&self, token: Token, args: &[&[u8]]) {
+            self.handler_cmd(
+                token,
+                RespValue::Array(args.iter().map(|&x| RespValue::Data(x.into())).collect()),
+            )
         }
     }
 
@@ -507,7 +534,7 @@ mod tests {
         }
     }
 
-    fn decode_response(value: RespValue) -> (Vec<Vec<u8>>, VersionVector) {
+    fn decode_values(value: RespValue) -> (Vec<Vec<u8>>, VersionVector) {
         if let RespValue::Array(ref arr) = value {
             let values: Vec<_> = arr[0..arr.len() - 1]
                 .iter()
@@ -527,26 +554,30 @@ mod tests {
         panic!("Can't decode response {:?}", value);
     }
 
+    fn encode_vv(vv: &VersionVector) -> Vec<u8> {
+        bincode::serialize(vv, bincode::Infinite).unwrap()
+    }
+
     fn test_reload_stub(shutdown: bool) {
         let _ = fs::remove_dir_all("t/");
         let _ = env_logger::init();
         let mut db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
         let prev_node = db.dht.node();
-        db.get(1, b"test", One);
-        assert!(db.values_response(1).len() == 0);
+        db.do_cmd(1, &[b"GET", b"test", One]);
+        assert!(db.response_values(1).0.len() == 0);
 
-        db.set(1, b"test", Some(b"value1"), VersionVector::new(), One, true);
-        assert!(db.values_response(1).len() == 1);
+        db.do_cmd(1, &[b"GETSET", b"test", b"value1", b"", One]);
+        assert!(db.response_values(1).0.len() == 1);
 
-        db.get(1, b"test", One);
-        assert_eq!(db.values_response(1), [b"value1"]);
+        db.do_cmd(1, &[b"GET", b"test", One]);
+        assert_eq!(db.response_values(1).0, [b"value1"]);
 
         db.save(shutdown);
         drop(db);
         db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", false);
 
-        db.get(1, b"test", One);
-        assert_eq!(db.values_response(1), [b"value1"]);
+        db.do_cmd(1, &[b"GET", b"test", One]);
+        assert_eq!(db.response_values(1).0, [b"value1"]);
 
         if shutdown {
             assert_eq!(db.dht.node(), prev_node);
@@ -581,34 +612,34 @@ mod tests {
         let _ = env_logger::init();
         let db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
 
-        db.get(1, b"test", One);
-        assert!(db.values_response(1).len() == 0);
+        db.do_cmd(1, &[b"GET", b"test", One]);
+        assert_eq!(db.response_values(1).0.len(), 0);
 
-        db.set(1, b"test", Some(b"value1"), VersionVector::new(), One, true);
-        assert!(db.values_response(1).len() == 1);
+        db.do_cmd(1, &[b"GETSET", b"test", b"value1", b"", One]);
+        assert_eq!(db.response_values(1).0.len(), 1);
 
-        db.get(1, b"test", One);
-        assert_eq!(db.values_response(1), [b"value1"]);
+        db.do_cmd(1, &[b"GET", b"test", One]);
+        assert_eq!(db.response_values(1).0, [b"value1"]);
 
-        db.set(1, b"test", Some(b"value2"), VersionVector::new(), One, true);
-        assert!(db.values_response(1).len() == 2);
+        db.do_cmd(1, &[b"GETSET", b"test", b"value2", b"", One]);
+        assert_eq!(db.response_values(1).0.len(), 2);
 
-        db.get(1, b"test", One);
-        let (values, vv) = db.response(1);
+        db.do_cmd(1, &[b"GET", b"test", One]);
+        let (values, vv) = db.response_values(1);
         assert_eq!(values, [b"value1", b"value2"]);
 
-        db.set(1, b"test", Some(b"value12"), vv, One, true);
-        assert!(db.values_response(1).len() == 1);
+        db.do_cmd(1, &[b"GETSET", b"test", b"value12", &encode_vv(&vv), One]);
+        assert_eq!(db.response_values(1).0.len(), 1);
 
-        db.get(1, b"test", One);
-        let (values, vv) = db.response(1);
+        db.do_cmd(1, &[b"GET", b"test", One]);
+        let (values, vv) = db.response_values(1);
         assert_eq!(values, [b"value12"]);
 
-        db.set(1, b"test", None, vv, One, true);
-        assert!(db.values_response(1).len() == 0);
+        db.do_cmd(1, &[b"DEL", b"test", &encode_vv(&vv), One]);
+        assert_eq!(db.response_resp(1), RespValue::Int(1));
 
-        db.get(1, b"test", One);
-        assert!(db.values_response(1).len() == 0);
+        db.do_cmd(1, &[b"GET", b"test", One]);
+        assert_eq!(db.response_values(1).0.len(), 0);
     }
 
     #[test]
@@ -617,20 +648,20 @@ mod tests {
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        db2.dht.rebalance();
+        db2.dht.rebalance().unwrap();
 
         db1.wait_syncs();
         db2.wait_syncs();
 
-        db1.get(1, b"test", One);
-        assert!(db1.values_response(1).len() == 0);
+        db1.do_cmd(1, &[b"GET", b"test", One]);
+        assert_eq!(db1.response_values(1).0.len(), 0);
 
-        db1.set(1, b"test", Some(b"value1"), VersionVector::new(), One, true);
-        assert!(db1.values_response(1).len() == 1);
+        db1.do_cmd(1, &[b"GETSET", b"test", b"value1", b"", All]);
+        assert_eq!(db1.response_values(1).0, &[b"value1"]);
 
         for &db in &[&db1, &db2] {
-            db.get(1, b"test", One);
-            assert_eq!(db.values_response(1), [b"value1"]);
+            db.do_cmd(1, &[b"GET", b"test", One]);
+            assert_eq!(db.response_values(1).0, [b"value1"]);
         }
     }
 
@@ -642,33 +673,29 @@ mod tests {
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         for i in 0..TEST_JOIN_SIZE {
-            db1.set(
+            db1.do_cmd(
                 i,
-                i.to_string().as_bytes(),
-                Some(i.to_string().as_bytes()),
-                VersionVector::new(),
-                One,
-                true,
+                &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), b"", One],
             );
-            db1.values_response(i);
+            db1.response_values(i);
         }
 
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         warn!("will check data before balancing");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
-                db.get(i, i.to_string().as_bytes(), One);
-                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
+                db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
+                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes()]);
             }
         }
 
-        db2.dht.rebalance();
+        db2.dht.rebalance().unwrap();
 
         warn!("will check data during balancing");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
-                db.get(i, i.to_string().as_bytes(), One);
-                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
+                db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
+                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes()]);
             }
         }
 
@@ -678,8 +705,8 @@ mod tests {
         warn!("will check data after balancing");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
-                db.get(i, i.to_string().as_bytes(), One);
-                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
+                db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
+                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes()]);
             }
         }
     }
@@ -690,7 +717,7 @@ mod tests {
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        db2.dht.rebalance();
+        db2.dht.rebalance().unwrap();
 
         db1.wait_syncs();
         db2.wait_syncs();
@@ -700,19 +727,15 @@ mod tests {
         drop(db2);
 
         for i in 0..TEST_JOIN_SIZE {
-            db1.set(
+            db1.do_cmd(
                 i,
-                i.to_string().as_bytes(),
-                Some(i.to_string().as_bytes()),
-                VersionVector::new(),
-                One,
-                true,
+                &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), b"", One],
             );
-            db1.values_response(i);
+            db1.response_values(i);
         }
         for i in 0..TEST_JOIN_SIZE {
-            db1.get(i, i.to_string().as_bytes(), One);
-            assert_eq!(db1.values_response(i), vec![i.to_string().as_bytes()]);
+            db1.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
+            assert_eq!(db1.response_values(i).0, vec![i.to_string().as_bytes()]);
         }
 
         // sim partition heal
@@ -723,8 +746,8 @@ mod tests {
         warn!("will check before sync");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
-                db.get(i, i.to_string().as_bytes(), Quorum);
-                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
+                db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), Quorum]);
+                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes()]);
             }
         }
 
@@ -738,8 +761,8 @@ mod tests {
         warn!("will check after balancing");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
-                db.get(i, i.to_string().as_bytes(), One);
-                assert_eq!(db.values_response(i), [i.to_string().as_bytes()]);
+                db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
+                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes()]);
             }
         }
     }
@@ -751,50 +774,50 @@ mod tests {
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         let db3 = TestDatabase::new("127.0.0.1:9002".parse().unwrap(), "t/db3", false);
-        db1.dht.rebalance();
+        db1.dht.rebalance().unwrap();
 
         db1.wait_syncs();
         db2.wait_syncs();
         db3.wait_syncs();
 
         // test data
-        db1.set(0, b"key", Some(b"value"), VersionVector::new(), All, true);
-        assert_eq!(db1.values_response(0), [b"value"]);
+        db1.do_cmd(0, &[b"GETSET", b"key", b"value", b"", All]);
+        assert_eq!(db1.response_values(0).0, [b"value"]);
 
         for &cl in &[One, Quorum, All] {
-            db1.get(0, b"key", cl);
-            assert_eq!(db1.values_response(0), [b"value"]);
-            db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
-            db1.values_response(0);
+            db1.do_cmd(0, &[b"GET", b"key", cl]);
+            assert_eq!(db1.response_values(0).0, [b"value"]);
+            db1.do_cmd(0, &[b"GETSET", b"other", b"", b"", cl]);
+            db1.response_values(0);
         }
 
         drop(db3);
         for &cl in &[One, Quorum] {
-            db1.get(0, b"key", cl);
-            assert_eq!(db1.values_response(0), [b"value"]);
-            db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
-            db1.values_response(0);
+            db1.do_cmd(0, &[b"GET", b"key", cl]);
+            assert_eq!(db1.response_values(0).0, [b"value"]);
+            db1.do_cmd(0, &[b"GETSET", b"other", b"", b"", cl]);
+            db1.response_values(0);
         }
         for &cl in &[All] {
-            db1.get(0, b"key", cl);
-            assert_eq!(db1.resp_response(0), RespValue::Error("Unavailable".into()));
-            db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
-            assert_eq!(db1.resp_response(0), RespValue::Error("Unavailable".into()));
+            db1.do_cmd(0, &[b"GET", b"key", cl]);
+            assert_eq!(db1.response_resp(0), RespValue::Error("Unavailable".into()));
+            db1.do_cmd(0, &[b"GETSET", b"other", b"", b"", cl]);
+            assert_eq!(db1.response_resp(0), RespValue::Error("Unavailable".into()));
         }
 
 
         drop(db2);
         for &cl in &[One] {
-            db1.get(0, b"key", cl);
-            assert_eq!(db1.values_response(0), [b"value"]);
-            db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
-            db1.values_response(0);
+            db1.do_cmd(0, &[b"GET", b"key", cl]);
+            assert_eq!(db1.response_values(0).0, [b"value"]);
+            db1.do_cmd(0, &[b"GETSET", b"other", b"", b"", cl]);
+            db1.response_values(0);
         }
         for &cl in &[Quorum, All] {
-            db1.get(0, b"key", cl);
-            assert_eq!(db1.resp_response(0), RespValue::Error("Unavailable".into()));
-            db1.set(0, b"other", Some(b"value"), VersionVector::new(), cl, true);
-            assert_eq!(db1.resp_response(0), RespValue::Error("Unavailable".into()));
+            db1.do_cmd(0, &[b"GET", b"key", cl]);
+            assert_eq!(db1.response_resp(0), RespValue::Error("Unavailable".into()));
+            db1.do_cmd(0, &[b"GETSET", b"other", b"", b"", cl]);
+            assert_eq!(db1.response_resp(0), RespValue::Error("Unavailable".into()));
         }
     }
 

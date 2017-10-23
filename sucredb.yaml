@@ -62,7 +62,7 @@ logging:
 
   loggers:
     sucredb:
-      level: "info"
+      level: "debug"
       appenders: ["file", "console"]
 
 # ====== ADVANCED CONFIGURATION ======

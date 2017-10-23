@@ -171,8 +171,20 @@ pub fn read_config_file(path: &Path, config: &mut Config) {
     cfg!(yaml, config, request_timeout, as_str, parse_duration);
     cfg!(yaml, config, client_connection_max, as_u64, try_into);
     cfg!(yaml, config, value_version_max, as_u64, try_into);
-    cfg!(yaml, config, consistency_read, as_str, ConsistencyLevel::from_str);
-    cfg!(yaml, config, consistency_write, as_str, ConsistencyLevel::from_str);
+    cfg!(
+        yaml,
+        config,
+        consistency_read,
+        as_str,
+        ConsistencyLevel::from_str
+    );
+    cfg!(
+        yaml,
+        config,
+        consistency_write,
+        as_str,
+        ConsistencyLevel::from_str
+    );
 
     if let Some(v) = yaml.get("seed_nodes") {
         config.seed_nodes = v.as_sequence()

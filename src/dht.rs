@@ -795,18 +795,18 @@ impl<T: Metadata> DHT<T> {
 
     fn broadcast(inner: &Inner<T>) {
         let serialized_ring: Bytes = Ring::serialize(&inner.ring).unwrap().into();
-        for &node in inner.ring.nodes.keys() {
-            if node == inner.node {
+        for (&node_id, node) in inner.ring.nodes.iter() {
+            if node_id == inner.node || node.status != NodeStatus::Valid {
                 continue;
             }
             let _ = inner
                 .fabric
-                .send_msg(node, FabricMsg::DHTSync(serialized_ring.clone()));
+                .send_msg(node_id, FabricMsg::DHTSync(serialized_ring.clone()));
         }
     }
 
     fn broadcast_req(inner: &Inner<T>) {
-        let peers = inner.ring.nodes.len() - 1;
+        let peers = inner.ring.valid_nodes_count();
         if peers == 0 {
             return;
         }
@@ -816,13 +816,15 @@ impl<T: Metadata> DHT<T> {
         trace!("AAE peers {} chance {}", peers, chance);
 
         let mut rng = thread_rng();
-        for &node in inner.ring.nodes.keys() {
-            if node == inner.node || rng.next_f32() > chance {
+        for (&node_id, node) in inner.ring.nodes.iter() {
+            if node_id == inner.node || node.status != NodeStatus::Valid {
                 continue;
             }
-            let _ = inner
-                .fabric
-                .send_msg(node, FabricMsg::DHTAE(inner.ring.version.clone()));
+            if rng.next_f32() < chance {
+                let _ = inner
+                    .fabric
+                    .send_msg(node_id, FabricMsg::DHTAE(inner.ring.version.clone()));
+            }
         }
     }
 
@@ -1042,14 +1044,11 @@ impl<T: Metadata> DHT<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net;
     use env_logger;
-    use rand::{self, thread_rng, Rng};
+    use rand::{thread_rng, Rng};
     use config::Config;
     use fabric::Fabric;
     use utils::sleep_ms;
-    use std::collections::HashMap as HM;
-    use std::iter::FromIterator;
 
     #[test]
     fn test_dht_init() {
@@ -1100,7 +1099,7 @@ mod tests {
             );
         }
 
-        dht1.rebalance();
+        dht1.rebalance().unwrap();
         sleep_ms(100);
         for dht in &[&dht1, &dht2] {
             assert_eq!(dht.nodes_for_vnode(0, false, false), &[1]);
@@ -1114,7 +1113,7 @@ mod tests {
             );
         }
 
-        dht1.finish_rebalance();
+        dht1.finish_rebalance().unwrap();
         sleep_ms(100);
         for dht in &[&dht1, &dht2] {
             assert_eq!(dht.nodes_for_vnode(0, false, false), &[1, 2]);
@@ -1144,10 +1143,10 @@ mod tests {
         };
 
         let fabric1 = Arc::new(Fabric::new(1, &config1).unwrap());
-        let dht1 = DHT::init(fabric1, &config1, (), RingDescription::new(2, 32), None).unwrap();
+        let _dht1 = DHT::init(fabric1, &config1, (), RingDescription::new(2, 32), None).unwrap();
 
         let fabric2 = Arc::new(Fabric::new(2, &config2).unwrap());
-        let dht2 = DHT::join_cluster(fabric2, &config2, (), &[config1.fabric_addr], None).unwrap();
+        let _dht2 = DHT::join_cluster(fabric2, &config2, (), &[config1.fabric_addr], None).unwrap();
 
         sleep_ms(100);
     }
@@ -1159,7 +1158,7 @@ mod tests {
             fabric_addr: "127.0.0.1:3331".parse().unwrap(),
             ..Default::default()
         };
-        let mut config2: Config = Config {
+        let config2: Config = Config {
             fabric_addr: "127.0.0.1:3332".parse().unwrap(),
             ..Default::default()
         };
@@ -1168,7 +1167,8 @@ mod tests {
         let dht1 = DHT::init(fabric1, &config1, (), RingDescription::new(2, 32), None).unwrap();
 
         let fabric2 = Arc::new(Fabric::new(2, &config2).unwrap());
-        let dht2 = DHT::join_cluster(fabric2.clone(), &config2, (), &[config1.fabric_addr], None).unwrap();
+        let _dht2 =
+            DHT::join_cluster(fabric2.clone(), &config2, (), &[config1.fabric_addr], None).unwrap();
 
         sleep_ms(100);
 
@@ -1177,9 +1177,12 @@ mod tests {
 
         let msgs: Arc<Mutex<Vec<FabricMsg>>> = Default::default();
         let msgs_ = msgs.clone();
-        fabric2.register_msg_handler(FabricMsgType::DHT, Box::new(move |_, m| {
-            msgs_.lock().unwrap().push(m);
-        }));
+        fabric2.register_msg_handler(
+            FabricMsgType::DHT,
+            Box::new(move |_, m| {
+                msgs_.lock().unwrap().push(m);
+            }),
+        );
 
         dht1.handler_tick(Instant::now() + Duration::from_millis(DHT_AAE_TRIGGER_INTERVAL_MS + 1));
         sleep_ms(100);
@@ -1195,7 +1198,7 @@ mod tests {
     fn test_rebalance_leaving_nodes() {
         let _ = env_logger::init();
         let addr = "0.0.0.0:0".parse().unwrap();
-        for i in 0..1_000 {
+        for _ in 0..1_000 {
             let partitions = 32;
             let mut ring = Ring::new("", partitions as u16, 1 + thread_rng().gen::<u8>() % 4);
             for i in 0..1 + thread_rng().gen::<u64>() % partitions as u64 {
@@ -1218,7 +1221,7 @@ mod tests {
     fn test_rebalance() {
         let _ = env_logger::init();
         let addr = "0.0.0.0:0".parse().unwrap();
-        for i in 0..1_000 {
+        for _ in 0..1_000 {
             let partitions = 32;
             let mut ring = Ring::new("", partitions as u16, 1 + thread_rng().gen::<u8>() % 4);
             for i in 0..1 + thread_rng().gen::<u64>() % partitions as u64 {

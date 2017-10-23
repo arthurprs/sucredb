@@ -1,4 +1,4 @@
-#![feature(try_from)]
+#![feature(try_from, conservative_impl_trait)]
 #![allow(dead_code)]
 #![cfg_attr(feature = "cargo-clippy", allow(cast_lossless))]
 
@@ -43,6 +43,7 @@ mod utils;
 mod types;
 mod version_vector;
 // mod gossip;
+mod cubes;
 mod inflightmap;
 mod dht;
 mod fabric_msg;

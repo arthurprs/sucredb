@@ -91,11 +91,6 @@ pub struct Fabric {
     >,
 }
 
-#[derive(Debug)]
-pub enum FabricError {
-    NoRoute,
-}
-
 struct ReaderContext {
     context: Arc<SharedContext>,
     peer: NodeId,
@@ -466,10 +461,11 @@ impl Fabric {
 
     // TODO: take msgs as references and buffer serialized bytes instead
     pub fn send_msg<T: Into<FabricMsg>>(&self, node: NodeId, msg: T) -> Result<(), FabricError> {
+        let msg = msg.into();
+        debug!("send_msg node:{} {:?}", node, msg);
         if node == self.context.node {
             panic!("Can't send message to self");
         }
-        let msg = msg.into();
         if cfg!(test) {
             let droppable = match msg.get_type() {
                 FabricMsgType::Crud => false,
@@ -486,11 +482,9 @@ impl Fabric {
                 }
             }
         }
-
         let connections = self.context.connections.read().unwrap();
         if let Some(o) = connections.get(&node) {
             if let Some(&(connection_id, ref chan)) = thread_rng().choose(o) {
-                trace!("send_msg node:{}, chan:{} {:?}", node, connection_id, msg);
                 if let Err(e) = chan.unbounded_send(msg) {
                     warn!(
                         "Can't send to fabric {}-{} chan: {:?}",
@@ -526,7 +520,7 @@ impl Drop for Fabric {
 mod tests {
     use super::*;
     use config::Config;
-    use std::{net, thread};
+    use std::thread;
     use std::time::Duration;
     use env_logger;
     use std::sync::{atomic, Arc};
@@ -552,7 +546,7 @@ mod tests {
         let counter_ = counter.clone();
         fabric2.register_msg_handler(
             FabricMsgType::Crud,
-            Box::new(move |_, m| {
+            Box::new(move |_, _| {
                 counter_.fetch_add(1, atomic::Ordering::Relaxed);
             }),
         );
@@ -563,7 +557,7 @@ mod tests {
                     MsgRemoteSetAck {
                         cookie: Default::default(),
                         vnode: Default::default(),
-                        result: Ok(()),
+                        result: Ok(None),
                     },
                 )
                 .unwrap();

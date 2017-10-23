@@ -1,6 +1,7 @@
 use version_vector::*;
 use database::*;
 use bytes::Bytes;
+use cubes::Cube;
 
 #[derive(Debug, Copy, Clone)]
 pub enum FabricMsgType {
@@ -11,7 +12,8 @@ pub enum FabricMsgType {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum FabricMsgError {
+pub enum FabricError {
+    NoRoute,
     CookieNotFound,
     BadVNodeStatus,
     NotReady,
@@ -61,7 +63,7 @@ pub struct MsgRemoteGet {
 pub struct MsgRemoteGetAck {
     pub vnode: VNodeId,
     pub cookie: Cookie,
-    pub result: Result<DottedCausalContainer<Bytes>, FabricMsgError>,
+    pub result: Result<Cube, FabricError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -69,31 +71,16 @@ pub struct MsgRemoteSet {
     pub vnode: VNodeId,
     pub cookie: Cookie,
     pub key: Bytes,
-    pub container: DottedCausalContainer<Bytes>,
+    pub value: Cube,
     pub reply: bool,
+    pub reply_result: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgRemoteSetAck {
     pub vnode: VNodeId,
     pub cookie: Cookie,
-    pub result: Result<(), FabricMsgError>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MsgSet {
-    pub vnode: VNodeId,
-    pub cookie: Cookie,
-    pub key: Bytes,
-    pub value: Option<Bytes>,
-    pub version_vector: VersionVector,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MsgSetAck {
-    pub vnode: VNodeId,
-    pub cookie: Cookie,
-    pub result: Result<(), FabricMsgError>,
+    pub result: Result<Option<Cube>, FabricError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -108,7 +95,7 @@ pub struct MsgSyncStart {
 pub struct MsgSyncFin {
     pub vnode: VNodeId,
     pub cookie: Cookie,
-    pub result: Result<BitmappedVersionVector, FabricMsgError>,
+    pub result: Result<BitmappedVersionVector, FabricError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -117,7 +104,7 @@ pub struct MsgSyncSend {
     pub cookie: Cookie,
     pub seq: u64,
     pub key: Bytes,
-    pub container: DottedCausalContainer<Bytes>,
+    pub value: Cube,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

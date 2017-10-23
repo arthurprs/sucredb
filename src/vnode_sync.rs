@@ -3,6 +3,7 @@ use std::collections::{hash_set, HashSet};
 use vnode::VNodeState;
 use fabric::*;
 use version_vector::*;
+use cubes::Cube;
 use database::*;
 use inflightmap::InFlightMap;
 use bincode;
@@ -47,16 +48,11 @@ pub enum SyncDirection {
 
 type IteratorFn = Box<
     FnMut(&VNodeState)
-        -> Result<(Bytes, DottedCausalContainer<Bytes>), Result<(), ()>>
+        -> Result<(Bytes, Cube), Result<(), ()>>
         + Send,
 >;
 
-type InFlightSyncMsgMap = InFlightMap<
-    u64,
-    (Bytes, DottedCausalContainer<Bytes>),
-    Instant,
-    IdHasherBuilder,
->;
+type InFlightSyncMsgMap = InFlightMap<u64, (Bytes, Cube), Instant, IdHasherBuilder>;
 
 struct SyncKeysIterator {
     dots_delta: BitmappedVersionVectorDelta,
@@ -179,10 +175,7 @@ impl Synchronization {
             storage_iterator
                 .iter()
                 .map(|(k, v)| {
-                    (
-                        k.into(),
-                        bincode::deserialize::<DottedCausalContainer<_>>(v).unwrap(),
-                    )
+                    (k.into(), bincode::deserialize::<Cube>(v).unwrap())
                 })
                 .next()
                 .ok_or(Ok(()))
@@ -237,34 +230,23 @@ impl Synchronization {
             clocks_in_peer
         );
 
-        let clocks_snapshot = state.clocks.clone();
-        let clocks_snapshot2 = state.clocks.clone();
-        let clocks_in_peer2 = clocks_in_peer.clone();
-
         let dots_delta = state.clocks.delta(&clocks_in_peer);
         debug!("Delta from {:?} to {:?}", state.clocks, clocks_in_peer);
 
         let mut sync_keys = SyncKeysIterator::new(dots_delta);
-        let iterator_fn: IteratorFn = Box::new(move |state| {
-            loop {
-                match sync_keys.next(state) {
-                    Ok(k) => {
-                        if let Some(v) = state.storage.get(&k, |v| Bytes::from(v)) {
-                            let mut dcc: DottedCausalContainer<_> =
-                                bincode::deserialize(&v).unwrap();
-                            // TODO: fill should be done in the remote?
-                            dcc.fill(&clocks_snapshot);
-                            return Ok((k, dcc));
-                        }
-                    }
-                    Err(e) => return Err(e),
-                }
+        let iterator_fn: IteratorFn = Box::new(move |state| loop {
+            match sync_keys.next(state) {
+                Ok(k) => if let Some(v) = state.storage.get(&k, |v| Bytes::from(v)) {
+                    let cube: Cube = bincode::deserialize(&v).unwrap();
+                    return Ok((k, cube));
+                },
+                Err(e) => return Err(e),
             }
         });
 
         SyncSender {
-            clocks_in_peer: clocks_in_peer2,
-            clocks_snapshot: clocks_snapshot2,
+            clocks_in_peer: clocks_in_peer,
+            clocks_snapshot: state.clocks.clone(),
             iterator: iterator_fn,
             inflight: InFlightMap::new(),
             cookie: cookie,
@@ -319,7 +301,7 @@ impl Synchronization {
         &mut self,
         db: &Database,
         state: &mut VNodeState,
-        e: FabricMsgError,
+        error: FabricError,
     ) -> SyncResult {
         match *self {
             SyncReceiver {
@@ -352,7 +334,7 @@ impl Synchronization {
                     MsgSyncFin {
                         cookie: cookie,
                         vnode: state.num(),
-                        result: Err(e),
+                        result: Err(error),
                     },
                 );
                 SyncResult::Error
@@ -427,7 +409,7 @@ impl Synchronization {
                             vnode: state.num(),
                             seq: seq,
                             key: k.clone(),
-                            container: dcc.clone(),
+                            value: dcc.clone(),
                         },
                     ));
                     metrics::SYNC_RESEND.mark(1);
@@ -443,7 +425,7 @@ impl Synchronization {
                                     vnode: state.num(),
                                     seq: *count,
                                     key: k.clone(),
-                                    container: dcc.clone(),
+                                    value: dcc.clone(),
                                 },
                             ));
                             inflight.insert(*count, (k, dcc), timeout);
@@ -464,7 +446,7 @@ impl Synchronization {
         };
 
         if error {
-            self.send_error_fin(db, state, FabricMsgError::SyncInterrupted)
+            self.send_error_fin(db, state, FabricError::SyncInterrupted)
         } else if inflight_empty {
             // do not trottle success fin as we don't know if last_send
             // was set by MsgSend or MsgFin
@@ -479,7 +461,7 @@ impl Synchronization {
     pub fn on_cancel(&mut self, db: &Database, state: &mut VNodeState) {
         match *self {
             BootstrapReceiver { .. } | SyncReceiver { .. } => {
-                let _ = self.send_error_fin(db, state, FabricMsgError::BadVNodeStatus);
+                let _ = self.send_error_fin(db, state, FabricError::BadVNodeStatus);
             }
             _ => unreachable!(),
         }
@@ -558,7 +540,7 @@ impl Synchronization {
                     // send it back as a form of ack-ack
                     let _ = db.fabric.send_msg(peer, msg);
                     SyncResult::Done
-                } else if msg.result.err() == Some(FabricMsgError::NotReady) {
+                } else if msg.result.err() == Some(FabricError::NotReady) {
                     SyncResult::Continue
                 } else {
                     SyncResult::Error
@@ -571,7 +553,7 @@ impl Synchronization {
                     // send it back as a form of ack-ack
                     let _ = db.fabric.send_msg(peer, msg);
                     SyncResult::Done
-                } else if msg.result.err() == Some(FabricMsgError::NotReady) {
+                } else if msg.result.err() == Some(FabricError::NotReady) {
                     SyncResult::Continue
                 } else {
                     SyncResult::Error
@@ -612,9 +594,10 @@ impl Synchronization {
                 ref mut last_send,
                 ..
             } => {
-                // FIXME: these can create a big region of 0s in the start of bitmap
-                //        until the bvv join on Fin
-                state.storage_set_remote(db, &msg.key, msg.container);
+                // TODO: what to do with errors here?
+                state
+                    .storage_set_remote(db, &msg.key, msg.value, false)
+                    .unwrap();
 
                 let _ = db.fabric.send_msg(
                     peer,
