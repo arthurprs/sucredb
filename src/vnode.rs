@@ -106,7 +106,7 @@ impl VNodeLogs {
         // self.gc();
     }
 
-    pub fn iter_log<F: FnMut(Version, &[u8])>(&mut self, node: NodeId, version: Version, mut f: F) {
+    pub fn iter_log<F: FnMut(Version, &[u8])>(&self, node: NodeId, version: Version, mut f: F) {
         let mut iterator = self.storage.log_iterator(node, version);
         for ((_, dot), dot_key) in iterator.iter() {
             f(dot, dot_key);
@@ -244,7 +244,9 @@ impl VNode {
 
     #[cfg(test)]
     pub fn _log_len(&self, node: NodeId) -> usize {
-        self.state.logs.storage.iterator().iter().count()
+        let mut count = 0;
+        self.state.logs.iter_log(node, 0, |_, _| {count += 1; });
+        count
     }
 
     pub fn syncs_inflight(&self) -> (usize, usize) {
@@ -396,6 +398,13 @@ impl VNode {
         let req = ReqState::new(token, nodes.len(), consistency, response_fn);
         assert!(self.requests.insert(cookie, req, expire).is_none());
 
+        // fast path for cl One and this node owns data
+        if consistency == ConsistencyLevel::One && nodes.contains(&db.dht.node()) {
+            let container = self.state.storage_get(key);
+            self.process_get(db, cookie, Some(container));
+            return;
+        }
+
         for node in nodes {
             if node == db.dht.node() {
                 let container = self.state.storage_get(key);
@@ -492,7 +501,7 @@ impl VNode {
                             key: key.into(),
                             value: cube.clone(),
                             reply: reply,
-                            reply_result,
+                            reply_result: reply && reply_result,
                         },
                     )
                     .is_ok();
@@ -542,7 +551,12 @@ impl VNode {
         }
     }
 
-    fn process_set(&mut self, db: &Database, cookie: Cookie, response: Result<Option<Cube>, FabricError>) {
+    fn process_set(
+        &mut self,
+        db: &Database,
+        cookie: Cookie,
+        response: Result<Option<Cube>, FabricError>,
+    ) {
         if let HMEntry::Occupied(mut o) = self.requests.entry(cookie) {
             let done = {
                 let state = o.get_mut();
@@ -628,14 +642,27 @@ impl VNode {
             reply,
             reply_result,
         } = msg;
-        let result = self.state.storage_set_remote(db, &key, value, reply_result);
-        if reply {
+        // Is this really ok?
+        // This optimization prevents a class of errors (storage errrors..)
+        // from propagating to the coordinator
+        if reply && !reply_result {
             let _ = db.fabric.send_msg(
                 from,
                 MsgRemoteSetAck {
                     vnode: vnode,
                     cookie: cookie,
-                    result: result.map_err(|_e| /* TODO */ unreachable!()),
+                    result: Ok(None),
+                },
+            );
+        }
+        let result = self.state.storage_set_remote(db, &key, value, reply_result);
+        if reply_result {
+            let _ = db.fabric.send_msg(
+                from,
+                MsgRemoteSetAck {
+                    vnode: vnode,
+                    cookie: cookie,
+                    result: result.map_err(|_e| /* TODO */ unimplemented!()),
                 },
             );
         }
@@ -735,8 +762,7 @@ impl VNode {
             trace!("Can't find cookie {:?} for msg sync fin", cookie);
             // only send error if Ok, otherwise the message will be sent back and forth forever
             if msg.result.is_ok() {
-                let _ =
-                    fabric_send_error!(db, from, msg, MsgSyncFin, FabricError::CookieNotFound);
+                let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricError::CookieNotFound);
             }
             return;
         };
@@ -986,7 +1012,7 @@ impl VNodeState {
 
         let storage = db.storage_manager.open(num).unwrap();
         let log_storage = db.storage_manager.open(num).unwrap();
-        let mut logs = VNodeLogs::new(log_storage);
+        let logs = VNodeLogs::new(log_storage);
 
         if !clean_shutdown {
             info!("Unclean shutdown, recovering from the storage");
@@ -1061,6 +1087,10 @@ impl VNodeState {
         proposed: Cube,
         reply_result: bool,
     ) -> Result<Option<Cube>, ()> {
+        // need to fetch old before adding any dot
+        // otherwise the dots might be added to Void cubes
+        let old = self.storage_get(key);
+
         let mut batch = self.storage.batch_new(0);
         {
             let clocks = &mut self.clocks;
@@ -1073,7 +1103,7 @@ impl VNodeState {
             return Ok(None);
         }
 
-        let new = self.storage_get(key).merge(proposed);
+        let new = old.merge(proposed);
 
         if !batch.is_empty() {
             if new.is_subsumed(&self.clocks) {
