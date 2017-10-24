@@ -22,7 +22,7 @@ Results are returned as an array containing the values (zero, one or more if the
 
 \> `get/hget/mget key {consistency}`
 
-< `[{value1}, {value2}, .., causal_context]`
+< `[{value1}, {value2}, .., context]`
 
 #### SET
 
@@ -38,7 +38,7 @@ Results are returned as an array containing the values (zero, one or more if the
 
 \> `getset key value context {consistency}`
 
-< `[{value1}, {value2}, .., causal_context]`
+< `[{value1}, {value2}, .., context]`
 
 #### DEL
 
@@ -53,6 +53,16 @@ Results are returned as an array containing the values (zero, one or more if the
 #### HGET
 
 #### HSET
+
+#### HDEL
+
+#### SMEMBERS
+
+#### SADD
+
+#### SREM
+
+#### `context` parameter
 
 #### `consistency` parameter
 

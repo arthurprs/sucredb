@@ -28,8 +28,8 @@ struct Stats {
 // track deleted keys pending physical deletion (is this a good idea? maybe a compaction filter?)
 // pruning old nodes from node clocks (is it possible?)
 // inner vnode parallelism
+// zombie vnodes need to eagerly sync with other nodes
 // track dead peers with the fabric or gossip and use that info
-// avoid strip altogether, it saves just a bit of storage but not much
 
 pub struct Database {
     pub dht: DHT<net::SocketAddr>,

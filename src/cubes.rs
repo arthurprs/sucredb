@@ -75,8 +75,8 @@ impl Cube {
         match *self {
             Counter(_) => unimplemented!(),
             Value(ref mut a) => a.set(id, version, None, vv),
-            Map(_) => unimplemented!(),
-            Set(_) => unimplemented!(),
+            Map(ref mut a) => a.clear(id, version),
+            Set(ref mut a) => a.clear(id, version),
             Void(_) => return false,
         }
         true
@@ -199,7 +199,7 @@ impl Set {
         }
     }
 
-    pub fn add(&mut self, node: Id, version: Version, item: Bytes) -> bool {
+    pub fn insert(&mut self, node: Id, version: Version, item: Bytes) -> bool {
         self.vv.add(node, version);
         self.values
             .insert(item, DotSet::from_dot((node, version)))
@@ -251,14 +251,14 @@ impl Map {
         }
     }
 
-    pub fn insert(&mut self, node: Id, version: Version, key: Bytes, value: Bytes) {
+    pub fn insert(&mut self, node: Id, version: Version, key: Bytes, value: Bytes) -> bool {
         self.vv.add(node, version);
-        self.map.insert(key, MapValue::new((node, version), value));
+        self.map.insert(key, MapValue::new((node, version), value)).is_none()
     }
 
-    pub fn remove(&mut self, node: Id, version: Version, key: &[u8]) {
+    pub fn remove(&mut self, node: Id, version: Version, key: &[u8]) -> bool {
         self.vv.add(node, version);
-        self.map.remove(key);
+        self.map.remove(key).is_some()
     }
 
     pub fn clear(&mut self, node: Id, version: Version) {
@@ -352,6 +352,21 @@ pub fn render_map(cube: Cube) -> RespValue {
             for (k, v) in m.map.into_iter() {
                 array.push(RespValue::Data(k));
                 array.push(RespValue::Data(v.value));
+            }
+            RespValue::Array(array)
+        }
+        Cube::Void(_) => RespValue::Array(vec![]),
+        _ => CommandError::TypeError.into(),
+    }
+}
+
+
+pub fn render_set(cube: Cube) -> RespValue {
+    match cube {
+        Cube::Set(s) => {
+            let mut array = Vec::with_capacity(s.values.len());
+            for (k, _) in s.values.into_iter() {
+                array.push(RespValue::Data(k));
             }
             RespValue::Array(array)
         }
