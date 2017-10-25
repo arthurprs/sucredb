@@ -359,7 +359,8 @@ mod tests {
     #[test]
     fn message_response() {
         let mut parser = Parser::new(
-            b"*2\r\n*2\r\n:7270781675605147315\r\n$25\r\nmessage 1 from producer 0\r\n*2\r\n:4590316895040267280\r\n$25\r\nmessage 2 from producer 0\r\n".as_ref(),
+            b"*2\r\n*2\r\n:7270781675605147315\r\n$25\r\nmessage 1 from producer 0\r\n*2\r\n:4590316895040267280\r\n$25\r\nmessage 2 from producer 0\r\n"
+                .as_ref(),
         ).unwrap();
         let r = parser.parse();
         assert!(r.is_ok(), "{:?} not ok", r.unwrap_err());

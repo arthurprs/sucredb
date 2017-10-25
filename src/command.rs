@@ -284,7 +284,9 @@ impl Database {
             &mut |i, v, c, _vv| {
                 let mut set = c.into_set().ok_or(CommandError::TypeError)?;
                 let result = set.pop(i, v);
-                let resp = result.map(|x| RespValue::Data(x)).unwrap_or_else(|| RespValue::Nil);
+                let resp = result
+                    .map(|x| RespValue::Data(x))
+                    .unwrap_or_else(|| RespValue::Nil);
                 Ok((Cube::Set(set), Some(resp)))
             },
             Default::default(),

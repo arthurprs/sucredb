@@ -128,7 +128,7 @@ impl SyncKeysIterator {
             // consider up to 90% of the actual capacity as an alternative limit
             let limit = (keys.capacity() * 9 / 10).max(1_000);
             for (n, v) in self.dots_delta.by_ref() {
-                if let Some(key) = state.logs.get(n, v) {
+                if let Some(key) = state.log_get(n, v) {
                     keys.insert(key);
                     if keys.len() >= limit {
                         break;
@@ -559,19 +559,7 @@ impl Synchronization {
                     SyncResult::Error
                 }
             }
-            SyncSender {
-                peer,
-                ref clocks_snapshot,
-                ..
-            } |
-            BootstrapSender {
-                peer,
-                ref clocks_snapshot,
-                ..
-            } => {
-                if msg.result.is_ok() {
-                    state.update_peer_knowledge(peer, clocks_snapshot);
-                }
+            SyncSender { .. } | BootstrapSender { .. } => {
                 // Senders are always Done on SyncFin messages
                 SyncResult::Done
             }

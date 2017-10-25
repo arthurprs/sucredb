@@ -292,7 +292,8 @@ impl Fabric {
         socket: tokio::net::TcpStream,
         expected_node: Option<NodeId>,
         context: Arc<SharedContext>,
-    ) -> Box<Future<Item = (tokio::net::TcpStream, NodeId, Arc<SharedContext>), Error = io::Error>> {
+    ) -> Box<Future<Item = (tokio::net::TcpStream, NodeId, Arc<SharedContext>), Error = io::Error>>
+    {
         debug!(
             "Stablished connection with {:?}: {:?}",
             expected_node,

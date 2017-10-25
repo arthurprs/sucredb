@@ -43,7 +43,6 @@ pub struct VNodeState {
     status: VNodeStatus,
     last_status_change: Instant,
     pub clocks: BitmappedVersionVector,
-    pub logs: VNodeLogs,
     pub storage: Storage,
     // state for syncs
     pub pending_bootstrap: bool,
@@ -56,19 +55,6 @@ struct SavedVNodeState {
     clean_shutdown: bool,
 }
 
-// TODO: Needs Cleanup
-// TODO: VNodeLogs is all over the place after migration to the Storage
-// #[derive(Debug)]
-pub struct VNodeLogs {
-    // Track knowledge by physical node id instead of node id,
-    // this is what we actually want to track and it also greatly
-    // simplifies VNodeState::update_peers.
-    // Only track continuous dots (bv base) for simplicity.
-    // knowledge: IdHashMap<PhysicalNodeId, Version>,
-    tail: IdHashMap<NodeId, Version>,
-    storage: Storage,
-}
-
 struct ReqState {
     replies: u8,
     succesfull: u8,
@@ -78,64 +64,6 @@ struct ReqState {
     response: Option<RespValue>,
     response_fn: ResponseFn,
     token: Token,
-}
-
-impl VNodeLogs {
-    fn new(storage: Storage) -> VNodeLogs {
-        VNodeLogs {
-            // knowledge: Default::default(),
-            tail: Default::default(),
-            storage: storage,
-        }
-    }
-
-    #[allow(unused_variables)]
-    fn advance_knowledge(&mut self, node: NodeId, peer: NodeId, until: Version) {
-        // match self.knowledge.entry(split_u64(peer).0) {
-        //     HMEntry::Vacant(v) => {
-        //         v.insert(until);
-        //     }
-        //     HMEntry::Occupied(mut o) => {
-        //         if *o.get() < until {
-        //             *o.get_mut() = until;
-        //         } else {
-        //             return; // don't bother to gc
-        //         }
-        //     }
-        // }
-        // self.gc();
-    }
-
-    pub fn iter_log<F: FnMut(Version, &[u8])>(&self, node: NodeId, version: Version, mut f: F) {
-        let mut iterator = self.storage.log_iterator(node, version);
-        for ((_, dot), dot_key) in iterator.iter() {
-            f(dot, dot_key);
-        }
-    }
-
-    pub fn get(&self, node: NodeId, version: Version) -> Option<Bytes> {
-        self.storage.log_get((node, version), |x| Bytes::from(x))
-    }
-
-    pub fn clear(&mut self) {
-        self.storage.clear();
-        self.tail.clear();
-        // self.knowledge.clear();
-    }
-
-    pub fn gc(&mut self) {
-        // get the highest dot that is known by all peers
-        // then only keep [highest + 1..]
-        // let horizon = 1 + self.knowledge.values().cloned().min().unwrap_or(0);
-        // let new_log = self.log.split_off(&horizon);
-        // debug!(
-        //     "gc horizon {}, {} cleaned, {} left",
-        //     horizon,
-        //     self.log.len(),
-        //     new_log.len()
-        // );
-        // self.log = new_log;
-    }
 }
 
 #[cfg(test)]
@@ -218,9 +146,6 @@ impl VNode {
             requests: InFlightMap::new(),
             syncs: Default::default(),
         };
-        if vnode.status() != VNodeStatus::Absent {
-            vnode.state.update_peers(db);
-        }
 
         match vnode.status() {
             VNodeStatus::Ready | VNodeStatus::Absent => (),
@@ -244,9 +169,7 @@ impl VNode {
 
     #[cfg(test)]
     pub fn _log_len(&self, node: NodeId) -> usize {
-        let mut count = 0;
-        self.state.logs.iter_log(node, 0, |_, _| {count += 1; });
-        count
+        self.state.storage.log_iterator(node, 0).iter().count()
     }
 
     pub fn syncs_inflight(&self) -> (usize, usize) {
@@ -325,10 +248,6 @@ impl VNode {
             }
             (a, b) if a == b => (), // nothing to do
             (a, b) => panic!("Invalid status change from dht {:?} -> {:?}", a, b),
-        }
-
-        if self.status() != VNodeStatus::Absent {
-            self.state.update_peers(db);
         }
     }
 
@@ -696,7 +615,6 @@ impl VNode {
                 }
                 Some(target) => {
                     assert_eq!(target, db.dht.node());
-                    self.state.update_peer_knowledge(from, &msg.clocks_in_peer);
                     info!("starting sync sender {:?} peer:{}", cookie, from);
                     Synchronization::new_sync_sender(db, &mut self.state, from, msg)
                 }
@@ -903,47 +821,7 @@ impl VNodeState {
 
     pub fn clear(&mut self) {
         self.clocks.clear();
-        self.logs.clear();
         self.storage.clear();
-    }
-
-    /// Updates knowledge of a peer based on it's clocks vector
-    #[allow(unused_variables)]
-    pub fn update_peer_knowledge(&mut self, peer: NodeId, bvv: &BitmappedVersionVector) {
-        // debug!("update_peer_knowledge {} {:?}", peer, bvv);
-        // for (&node, bv) in bvv.iter() {
-        //     self.logs.advance_knowledge(node, peer, bv.base());
-        // }
-    }
-
-    #[allow(unused_variables)]
-    pub fn update_peers(&mut self, db: &Database) {
-        // let peers = db.dht.nodes_for_vnode(self.num, true, true);
-        // let physical_peers: LinearSet<_> = peers.iter().cloned().map(|n| split_u64(n).0).collect();
-        // let mut to_remove = Vec::new();
-        // for &peer in &peers {
-        //     if peer == db.dht.node() {
-        //         continue; // skip itself
-        //     }
-        //     let log = self.logs.entry(peer).or_insert_with(Default::default);
-        //     for &physical_peer in &physical_peers {
-        //         log.knowledge.entry(physical_peer).or_insert(0);
-        //     }
-        //     // we just added all known peers
-        //     // so we only need to remove if knowledge len is larger
-        //     if physical_peers.len() != log.knowledge.len() {
-        //         to_remove.extend(
-        //             log.knowledge
-        //                 .keys()
-        //                 .filter(|n| !physical_peers.contains(n))
-        //                 .cloned(),
-        //         );
-        //         for peer in to_remove.drain(..) {
-        //             log.knowledge.remove(&peer);
-        //         }
-        //         log.gc();
-        //     }
-        // }
     }
 
     pub fn set_status(&mut self, db: &Database, new: VNodeStatus) {
@@ -979,7 +857,6 @@ impl VNodeState {
     fn new_empty(num: u16, db: &Database, status: VNodeStatus) -> Self {
         db.meta_storage.del(num.to_string().as_bytes());
         let storage = db.storage_manager.open(num).unwrap();
-        let log_storage = db.storage_manager.open(num).unwrap();
         storage.clear();
 
         VNodeState {
@@ -987,7 +864,6 @@ impl VNodeState {
             status: status,
             last_status_change: Instant::now(),
             clocks: BitmappedVersionVector::new(),
-            logs: VNodeLogs::new(log_storage),
             storage: storage,
             pending_bootstrap: false,
             sync_nodes: Default::default(),
@@ -1006,32 +882,35 @@ impl VNodeState {
 
         assert_eq!(status, VNodeStatus::Ready);
         let SavedVNodeState {
-            mut clocks,
+            clocks,
             clean_shutdown,
         } = saved_state_opt.unwrap();
 
         let storage = db.storage_manager.open(num).unwrap();
-        let log_storage = db.storage_manager.open(num).unwrap();
-        let logs = VNodeLogs::new(log_storage);
 
-        if !clean_shutdown {
-            info!("Unclean shutdown, recovering from the storage");
-            for (&node, bv) in clocks.iter_mut() {
-                logs.iter_log(node, bv.base() + 1, |dot, _| {
-                    bv.add(dot);
-                });
-            }
-        }
-
-        VNodeState {
+        let mut state = VNodeState {
             num: num,
             status: status,
             last_status_change: Instant::now(),
             clocks: clocks,
             storage: storage,
-            logs: logs,
             sync_nodes: Default::default(),
             pending_bootstrap: false,
+        };
+
+        if !clean_shutdown {
+            info!("Unclean shutdown, recovering from the storage");
+            state.recover_dots();
+        }
+        state
+    }
+
+    fn recover_dots(&mut self) {
+        for (&node, bv) in self.clocks.iter_mut() {
+            let mut iterator = self.storage.log_iterator(node, bv.base() + 1);
+            for ((_, dot), _) in iterator.iter() {
+                bv.add(dot);
+            }
         }
     }
 
@@ -1051,6 +930,10 @@ impl VNodeState {
         self.storage
             .get(key, |bytes| bincode::deserialize(bytes).unwrap())
             .unwrap_or_else(|| Cube::new(&self.clocks))
+    }
+
+    pub fn log_get(&self, node: NodeId, version: Version) -> Option<Bytes> {
+        self.storage.log_get((node, version), |b| Bytes::from(b))
     }
 
     pub fn storage_set_local(

@@ -16,8 +16,7 @@ pub type Version = u64;
 pub struct BitmappedVersion {
     base: Version,
     #[serde(serialize_with = "serialize_bitmap", deserialize_with = "deserialize_bitmap")]
-    bitmap:
-        RoaringTreemap,
+    bitmap: RoaringTreemap,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

@@ -97,7 +97,7 @@ impl Cube {
                 Void(mut o_vv) => {
                     o_vv.merge(&vv);
                     Void(o_vv)
-                },
+                }
             },
             (a, b) => {
                 warn!("Merging Cubes with different types");
@@ -256,7 +256,9 @@ impl Map {
 
     pub fn insert(&mut self, node: Id, version: Version, key: Bytes, value: Bytes) -> bool {
         self.vv.add(node, version);
-        self.map.insert(key, MapValue::new((node, version), value)).is_none()
+        self.map
+            .insert(key, MapValue::new((node, version), value))
+            .is_none()
     }
 
     pub fn remove(&mut self, node: Id, version: Version, key: &[u8]) -> bool {
