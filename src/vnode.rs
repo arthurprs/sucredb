@@ -319,15 +319,15 @@ impl VNode {
 
         // fast path for cl One and this node owns data
         if consistency == ConsistencyLevel::One && nodes.contains(&db.dht.node()) {
-            let container = self.state.storage_get(key);
-            self.process_get(db, cookie, Some(container));
+            let cube = self.state.storage_get(key);
+            self.process_get(db, cookie, Some(cube));
             return;
         }
 
         for node in nodes {
             if node == db.dht.node() {
-                let container = self.state.storage_get(key);
-                self.process_get(db, cookie, Some(container));
+                let cube = self.state.storage_get(key);
+                self.process_get(db, cookie, Some(cube));
             } else {
                 let ok = db.fabric
                     .send_msg(

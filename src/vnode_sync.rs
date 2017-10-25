@@ -400,7 +400,7 @@ impl Synchronization {
                 ref mut last_send,
                 ..
             } => {
-                while let Some((seq, &(ref k, ref dcc))) = inflight.touch_expired(now, timeout) {
+                while let Some((seq, &(ref k, ref v))) = inflight.touch_expired(now, timeout) {
                     debug!("resending seq {} for sync/bootstrap {:?}", seq, cookie);
                     let _ = stry!(db.fabric.send_msg(
                         peer,
@@ -409,7 +409,7 @@ impl Synchronization {
                             vnode: state.num(),
                             seq: seq,
                             key: k.clone(),
-                            value: dcc.clone(),
+                            value: v.clone(),
                         },
                     ));
                     metrics::SYNC_RESEND.mark(1);
@@ -417,7 +417,7 @@ impl Synchronization {
                 let mut error = false;
                 while inflight.len() < db.config.sync_msg_inflight as usize {
                     match iterator(state) {
-                        Ok((k, dcc)) => {
+                        Ok((k, v)) => {
                             let _ = stry!(db.fabric.send_msg(
                                 peer,
                                 MsgSyncSend {
@@ -425,10 +425,10 @@ impl Synchronization {
                                     vnode: state.num(),
                                     seq: *count,
                                     key: k.clone(),
-                                    value: dcc.clone(),
+                                    value: v.clone(),
                                 },
                             ));
-                            inflight.insert(*count, (k, dcc), timeout);
+                            inflight.insert(*count, (k, v), timeout);
                             *count += 1;
                             *last_send = now;
                             metrics::SYNC_SEND.mark(1);
