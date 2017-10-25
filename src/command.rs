@@ -98,16 +98,17 @@ impl Database {
         let args = &args[1..argc];
 
         let ret = match arg0.as_ref() {
-            b"GET" | b"MGET" | b"get" | b"mget" => self.cmd_get(token, args),
-            b"SET" | b"MSET" | b"set" | b"mset" => self.cmd_set(token, args, false),
+            b"GET" | b"get" => self.cmd_get(token, args),
+            b"SET" | b"set" => self.cmd_set(token, args, false),
             b"HGETALL" | b"hgetall" => self.cmd_hgetall(token, args),
             b"HSET" | b"hset" => self.cmd_hset(token, args),
             b"HDEL" | b"hdel" => self.cmd_hdel(token, args),
             b"SMEMBERS" | b"smembers" => self.cmd_smembers(token, args),
             b"SADD" | b"sadd" => self.cmd_sadd(token, args),
             b"SREM" | b"srem" => self.cmd_srem(token, args),
+            b"SPOP" | b"spop" => self.cmd_spop(token, args),
             b"GETSET" | b"getset" => self.cmd_set(token, args, true),
-            b"DEL" | b"MDEL" | b"del" | b"mdel" => self.cmd_del(token, args),
+            b"DEL" | b"del" => self.cmd_del(token, args),
             b"CLUSTER" | b"cluster" => self.cmd_cluster(token, args),
             b"TYPE" | b"type" => self.cmd_type(token, args),
             b"ECHO" | b"echo" => {
@@ -264,6 +265,27 @@ impl Database {
                 let mut set = c.into_set().ok_or(CommandError::TypeError)?;
                 let result = set.remove(i, v, &args[1]) as i64;
                 Ok((Cube::Set(set), Some(RespValue::Int(result))))
+            },
+            Default::default(),
+            consistency,
+            false,
+            cubes::render_dummy,
+        ))
+    }
+
+    fn cmd_spop(&self, token: u64, args: &[&Bytes]) -> Result<(), CommandError> {
+        metrics::REQUEST_DEL.mark(1);
+        check_arg_count(args.len(), 1, 2)?;
+        check_key_len(args[0].len())?;
+        let consistency = self.parse_consistency(args.len() >= 2, args, 1)?;
+        Ok(self.set(
+            token,
+            args[0],
+            &mut |i, v, c, _vv| {
+                let mut set = c.into_set().ok_or(CommandError::TypeError)?;
+                let result = set.pop(i, v);
+                let resp = result.map(|x| RespValue::Data(x)).unwrap_or_else(|| RespValue::Nil);
+                Ok((Cube::Set(set), Some(resp)))
             },
             Default::default(),
             consistency,

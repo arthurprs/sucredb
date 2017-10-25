@@ -12,41 +12,41 @@ Status: Alpha quality with missing pieces.
 
 # API & Clients
 
-You can use Sucredb with any Redis Cluster client. The implemented commands are very limited though, only Key-Value CRUD operations are supported at this point.
+You can use Sucredb with any Redis Cluster client.
+
+It only implements a limited subset of the commands though. Only basic Key-Value/Sets/Hashes CRUD operations are supported at this point.
 
 #### GET
 
-*GET* like most commands bellow can be done with multiple redis commands, you can choose any that makes you client library happy. Consistency level is optional.
+*GET* result(s) is/are returned as an array containing the values (zero, one or more if there's conflicting versions) plus the causal context. The context is an binary string and is always returned as the last item of the array even if no values are present.
 
-Results are returned as an array containing the values (zero, one or more if there's conflicting versions), the last item of that array (always present) is a binary string representing the causal context.
+`> get key {consistency}`
 
-\> `get/hget/mget key {consistency}`
-
-< `[{value1}, {value2}, .., context]`
+`< [{value1}, {value2}, .., context]`
 
 #### SET
 
 *SET*, in addition to the key and value, also takes the causal context. If you're sure it don't exist you can actually omit the context, if you're wrong it'll create a conflicting version.
 
-\> `set/hset/mset key value {context} {consistency}`
+`> set key value {context} {consistency}`
 
-< `OK`
+`< OK`
 
 #### GETSET
 
 *GETSET* is similar to set, but returns the updated value(s) and a new context. Despite the name and the semantics in Redis, the get is always done *after* the set.
 
-\> `getset key value context {consistency}`
+`> getset key value context {consistency}`
 
-< `[{value1}, {value2}, .., context]`
+`< [{value1}, {value2}, .., context]`
 
 #### DEL
 
 *DEL* is like set and also requires a context. Note that the server always returns 1 regardless of the key situation.
 
-\> `del/hdel/mdel key context {consistency}`
+`> del key context {consistency}`
 
-< `1`
+`< 1`
 
 #### HGETALL
 
@@ -62,7 +62,11 @@ Results are returned as an array containing the values (zero, one or more if the
 
 #### SREM
 
+#### SPOP
+
 #### `context` parameter
+
+If you don't have a context (from a previous get or getset) you can send an empty string.
 
 #### `consistency` parameter
 
