@@ -94,7 +94,10 @@ impl Cube {
                 Value(a) => Value(a.merge(self::Value::with(vv))),
                 Map(a) => Map(a.merge(self::Map::with(vv))),
                 Set(a) => Set(a.merge(self::Set::with(vv))),
-                Void(a) => Void(a),
+                Void(mut o_vv) => {
+                    o_vv.merge(&vv);
+                    Void(o_vv)
+                },
             },
             (a, b) => {
                 warn!("Merging Cubes with different types");
