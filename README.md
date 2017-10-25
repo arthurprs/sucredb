@@ -6,21 +6,21 @@
 
 Sucredb is a multi-master key-value distributed database, it provides a dynamo style tunable consistent and causality tracking.
 
-Any node that owns a partition (replication factor) can serve both reads and writes. The database tracks causality using vector-clocks and will NOT drop any conflicting writes unlike LWW (last write wins) and other strategies. Conflicts can and do happen due to races between clients and network partitions.
+Any node that owns a partition (replicas) can serve both reads and writes. The database tracks causality using vector-clocks and will NOT drop any conflicting writes unlike LWW (last write wins) and other strategies. Conflicts can and do happen due to races between clients and network partitions.
 
 Status: Alpha quality with missing pieces.
 
 # API & Clients
 
-You can use Sucredb with any Redis Cluster client.
+Theoretically you can use Sucredb with any Redis Cluster clients.
 
-It only implements a limited subset of the commands though. Only basic Key-Value/Sets/Hashes CRUD operations are supported at this point.
+It implements a small subset of Redis commands. Only basic Key-Value/Sets/Hashes operations are supported at this point.
 
 #### GET
 
 *GET* result(s) is/are returned as an array containing the values (zero, one or more if there's conflicting versions) plus the causal context. The context is an binary string and is always returned as the last item of the array even if no values are present.
 
-`> get key {consistency}`
+`> GET key {consistency}`
 
 `< [{value1}, {value2}, .., context]`
 
@@ -28,7 +28,7 @@ It only implements a limited subset of the commands though. Only basic Key-Value
 
 *SET*, in addition to the key and value, also takes the causal context. If you're sure it don't exist you can actually omit the context, if you're wrong it'll create a conflicting version.
 
-`> set key value {context} {consistency}`
+`> SET key value {context} {consistency}`
 
 `< OK`
 
@@ -36,7 +36,7 @@ It only implements a limited subset of the commands though. Only basic Key-Value
 
 *GETSET* is similar to set, but returns the updated value(s) and a new context. Despite the name and the semantics in Redis, the get is always done *after* the set.
 
-`> getset key value context {consistency}`
+`> GETSET key value context {consistency}`
 
 `< [{value1}, {value2}, .., context]`
 
@@ -44,7 +44,7 @@ It only implements a limited subset of the commands though. Only basic Key-Value
 
 *DEL* is like set and also requires a context. Note that the server always returns 1 regardless of the key situation.
 
-`> del key context {consistency}`
+`> DEL key context {consistency}`
 
 `< 1`
 
@@ -76,6 +76,35 @@ If you don't have a context (from a previous get or getset) you can send an empt
 * `q`, `Q`: Quorum
 * `a`, `A`: All
 
+# Running
+
+**Requirements**
+
+* Needs a reasonably recent Rust (nightly[2])
+* C++ compiler (for Rocksdb).
+
+**Running**
+
+* The following setup will use the default settings.
+* Clone the repo and enter repository root
+* `cargo install .` [3]
+* `sucredb --help`
+
+Single/First instance
+
+`sucredb -d datadir1 -l 127.0.0.1:6379 -f 127.0.0.1:16379 init`
+
+The command above will initialize a new cluster containing this node. The cluster will have the default name, partition count and replication factor.
+
+Second instance
+
+`sucredb -d datadir2 -l 127.0.0.1:6378 -f 127.0.0.1:16378 -s 127.0.0.1:16379`
+
+The second instance joins the cluster using the first instance as a seed.
+
+Quick test
+
+`redis-cli CLUSTER SLOTS`
 
 #### Example
 
@@ -110,32 +139,6 @@ OK
 1) "\x01\x00\x00\x00\x00\x00\x00\x00P\xb0n\x83g\xef`\n\x05\x00\x00\x00\x00\x00\x00\x00
 ```
 
-# Running
-
-**Requirements**
-
-* Needs a reasonably recent Rust (nightly[1])
-* C++ compiler (for Rocksdb).
-
-**Running**
-
-* The following setup will use the default settings.
-* Clone the repo and enter repository root
-* `cargo install .` [2]
-* `sucredb --help`
-
-Single/First Node
-
-`sucredb -d datadir1 -l 127.0.0.1:6379 -f 127.0.0.1:16379 init`
-
-Second node
-
-`sucredb -d datadir2 -l 127.0.0.1:6378 -f 127.0.0.1:16378 -s 127.0.0.1:16379`
-
-[1] Mostly due to the try_from feature that should be stable soon.
-
-[2] Be patient as rocksdb takes a long time to compile.
-
 # Configuration
 
 See `sucredb.yaml`
@@ -152,11 +155,9 @@ Sucredb doesn't use sloppy quorum or hinted handoff so it can't serve requests t
 
 Almost every single new thing claims to be fast or blazing fast. Sucredb makes no claims at this point, but it's probably fast.
 
-There's some obvious things I didn't explore that could make it faster, notably using merge operator on the storage engine.
+The data structure operations move the entire collection around the cluster so it's *not* suitable for large values/collections.
 
 # Ideas worth exploring
-
-* Implement some of Redis data types that work reasonably as CRDTs, like sets and HyperLogLog.
 
 * Take advantage of UDFs (user defined functions) to prevent extra round-trips and conflicts.
 
@@ -168,4 +169,10 @@ Storage takes advantage of RocksDB.
 
 It uses a variant of version clocks to track causality. The actual algorithm is heavily inspired by [1].
 
+----
+
 [1] Gonçalves, Ricardo, et al. "Concise server-wide causality management for eventually consistent data stores."
+
+[2] Mostly due to the try_from and impl trait features that should be stable soon.
+
+[3] Be patient as rocksdb takes a long time to compile.

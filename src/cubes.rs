@@ -114,7 +114,7 @@ impl Cube {
     }
 }
 
-// PNCounter
+// LexCounter
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Counter {
     // I -> (V, C)
