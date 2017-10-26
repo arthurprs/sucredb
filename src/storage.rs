@@ -210,48 +210,56 @@ impl Storage {
         }
     }
 
-    pub fn get<R, F: FnOnce(&[u8]) -> R>(&self, key: &[u8], callback: F) -> Option<R> {
+    pub fn get<R, F: FnOnce(&[u8]) -> R>(
+        &self,
+        key: &[u8],
+        callback: F,
+    ) -> Result<Option<R>, GenericError> {
         let mut buffer = [0u8; 512];
         let buffer = build_key(&mut buffer, self.num, key);
-        let r = self.db.get_cf(self.cf, buffer).unwrap();
+        let r = self.db.get_cf(self.cf, buffer)?;
         trace!(
             "get {:?} ({:?} bytes)",
             str::from_utf8(key),
             r.as_ref().map(|x| x.len())
         );
-        r.map(|r| callback(&*r))
+        Ok(r.map(|r| callback(&*r)))
     }
 
-    pub fn log_get<R, F: FnOnce(&[u8]) -> R>(&self, log_key: (u64, u64), callback: F) -> Option<R> {
+    pub fn log_get<R, F: FnOnce(&[u8]) -> R>(
+        &self,
+        log_key: (u64, u64),
+        callback: F,
+    ) -> Result<Option<R>, GenericError> {
         let mut buffer = [0u8; 2 + 8 + 8];
         let buffer = build_log_key(&mut buffer, self.num, log_key);
-        let r = self.db.get_cf(self.log_cf, buffer).unwrap();
+        let r = self.db.get_cf(self.log_cf, buffer)?;
         trace!(
             "log_get {:?} ({:?} bytes)",
             log_key,
             r.as_ref().map(|x| x.len())
         );
-        r.map(|r| callback(&*r))
+        Ok(r.map(|r| callback(&*r)))
     }
 
-    pub fn get_vec(&self, key: &[u8]) -> Option<Vec<u8>> {
+    pub fn get_vec(&self, key: &[u8]) -> Result<Option<Vec<u8>>, GenericError> {
         self.get(key, |v| v.to_owned())
     }
 
-    pub fn log_get_vec(&self, log_key: (u64, u64)) -> Option<Vec<u8>> {
+    pub fn log_get_vec(&self, log_key: (u64, u64)) -> Result<Option<Vec<u8>>, GenericError> {
         self.log_get(log_key, |v| v.to_owned())
     }
 
-    pub fn set(&self, key: &[u8], value: &[u8]) {
+    pub fn set(&self, key: &[u8], value: &[u8]) -> Result<(), GenericError> {
         let mut b = self.batch_new(0);
         b.set(key, value);
-        self.batch_write(b);
+        self.batch_write(b)
     }
 
-    pub fn del(&self, key: &[u8]) {
+    pub fn del(&self, key: &[u8]) -> Result<(), GenericError> {
         let mut b = self.batch_new(0);
         b.del(key);
-        self.batch_write(b);
+        self.batch_write(b)
     }
 
     pub fn batch_new(&self, reserve: usize) -> StorageBatch {
@@ -261,8 +269,8 @@ impl Storage {
         }
     }
 
-    pub fn batch_write(&self, batch: StorageBatch) {
-        self.db.write(batch.wb).unwrap();
+    pub fn batch_write(&self, batch: StorageBatch) -> Result<(), GenericError> {
+        Ok(self.db.write(batch.wb)?)
     }
 
     pub fn clear(&self) {
@@ -290,9 +298,9 @@ impl Storage {
         }
     }
 
-    pub fn sync(&self) {
+    pub fn sync(&self) -> Result<(), GenericError> {
         debug!("sync");
-        self.db.sync_wal().unwrap();
+        Ok(self.db.sync_wal()?)
     }
 
     fn check_pending_iters(&self) {
@@ -416,11 +424,14 @@ mod tests {
         let _ = fs::remove_dir_all("t/test_simple");
         let sm = StorageManager::new("t/test_simple").unwrap();
         let storage = sm.open(1).unwrap();
-        assert_eq!(storage.get_vec(b"sample"), None);
-        storage.set(b"sample", b"sample_value");
-        assert_eq!(storage.get_vec(b"sample").unwrap(), b"sample_value");
-        storage.del(b"sample");
-        assert_eq!(storage.get_vec(b"sample"), None);
+        assert_eq!(storage.get_vec(b"sample").unwrap(), None);
+        storage.set(b"sample", b"sample_value").unwrap();
+        assert_eq!(
+            storage.get_vec(b"sample").unwrap().unwrap(),
+            b"sample_value"
+        );
+        storage.del(b"sample").unwrap();
+        assert_eq!(storage.get_vec(b"sample").unwrap(), None);
     }
 
     #[test]
@@ -428,13 +439,16 @@ mod tests {
         let _ = fs::remove_dir_all("t/test_simple_log");
         let sm = StorageManager::new("t/test_simple_log").unwrap();
         let storage = sm.open(1).unwrap();
-        assert_eq!(storage.get_vec(b"sample"), None);
+        assert_eq!(storage.get_vec(b"sample").unwrap(), None);
         let mut b = storage.batch_new(0);
         b.set(b"sample", b"sample_value");
         b.log_set((1, 1), b"sample");
-        storage.batch_write(b);
-        assert_eq!(storage.get_vec(b"sample").unwrap(), b"sample_value");
-        assert_eq!(storage.log_get_vec((1, 1)).unwrap(), b"sample");
+        storage.batch_write(b).unwrap();
+        assert_eq!(
+            storage.get_vec(b"sample").unwrap().unwrap(),
+            b"sample_value"
+        );
+        assert_eq!(storage.log_get_vec((1, 1)).unwrap().unwrap(), b"sample");
     }
 
     #[test]
@@ -443,9 +457,9 @@ mod tests {
         let sm = StorageManager::new("t/test_iter").unwrap();
         for &i in &[0, 1, 2] {
             let storage = sm.open(i).unwrap();
-            storage.set(b"1", i.to_string().as_bytes());
-            storage.set(b"2", i.to_string().as_bytes());
-            storage.set(b"3", i.to_string().as_bytes());
+            storage.set(b"1", i.to_string().as_bytes()).unwrap();
+            storage.set(b"2", i.to_string().as_bytes()).unwrap();
+            storage.set(b"3", i.to_string().as_bytes()).unwrap();
         }
         for &i in &[0, 1, 2] {
             let storage = sm.open(i).unwrap();
@@ -465,7 +479,7 @@ mod tests {
             b.log_set((i, i + 1), (i + 1).to_string().as_bytes());
             b.log_set((i, i + 2), (i + 2).to_string().as_bytes());
             b.log_set((i + 1, i), b"");
-            storage.batch_write(b);
+            storage.batch_write(b).unwrap();
         }
         for &i in &[0u64, 1, 2] {
             let storage = sm.open(i as u16).unwrap();
@@ -494,7 +508,7 @@ mod tests {
             let mut b = storage.batch_new(0);
             b.set(i.to_string().as_bytes(), i.to_string().as_bytes());
             b.log_set((i, i), i.to_string().as_bytes());
-            storage.batch_write(b);
+            storage.batch_write(b).unwrap();
         }
         for &i in &[0u64, 1, 2] {
             let storage = sm.open(i as u16).unwrap();

@@ -90,3 +90,21 @@ macro_rules! assert_eq_repr {
         }
     })
 }
+
+pub trait LoggerExt {
+    fn log_error(&self, msg: &str);
+    fn log_warn(&self, msg: &str);
+}
+
+impl<T, U: ::std::fmt::Debug> LoggerExt for Result<T, U> {
+    fn log_error(&self, msg: &str) {
+        if let &Err(ref e) = self {
+            error!("{}: {:?}", msg, e);
+        }
+    }
+    fn log_warn(&self, msg: &str) {
+        if let &Err(ref e) = self {
+            warn!("{}: {:?}", msg, e);
+        }
+    }
+}

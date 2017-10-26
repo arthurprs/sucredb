@@ -18,6 +18,7 @@ pub enum FabricError {
     BadVNodeStatus,
     NotReady,
     SyncInterrupted,
+    StorageError,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

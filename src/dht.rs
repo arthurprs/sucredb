@@ -925,8 +925,8 @@ impl<T: Metadata> DHT<T> {
         result
     }
 
-    pub fn save_ring(&self) -> Result<Vec<u8>, GenericError> {
-        Ring::serialize(&self.inner.read().unwrap().ring)
+    pub fn save_ring(&self) -> Vec<u8> {
+        Ring::serialize(&self.inner.read().unwrap().ring).expect("Can't serialize ring")
     }
 
     pub fn members(&self) -> IdHashMap<NodeId, SocketAddr> {

@@ -12,7 +12,6 @@ use fabric::*;
 use vnode_sync::*;
 use hash::hash_slot;
 use rand::{thread_rng, Rng};
-use bytes::Bytes;
 use utils::{IdHashMap, IdHashSet, IdHasherBuilder};
 
 const ZOMBIE_TIMEOUT_MS: u64 = 60 * 1_000;
@@ -319,15 +318,15 @@ impl VNode {
 
         // fast path for cl One and this node owns data
         if consistency == ConsistencyLevel::One && nodes.contains(&db.dht.node()) {
-            let cube = self.state.storage_get(key);
-            self.process_get(db, cookie, Some(cube));
+            let opt_cube = self.state.storage_get(key).ok();
+            self.process_get(db, cookie, opt_cube);
             return;
         }
 
         for node in nodes {
             if node == db.dht.node() {
-                let cube = self.state.storage_get(key);
-                self.process_get(db, cookie, Some(cube));
+                let opt_cube = self.state.storage_get(key).ok();
+                self.process_get(db, cookie, opt_cube);
             } else {
                 let ok = db.fabric
                     .send_msg(
@@ -532,13 +531,15 @@ impl VNode {
             MsgRemoteGetAck,
             inflight_get
         );
-        let cube = self.state.storage_get(&msg.key);
+        let result = self.state
+            .storage_get(&msg.key)
+            .map_err(|_| FabricError::StorageError);
         let _ = db.fabric.send_msg(
             from,
             MsgRemoteGetAck {
                 cookie: msg.cookie,
                 vnode: msg.vnode,
-                result: Ok(cube),
+                result: result,
             },
         );
     }
@@ -574,14 +575,16 @@ impl VNode {
                 },
             );
         }
-        let result = self.state.storage_set_remote(db, &key, value, reply_result);
+        let result = self.state
+            .storage_set_remote(db, &key, value, reply_result)
+            .map_err(|_| FabricError::StorageError);
         if reply_result {
             let _ = db.fabric.send_msg(
                 from,
                 MsgRemoteSetAck {
                     vnode: vnode,
                     cookie: cookie,
-                    result: result.map_err(|_e| /* TODO */ unimplemented!()),
+                    result: result,
                 },
             );
         }
@@ -602,7 +605,7 @@ impl VNode {
             let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricError::BadVNodeStatus);
         } else if !self.syncs.contains_key(&msg.cookie) {
             if !db.signal_sync_start(SyncDirection::Outgoing) {
-                debug!("Aborting remote sync request, limit exceeded");
+                debug!("Refusing remote sync request, limit exceeded");
                 let _ = fabric_send_error!(db, from, msg, MsgSyncFin, FabricError::NotReady);
                 return;
             }
@@ -610,12 +613,12 @@ impl VNode {
             let cookie = msg.cookie;
             let sync = match msg.target {
                 None => {
-                    info!("starting bootstrap sender {:?} peer:{}", cookie, from);
+                    info!("Starting bootstrap sender {:?} peer:{}", cookie, from);
                     Synchronization::new_bootstrap_sender(db, &mut self.state, from, msg)
                 }
                 Some(target) => {
                     assert_eq!(target, db.dht.node());
-                    info!("starting sync sender {:?} peer:{}", cookie, from);
+                    info!("Starting sync sender {:?} peer:{}", cookie, from);
                     Synchronization::new_sync_sender(db, &mut self.state, from, msg)
                 }
             };
@@ -781,13 +784,13 @@ impl VNode {
                 continue;
             }
             if !db.signal_sync_start(SyncDirection::Incomming) {
-                debug!("Aborting start sync, limit exceeded");
+                debug!("Refusing start sync, limit exceeded");
                 continue;
             }
 
             let cookie = self.gen_cookie();
             self.state.sync_nodes.insert(node);
-            info!("starting sync receiver {:?} peer:{}", cookie, node);
+            info!("Starting sync receiver {:?} peer:{}", cookie, node);
             let sync = Synchronization::new_sync_receiver(db, &mut self.state, node, cookie);
             match self.syncs.entry(cookie) {
                 HMEntry::Vacant(v) => {
@@ -803,7 +806,7 @@ impl VNode {
 
 impl Drop for VNode {
     fn drop(&mut self) {
-        info!("droping vnode {:?}", self.state.num);
+        info!("Droping vnode {:?}", self.state.num);
         // clean up any references to the storage
         self.requests.clear();
         self.syncs.clear();
@@ -855,8 +858,10 @@ impl VNodeState {
     }
 
     fn new_empty(num: u16, db: &Database, status: VNodeStatus) -> Self {
-        db.meta_storage.del(num.to_string().as_bytes());
-        let storage = db.storage_manager.open(num).unwrap();
+        db.meta_storage
+            .del(num.to_string().as_bytes())
+            .expect("Can't del vnode state");
+        let storage = db.storage_manager.open(num).expect("Can't open storage");
         storage.clear();
 
         VNodeState {
@@ -872,9 +877,12 @@ impl VNodeState {
 
     fn load(num: u16, db: &Database, status: VNodeStatus) -> Self {
         info!("Loading vnode {} state", num);
-        let saved_state_opt = db.meta_storage.get(num.to_string().as_bytes(), |bytes| {
-            bincode::deserialize(bytes).unwrap()
-        });
+        let saved_state_opt = db.meta_storage
+            .get(num.to_string().as_bytes(), |bytes| {
+                bincode::deserialize(bytes).expect("Can't deserialize vnode state")
+            })
+            .expect("Can't read saved vnode state");
+
         if status == VNodeStatus::Absent || saved_state_opt.is_none() {
             info!("No saved state");
             return Self::new_empty(num, db, status);
@@ -886,7 +894,7 @@ impl VNodeState {
             clean_shutdown,
         } = saved_state_opt.unwrap();
 
-        let storage = db.storage_manager.open(num).unwrap();
+        let storage = db.storage_manager.open(num).expect("Can't open storage");
 
         let mut state = VNodeState {
             num: num,
@@ -920,20 +928,22 @@ impl VNodeState {
             clean_shutdown: shutdown,
         };
         debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
-        let serialized_saved_state = bincode::serialize(&saved_state, bincode::Infinite).unwrap();
+        let serialized_saved_state = bincode::serialize(&saved_state, bincode::Infinite)
+            .expect("Can't serialize vnode state");
         db.meta_storage
-            .set(self.num.to_string().as_bytes(), &serialized_saved_state);
+            .set(self.num.to_string().as_bytes(), &serialized_saved_state)
+            .expect("Can't save vnode state");
     }
 
     // STORAGE
-    pub fn storage_get(&self, key: &[u8]) -> Cube {
-        self.storage
-            .get(key, |bytes| bincode::deserialize(bytes).unwrap())
-            .unwrap_or_else(|| Cube::new(&self.clocks))
-    }
-
-    pub fn log_get(&self, node: NodeId, version: Version) -> Option<Bytes> {
-        self.storage.log_get((node, version), |b| Bytes::from(b))
+    pub fn storage_get(&self, key: &[u8]) -> Result<Cube, ()> {
+        let result = self.storage.get(key, |v| bincode::deserialize::<Cube>(v));
+        match result {
+            Ok(Some(Ok(cube))) => Ok(cube),
+            Ok(Some(Err(_de))) => Err(()),
+            Ok(None) => Ok(Cube::new(&self.clocks)),
+            Err(_se) => Err(()),
+        }
     }
 
     pub fn storage_set_local(
@@ -943,7 +953,8 @@ impl VNodeState {
         mutator: MutatorFn,
         vv: &VersionVector,
     ) -> Result<(Cube, Option<RespValue>), CommandError> {
-        let old_cube = self.storage_get(key);
+        let old_cube = self.storage_get(key)
+            .map_err(|_| CommandError::StorageError)?;
 
         let version = self.clocks.event(db.dht.node());
         let (cube, resp) = mutator(db.dht.node(), version, old_cube, vv)?;
@@ -953,12 +964,14 @@ impl VNodeState {
         if cube.is_subsumed(&self.clocks) {
             batch.del(key);
         } else {
-            let bytes = bincode::serialize(&cube, bincode::Infinite).unwrap();
+            let bytes = bincode::serialize(&cube, bincode::Infinite).expect("Can't serialize Cube");
             batch.set(key, &bytes);
         }
 
         batch.log_set((db.dht.node(), version), key);
-        self.storage.batch_write(batch);
+        self.storage
+            .batch_write(batch)
+            .map_err(|_| CommandError::StorageError)?;
 
         Ok((cube, resp))
     }
@@ -972,7 +985,7 @@ impl VNodeState {
     ) -> Result<Option<Cube>, ()> {
         // need to fetch old before adding any dot
         // otherwise the dots might be added to Void cubes
-        let old = self.storage_get(key);
+        let old = self.storage_get(key).map_err(|_| ())?;
 
         let mut batch = self.storage.batch_new(0);
         {
@@ -992,10 +1005,11 @@ impl VNodeState {
             if new.is_subsumed(&self.clocks) {
                 batch.del(key);
             } else {
-                let serialized = bincode::serialize(&new, bincode::Infinite).unwrap();
+                let serialized =
+                    bincode::serialize(&new, bincode::Infinite).expect("Can't serialize Cube");
                 batch.set(key, &serialized);
             }
-            self.storage.batch_write(batch);
+            self.storage.batch_write(batch).map_err(|_| ())?;
         }
 
         if reply_result {

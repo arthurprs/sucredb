@@ -11,6 +11,7 @@ use rand::{thread_rng, Rng};
 use utils::{assume_str, is_dir_empty_or_absent, IdHashMap, join_u64, split_u64};
 use cubes::*;
 pub use types::*;
+use utils::LoggerExt;
 use config::Config;
 use metrics::{self, Gauge};
 use vnode_sync::SyncDirection;
@@ -78,11 +79,25 @@ impl Database {
 
         let storage_manager =
             StorageManager::new(&config.data_dir).expect("Failed to create storage manager");
-        let meta_storage = storage_manager.open(u16::max_value()).unwrap();
+        let meta_storage = storage_manager
+            .open(u16::max_value())
+            .expect("Can't open storage");
+        let meta_node = meta_storage
+            .get_vec(b"node")
+            .expect("Can't read node id from storage");
+        let meta_cluster = meta_storage
+            .get_vec(b"cluster")
+            .expect("Can't read cluster name from storage");
+        let meta_clean_shutdown = meta_storage
+            .get_vec(b"clean_shutdown")
+            .expect("Can't read shutdown flag from storage");
+        let meta_ring = meta_storage
+            .get_vec(b"ring")
+            .expect("Can't read previous ring from storage");
 
-        let (old_node, node) = if let Some(s_node) = meta_storage.get_vec(b"node") {
+        let (old_node, node) = if let Some(s_node) = meta_node {
             let prev_node: NodeId = String::from_utf8(s_node).unwrap().parse().unwrap();
-            if meta_storage.get_vec(b"clean_shutdown").is_some() {
+            if meta_clean_shutdown.is_some() {
                 (None, prev_node)
             } else {
                 let node = join_u64(split_u64(prev_node).0, thread_rng().gen());
@@ -91,7 +106,7 @@ impl Database {
         } else {
             (None, thread_rng().gen::<i64>().abs() as NodeId)
         };
-        if let Some(cluster_in_storage) = meta_storage.get_vec(b"cluster") {
+        if let Some(cluster_in_storage) = meta_cluster {
             if cluster_in_storage != config.cluster_name.as_bytes() {
                 panic!(
                     "Cluster name differs! Expected `{}` got `{}`",
@@ -101,10 +116,16 @@ impl Database {
             };
         }
         // save init (1 of 2)
-        meta_storage.del(b"clean_shutdown");
-        meta_storage.set(b"cluster", config.cluster_name.as_bytes());
-        meta_storage.set(b"node", node.to_string().as_bytes());
-        meta_storage.sync();
+        meta_storage
+            .del(b"clean_shutdown")
+            .expect("Can't delete shutdown flag");
+        meta_storage
+            .set(b"cluster", config.cluster_name.as_bytes())
+            .expect("Can't save cluster name");
+        meta_storage
+            .set(b"node", node.to_string().as_bytes())
+            .expect("Can't save node id");
+        meta_storage.sync().expect("Can't sync storage");
 
         info!("Metadata loaded! node_id:{} previous:{:?}", node, old_node);
 
@@ -117,15 +138,15 @@ impl Database {
                 config.listen_addr,
                 RingDescription::new(init.replication_factor, init.partitions),
                 old_node,
-            ).expect("can't init cluster")
-        } else if let Some(saved_ring) = meta_storage.get_vec(b"ring") {
+            ).expect("Can't init cluster")
+        } else if let Some(saved_ring) = meta_ring {
             DHT::restore(
                 fabric.clone(),
                 config,
                 config.listen_addr,
                 &saved_ring,
                 old_node,
-            ).expect("can't restore cluster")
+            ).expect("Can't restore cluster")
         } else {
             DHT::join_cluster(
                 fabric.clone(),
@@ -133,12 +154,14 @@ impl Database {
                 config.listen_addr,
                 &config.seed_nodes,
                 old_node,
-            ).expect("can't join cluster")
+            ).expect("Can't join cluster")
         };
 
         // save init (2 of 2)
-        meta_storage.set(b"ring", &dht.save_ring().unwrap());
-        meta_storage.sync();
+        meta_storage
+            .set(b"ring", &dht.save_ring())
+            .expect("Can't save ring");
+        meta_storage.sync().expect("Can't sync storage");
 
         let workers = WorkerManager::new(
             node,
@@ -231,9 +254,11 @@ impl Database {
             vn.lock().unwrap().save(self, shutdown);
         }
         if shutdown {
-            self.meta_storage.set(b"clean_shutdown", b"");
+            self.meta_storage
+                .set(b"clean_shutdown", b"")
+                .expect("Can't save shutdown flag");
         }
-        self.meta_storage.sync();
+        self.meta_storage.sync().expect("Can't sync storage");
     }
 
     // Gets a Sender handle that allows sending work to the database worker pool
@@ -244,7 +269,8 @@ impl Database {
     fn handler_dht_change(&self) {
         // save dht
         self.meta_storage
-            .set(b"ring", &self.dht.save_ring().unwrap());
+            .set(b"ring", &self.dht.save_ring())
+            .log_error("Can't save ring");
 
         // register nodes
         self.fabric.set_nodes(self.dht.members().into_iter());

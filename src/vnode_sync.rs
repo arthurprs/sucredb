@@ -46,11 +46,7 @@ pub enum SyncDirection {
     Outgoing,
 }
 
-type IteratorFn = Box<
-    FnMut(&VNodeState)
-        -> Result<(Bytes, Cube), Result<(), ()>>
-        + Send,
->;
+type IteratorFn = Box<FnMut(&VNodeState) -> Result<Option<(Bytes, Cube)>, ()> + Send>;
 
 type InFlightSyncMsgMap = InFlightMap<u64, (Bytes, Cube), Instant, IdHasherBuilder>;
 
@@ -117,10 +113,10 @@ impl SyncKeysIterator {
         }
     }
 
-    fn next(&mut self, state: &VNodeState) -> Result<Bytes, Result<(), ()>> {
+    fn next(&mut self, state: &VNodeState) -> Result<Option<Bytes>, ()> {
         loop {
             if let Some(key) = self.keys.next() {
-                return Ok(key);
+                return Ok(Some(key));
             }
             // fetch log in batches of ~1_000 keys
             let hint_size = self.dots_delta.size_hint().0.min(1_000);
@@ -128,7 +124,11 @@ impl SyncKeysIterator {
             // consider up to 90% of the actual capacity as an alternative limit
             let limit = (keys.capacity() * 9 / 10).max(1_000);
             for (n, v) in self.dots_delta.by_ref() {
-                if let Some(key) = state.log_get(n, v) {
+                let key = state
+                    .storage
+                    .log_get((n, v), |x| Bytes::from(x))
+                    .map_err(|_| ())?;
+                if let Some(key) = key {
                     keys.insert(key);
                     if keys.len() >= limit {
                         break;
@@ -138,7 +138,7 @@ impl SyncKeysIterator {
                 }
             }
             if keys.is_empty() {
-                return Err(Ok(()));
+                return Ok(None);
             }
             debug!("Sync will send key batch with {:?} keys", keys.len());
             self.keys = keys.into_iter();
@@ -172,13 +172,19 @@ impl Synchronization {
     ) -> Self {
         let mut storage_iterator = state.storage.iterator();
         let iterator_fn: IteratorFn = Box::new(move |_| {
-            storage_iterator
+            let next = storage_iterator
                 .iter()
                 .map(|(k, v)| {
-                    (k.into(), bincode::deserialize::<Cube>(v).unwrap())
+                    let cube = bincode::deserialize::<Cube>(v).map_err(|_| ())?;
+                    Ok((Bytes::from(k), cube))
                 })
-                .next()
-                .ok_or(Ok(()))
+                .next();
+
+            match next {
+                Some(Ok(r)) => Ok(Some(r)),
+                None => Ok(None),
+                Some(Err(e)) => Err(e),
+            }
         });
 
         BootstrapSender {
@@ -234,14 +240,19 @@ impl Synchronization {
         debug!("Delta from {:?} to {:?}", state.clocks, clocks_in_peer);
 
         let mut sync_keys = SyncKeysIterator::new(dots_delta);
-        let iterator_fn: IteratorFn = Box::new(move |state| loop {
-            match sync_keys.next(state) {
-                Ok(k) => if let Some(v) = state.storage.get(&k, |v| Bytes::from(v)) {
-                    let cube: Cube = bincode::deserialize(&v).unwrap();
-                    return Ok((k, cube));
-                },
-                Err(e) => return Err(e),
+        let iterator_fn: IteratorFn = Box::new(move |state| {
+            while let Some(key) = sync_keys.next(state)? {
+                let d_cube = state
+                    .storage
+                    .get(&key, |v| bincode::deserialize::<Cube>(v))
+                    .map_err(|_| ())?;
+                match d_cube {
+                    Some(Ok(cube)) => return Ok(Some((key, cube))),
+                    Some(Err(_de)) => return Err(()),
+                    None => continue,
+                }
             }
+            Ok(None)
         });
 
         SyncSender {
@@ -417,7 +428,7 @@ impl Synchronization {
                 let mut error = false;
                 while inflight.len() < db.config.sync_msg_inflight as usize {
                     match iterator(state) {
-                        Ok((k, v)) => {
+                        Ok(Some((k, v))) => {
                             let _ = stry!(db.fabric.send_msg(
                                 peer,
                                 MsgSyncSend {
@@ -434,8 +445,11 @@ impl Synchronization {
                             metrics::SYNC_SEND.mark(1);
                             continue;
                         }
-                        Err(e) => {
-                            error = e.is_err();
+                        Ok(None) => {
+                            break;
+                        }
+                        Err(_) => {
+                            error = true;
                             break;
                         }
                     }

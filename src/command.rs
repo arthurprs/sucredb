@@ -15,6 +15,7 @@ use metrics::{self, Meter};
 pub enum CommandError {
     Timeout,
     ProtocolError,
+    StorageError,
     UnknownCommand,
     TooManyVersions,
     TypeError,
