@@ -9,6 +9,7 @@ use bincode;
 
 pub type MutatorFn<'a> = &'a mut FnMut(Id, Version, Cube, &VersionVector)
     -> Result<(Cube, Option<RespValue>), CommandError>;
+// TODO: this will eventually become a Box<Fn...>
 pub type ResponseFn = fn(Cube) -> RespValue;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -39,7 +40,7 @@ impl Cube {
         match *self {
             Counter(_) => false, // TODO
             Value(ref a) => a.values.is_empty() && a.vv.contained(bvv),
-            Map(ref a) => a.map.is_empty() && a.vv.contained(bvv),
+            Map(ref a) => a.values.is_empty() && a.vv.contained(bvv),
             Set(ref a) => a.values.is_empty() && a.vv.contained(bvv),
             Void(_) => unreachable!(),
         }
@@ -51,13 +52,14 @@ impl Cube {
     impl_into!(into_set, Set);
 
     // minimum set of dots required to assemble this cube
+    // see comment at the bottom
     pub fn for_each_dot<CB: FnMut(Id, Version)>(&self, mut cb: CB) {
         use self::Cube::*;
         match *self {
             Counter(ref a) => a.for_each_dot(&mut cb),
-            Value(ref a) => a.vv.iter().for_each(|(i, v)| cb(i, v)),
-            Map(ref a) => a.vv.iter().for_each(|(i, v)| cb(i, v)),
-            Set(ref a) => a.vv.iter().for_each(|(i, v)| cb(i, v)),
+            Value(ref a) => a.values.iter().for_each(|(&(i, v), _)| cb(i, v)),
+            Map(ref a) => a.dots.iter().for_each(|(i, v)| cb(i, v)),
+            Set(ref a) => a.dots.iter().for_each(|(i, v)| cb(i, v)),
             Void(_) => unreachable!(),
         }
     }
@@ -154,7 +156,7 @@ impl Counter {
 // MultiRegister
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Value {
-    values: DotMap<Bytes>,
+    values: DotMap<Option<Bytes>>,
     vv: VersionVector,
 }
 
@@ -172,9 +174,7 @@ impl Value {
 
     pub fn set(&mut self, node: Id, version: Version, value: Option<Bytes>, vv: &VersionVector) {
         self.values.discard(vv);
-        if let Some(value) = value {
-            self.values.insert(node, version, value);
-        }
+        self.values.insert(node, version, value);
         self.vv.add(node, version);
     }
 
@@ -191,6 +191,7 @@ impl Value {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Set {
     values: CausalMap<Bytes, DotSet>,
+    dots: VersionVector,
     vv: VersionVector,
 }
 
@@ -198,12 +199,14 @@ impl Set {
     fn with(vv: VersionVector) -> Self {
         Set {
             values: Default::default(),
+            dots: Default::default(),
             vv,
         }
     }
 
     pub fn insert(&mut self, node: Id, version: Version, item: Bytes) -> bool {
         self.vv.add(node, version);
+        self.dots.add(node, version);
         self.values
             .insert(item, DotSet::from_dot((node, version)))
             .is_none()
@@ -211,11 +214,13 @@ impl Set {
 
     pub fn remove(&mut self, node: Id, version: Version, item: &[u8]) -> bool {
         self.vv.add(node, version);
+        self.dots.add(node, version);
         self.values.remove(item).is_some()
     }
 
     pub fn pop(&mut self, node: Id, version: Version) -> Option<Bytes> {
         self.vv.add(node, version);
+        self.dots.add(node, version);
         if self.values.is_empty() {
             None
         } else {
@@ -228,12 +233,14 @@ impl Set {
 
     pub fn clear(&mut self, node: Id, version: Version) {
         self.vv.add(node, version);
+        self.dots.add(node, version);
         self.values.clear();
     }
 
     fn merge(mut self, mut other: Self) -> Self {
         self.values.merge(&mut other.values, &self.vv, &other.vv);
         self.vv.merge(&other.vv);
+        self.dots.merge(&other.dots);
         self
     }
 }
@@ -242,38 +249,44 @@ impl Set {
 // LWW on value conflict (max as tiebreaker)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Map {
-    map: CausalMap<Bytes, MapValue>,
+    values: CausalMap<Bytes, MapValue>,
+    dots: VersionVector,
     vv: VersionVector,
 }
 
 impl Map {
     fn with(vv: VersionVector) -> Self {
         Map {
-            map: Default::default(),
+            values: Default::default(),
+            dots: Default::default(),
             vv,
         }
     }
 
     pub fn insert(&mut self, node: Id, version: Version, key: Bytes, value: Bytes) -> bool {
         self.vv.add(node, version);
-        self.map
+        self.dots.add(node, version);
+        self.values
             .insert(key, MapValue::new((node, version), value))
             .is_none()
     }
 
     pub fn remove(&mut self, node: Id, version: Version, key: &[u8]) -> bool {
         self.vv.add(node, version);
-        self.map.remove(key).is_some()
+        self.dots.add(node, version);
+        self.values.remove(key).is_some()
     }
 
     pub fn clear(&mut self, node: Id, version: Version) {
         self.vv.add(node, version);
-        self.map.clear();
+        self.dots.add(node, version);
+        self.values.clear();
     }
 
     fn merge(mut self, mut other: Self) -> Self {
-        self.map.merge(&mut other.map, &self.vv, &other.vv);
+        self.values.merge(&mut other.values, &self.vv, &other.vv);
         self.vv.merge(&other.vv);
+        self.dots.merge(&other.dots);
         self
     }
 }
@@ -324,7 +337,7 @@ pub fn render_value_or_counter(cube: Cube) -> RespValue {
             let serialized_vv = bincode::serialize(&v.vv, bincode::Infinite).unwrap();
             let mut values: Vec<_> = v.values
                 .into_iter()
-                .map(|(_, v)| RespValue::Data(v))
+                .filter_map(|(_, ov)| ov.map(RespValue::Data))
                 .collect();
             values.push(RespValue::Data(serialized_vv.into()));
             RespValue::Array(values)
@@ -353,8 +366,8 @@ pub fn render_type(cube: Cube) -> RespValue {
 pub fn render_map(cube: Cube) -> RespValue {
     match cube {
         Cube::Map(m) => {
-            let mut array = Vec::with_capacity(m.map.len() * 2);
-            for (k, v) in m.map.into_iter() {
+            let mut array = Vec::with_capacity(m.values.len() * 2);
+            for (k, v) in m.values.into_iter() {
                 array.push(RespValue::Data(k));
                 array.push(RespValue::Data(v.value));
             }
@@ -369,13 +382,41 @@ pub fn render_map(cube: Cube) -> RespValue {
 pub fn render_set(cube: Cube) -> RespValue {
     match cube {
         Cube::Set(s) => {
-            let mut array = Vec::with_capacity(s.values.len());
-            for (k, _) in s.values.into_iter() {
-                array.push(RespValue::Data(k));
-            }
+            let array = s.values.into_iter()
+                .map(|(v, _)| RespValue::Data(v))
+                .collect();
             RespValue::Array(array)
         }
         Cube::Void(_) => RespValue::Array(vec![]),
         _ => CommandError::TypeError.into(),
     }
 }
+
+/*
+Using the vv from cubes as dots doesn't work, example bellow
+
+-> n3 is partitioned out
+-> n1 "SET a v" gets dot n1-1
+n1: a => [n1-1 v][n1 1] log: n1-1 => a
+n2: a => [n1-1 v][n1 1] log: n1-1 => a
+n3: --
+
+-> n2 "SET a z [n1 1]" dot n2-1
+n1: a => [n2-1 z][n1 1, n2 1] log: n1-1 => a, n2-1 => a
+n2: a => [n2-1 z][n1 1, n2 1] log: n1-1 => a, n2-1 => a
+n3: --
+
+-> n2 "SET b y" gets dot n2-2
+n1: b => [n2-2 y][n1 1, n2 2] a => [n2-1 z][n1 1, n2 1] log: n1-1 => a, n2-1 => a, n2-2 => b
+n2: b => [n2-2 y][n1 1, n2 2] a => [n2-1 z][n1 1, n2 1] log: n1-1 => a, n2-1 => a, n2-2 => b
+n3: --
+
+-> n3 can receive messages
+-> n2 "SET c y" gets dot n2-3 (merges with void cube w/ [n1 1, n2 2])
+n1: c => [n2-3 y][n1 1, n2 3] b => [n2-2 y][n1 1, n2 2] a => [n2-1 z][n1 1, n2 1] log: n1-1 => a, n2-1 => a, n2-2 => b, n2-3 => c
+n2: c => [n2-3 y][n1 1, n2 3] b => [n2-2 y][n1 1, n2 2] a => [n2-1 z][n1 1, n2 1] log: n1-1 => a, n2-1 => a, n2-2 => b, n2-3 => c
+n3: c => [n2-3 y][n1 1, n2 3] log: n2-3 => c, n1-1 => c
+
+n3 stores (n1-1 => c) in dot log but that's wrong
+
+*/
