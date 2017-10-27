@@ -241,18 +241,12 @@ impl Synchronization {
 
         let mut sync_keys = SyncKeysIterator::new(dots_delta);
         let iterator_fn: IteratorFn = Box::new(move |state| {
-            while let Some(key) = sync_keys.next(state)? {
-                let d_cube = state
-                    .storage
-                    .get(&key, |v| bincode::deserialize::<Cube>(v))
-                    .map_err(|_| ())?;
-                match d_cube {
-                    Some(Ok(cube)) => return Ok(Some((key, cube))),
-                    Some(Err(_de)) => return Err(()),
-                    None => continue,
-                }
+            if let Some(key) = sync_keys.next(state)? {
+                let cube = state.storage_get(&key)?;
+                Ok(Some((key, cube)))
+            } else {
+                Ok(None)
             }
-            Ok(None)
         });
 
         SyncSender {
