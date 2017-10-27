@@ -1,5 +1,5 @@
 use std::{cmp, str};
-use linear_map::{self, Entry, LinearMap};
+use linear_map::{self, Entry as LMEntry, LinearMap};
 use linear_map::set::LinearSet;
 use roaring::{RoaringBitmap, RoaringTreemap};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -32,7 +32,7 @@ pub struct DotMap<T>(LinearMap<(Id, Version), T>);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CausalMap<K: Eq + Hash, V: CausalValue>(LinearMap<K, V>);
 
-pub trait AbsVersionVector {
+pub trait AbsVersionVector: Default {
     fn contains(&self, id: Id, version: Version) -> bool;
 }
 
@@ -301,10 +301,10 @@ impl BitmappedVersionVector {
     pub fn merge(&mut self, other: &Self) {
         for (&id, other_bitmap_version) in &other.0 {
             match self.0.entry(id) {
-                Entry::Vacant(vac) => {
+                LMEntry::Vacant(vac) => {
                     vac.insert(other_bitmap_version.clone());
                 }
-                Entry::Occupied(mut ocu) => {
+                LMEntry::Occupied(mut ocu) => {
                     ocu.get_mut().join(other_bitmap_version);
                 }
             }
@@ -313,11 +313,11 @@ impl BitmappedVersionVector {
 
     pub fn event(&mut self, id: Id) -> Version {
         match self.0.entry(id) {
-            Entry::Vacant(vac) => {
+            LMEntry::Vacant(vac) => {
                 vac.insert(BitmappedVersion::new(1, 0));
                 1
             }
-            Entry::Occupied(mut ocu) => {
+            LMEntry::Occupied(mut ocu) => {
                 let bv = ocu.get_mut();
                 debug_assert_eq!(bv.bitmap.len(), 0);
                 bv.base += 1;
@@ -585,10 +585,10 @@ impl VersionVector {
 
     pub fn add(&mut self, id: Id, version: Version) {
         match self.0.entry(id) {
-            Entry::Vacant(vac) => {
+            LMEntry::Vacant(vac) => {
                 vac.insert(version);
             }
-            Entry::Occupied(mut ocu) => if *ocu.get() < version {
+            LMEntry::Occupied(mut ocu) => if *ocu.get() < version {
                 ocu.insert(version);
             },
         }
@@ -596,10 +596,10 @@ impl VersionVector {
 
     pub fn event(&mut self, id: Id) {
         match self.0.entry(id) {
-            Entry::Vacant(vac) => {
+            LMEntry::Vacant(vac) => {
                 vac.insert(1);
             }
-            Entry::Occupied(mut ocu) => {
+            LMEntry::Occupied(mut ocu) => {
                 *ocu.get_mut() += 1;
             }
         }
@@ -704,6 +704,7 @@ impl<T> CausalValue for DotMap<T> {
     }
 }
 
+// WARN: the implementation assumes full-state crdts
 impl<K: Eq + Hash, V: CausalValue> CausalMap<K, V> {
     pub fn new() -> Self {
         CausalMap(Default::default())

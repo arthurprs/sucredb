@@ -763,23 +763,32 @@ mod tests {
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         for i in 0..TEST_JOIN_SIZE {
-            db1.do_cmd(
-                i,
-                &[b"GETSET", i.to_string().as_bytes(), b"", b"", One],
-            );
+            db1.do_cmd(i, &[b"GETSET", i.to_string().as_bytes(), b"", b"", One]);
             let (_, vv) = db1.response_values(i);
 
             // rewrite key
             db1.do_cmd(
                 i,
-                &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), &encode_vv(&vv), One],
+                &[
+                    b"GETSET",
+                    i.to_string().as_bytes(),
+                    i.to_string().as_bytes(),
+                    &encode_vv(&vv),
+                    One,
+                ],
             );
             db1.response_values(i);
 
             // add sibling
             db1.do_cmd(
                 i,
-                &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), &encode_vv(&vv), One],
+                &[
+                    b"GETSET",
+                    i.to_string().as_bytes(),
+                    i.to_string().as_bytes(),
+                    &encode_vv(&vv),
+                    One,
+                ],
             );
             db1.response_values(i);
         }
@@ -793,7 +802,10 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
-                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes(), i.to_string().as_bytes()]);
+                assert_eq!(
+                    db.response_values(i).0,
+                    [i.to_string().as_bytes(), i.to_string().as_bytes()]
+                );
             }
         }
 
@@ -809,7 +821,10 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db2, &db3] {
                 db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
-                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes(), i.to_string().as_bytes()]);
+                assert_eq!(
+                    db.response_values(i).0,
+                    [i.to_string().as_bytes(), i.to_string().as_bytes()]
+                );
             }
         }
     }
@@ -830,23 +845,32 @@ mod tests {
         drop(db2);
 
         for i in 0..TEST_JOIN_SIZE {
-            db1.do_cmd(
-                i,
-                &[b"GETSET", i.to_string().as_bytes(), b"", b"", One],
-            );
+            db1.do_cmd(i, &[b"GETSET", i.to_string().as_bytes(), b"", b"", One]);
             let (_, vv) = db1.response_values(i);
 
             // rewrite key
             db1.do_cmd(
                 i,
-                &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), &encode_vv(&vv), One],
+                &[
+                    b"GETSET",
+                    i.to_string().as_bytes(),
+                    i.to_string().as_bytes(),
+                    &encode_vv(&vv),
+                    One,
+                ],
             );
             db1.response_values(i);
 
             // add sibling
             db1.do_cmd(
                 i,
-                &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), &encode_vv(&vv), One],
+                &[
+                    b"GETSET",
+                    i.to_string().as_bytes(),
+                    i.to_string().as_bytes(),
+                    &encode_vv(&vv),
+                    One,
+                ],
             );
             db1.response_values(i);
         }
@@ -860,7 +884,10 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), Quorum]);
-                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes(), i.to_string().as_bytes()]);
+                assert_eq!(
+                    db.response_values(i).0,
+                    [i.to_string().as_bytes(), i.to_string().as_bytes()]
+                );
             }
         }
 
@@ -873,7 +900,10 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db2] {
                 db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
-                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes(), i.to_string().as_bytes()]);
+                assert_eq!(
+                    db.response_values(i).0,
+                    [i.to_string().as_bytes(), i.to_string().as_bytes()]
+                );
             }
         }
     }

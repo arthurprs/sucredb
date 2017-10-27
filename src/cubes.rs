@@ -56,7 +56,7 @@ impl Cube {
     pub fn for_each_dot<CB: FnMut(Id, Version)>(&self, mut cb: CB) {
         use self::Cube::*;
         match *self {
-            Counter(ref a) => a.for_each_dot(&mut cb),
+            Counter(ref a) => a.values.iter().for_each(|(&i, &(v, _))| cb(i, v)),
             Value(ref a) => a.values.iter().for_each(|(&(i, v), _)| cb(i, v)),
             Map(ref a) => a.dots.iter().for_each(|(i, v)| cb(i, v)),
             Set(ref a) => a.dots.iter().for_each(|(i, v)| cb(i, v)),
@@ -116,31 +116,27 @@ impl Cube {
     }
 }
 
-// LexCounter
+// Causal LexCounter
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Counter {
     // I -> (V, C)
-    pn: LinearMap<Id, (Version, i64)>,
+    values: LinearMap<Id, (Version, i64)>,
 }
 
 impl Counter {
     fn with(_vv: VersionVector) -> Self {
         Counter {
-            pn: Default::default(),
+            values: Default::default(),
         }
     }
 
     fn get(&self) -> i64 {
-        self.pn.values().map(|&(_, c)| c).sum()
-    }
-
-    fn for_each_dot<CB: FnMut(Id, Version)>(&self, cb: &mut CB) {
-        self.pn.iter().for_each(|(&i, &(v, _))| cb(i, v));
+        self.values.values().map(|&(_, c)| c).sum()
     }
 
     fn merge(mut self, other: Self) -> Self {
-        for (id, other) in other.pn {
-            match self.pn.entry(id) {
+        for (id, other) in other.values {
+            match self.values.entry(id) {
                 LMEntry::Occupied(mut oc) => if other.0 > oc.get().0 {
                     *oc.get_mut() = other;
                 },
@@ -205,36 +201,39 @@ impl Set {
     }
 
     pub fn insert(&mut self, node: Id, version: Version, item: Bytes) -> bool {
+        let result = self.values
+            .insert(item, DotSet::from_dot((node, version)))
+            .is_none();
         self.vv.add(node, version);
         self.dots.add(node, version);
-        self.values
-            .insert(item, DotSet::from_dot((node, version)))
-            .is_none()
+        result
     }
 
     pub fn remove(&mut self, node: Id, version: Version, item: &[u8]) -> bool {
+        let result = self.values.remove(item).is_some();
         self.vv.add(node, version);
         self.dots.add(node, version);
-        self.values.remove(item).is_some()
+        result
     }
 
     pub fn pop(&mut self, node: Id, version: Version) -> Option<Bytes> {
-        self.vv.add(node, version);
-        self.dots.add(node, version);
-        if self.values.is_empty() {
+        let result = if self.values.is_empty() {
             None
         } else {
             let i = thread_rng().gen::<usize>() % self.values.len();
             let k = self.values.keys().skip(i).next().unwrap().clone();
             self.values.remove(&k).unwrap();
             Some(k)
-        }
+        };
+        self.vv.add(node, version);
+        self.dots.add(node, version);
+        result
     }
 
     pub fn clear(&mut self, node: Id, version: Version) {
+        self.values.clear();
         self.vv.add(node, version);
         self.dots.add(node, version);
-        self.values.clear();
     }
 
     fn merge(mut self, mut other: Self) -> Self {
@@ -264,23 +263,25 @@ impl Map {
     }
 
     pub fn insert(&mut self, node: Id, version: Version, key: Bytes, value: Bytes) -> bool {
+        let result = self.values
+            .insert(key, MapValue::new((node, version), value))
+            .is_none();
         self.vv.add(node, version);
         self.dots.add(node, version);
-        self.values
-            .insert(key, MapValue::new((node, version), value))
-            .is_none()
+        result
     }
 
     pub fn remove(&mut self, node: Id, version: Version, key: &[u8]) -> bool {
+        let result = self.values.remove(key).is_some();
         self.vv.add(node, version);
         self.dots.add(node, version);
-        self.values.remove(key).is_some()
+        result
     }
 
     pub fn clear(&mut self, node: Id, version: Version) {
+        self.values.clear();
         self.vv.add(node, version);
         self.dots.add(node, version);
-        self.values.clear();
     }
 
     fn merge(mut self, mut other: Self) -> Self {
@@ -382,7 +383,8 @@ pub fn render_map(cube: Cube) -> RespValue {
 pub fn render_set(cube: Cube) -> RespValue {
     match cube {
         Cube::Set(s) => {
-            let array = s.values.into_iter()
+            let array = s.values
+                .into_iter()
                 .map(|(v, _)| RespValue::Data(v))
                 .collect();
             RespValue::Array(array)
