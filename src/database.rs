@@ -486,8 +486,8 @@ mod tests {
                 data_dir: data_dir.into(),
                 fabric_addr: fabric_addr,
                 cluster_name: "test".into(),
-                sync_incomming_max: 10,
-                sync_outgoing_max: 10,
+                sync_incomming_max: 100,
+                sync_outgoing_max: 100,
                 sync_auto: false,
                 cmd_init: if create {
                     Some(config::InitCommand {
@@ -517,24 +517,25 @@ mod tests {
         fn force_syncs(&self) {
             for i in 0..PARTITIONS as u16 {
                 while !self._start_sync(i) {
-                    sleep_ms(200);
+                    sleep_ms(1);
                 }
             }
             self.wait_syncs();
         }
 
         fn wait_syncs(&self) {
+            // wait a bit so syncs can actually start after requested
             sleep_ms(200);
             while self.syncs_inflight() != 0 {
                 //warn!("waiting for syncs to finish");
-                sleep_ms(200);
+                sleep_ms(1);
             }
         }
 
         fn response_resp(&self, token: Token) -> RespValue {
             (0..1000)
                 .filter_map(|_| {
-                    sleep_ms(10);
+                    sleep_ms(1);
                     self.responses.lock().unwrap().remove(&token)
                 })
                 .next()
@@ -562,7 +563,7 @@ mod tests {
 
     fn decode_values(value: RespValue) -> (Vec<Vec<u8>>, VersionVector) {
         if let RespValue::Array(ref arr) = value {
-            let values: Vec<_> = arr[0..arr.len() - 1]
+            let mut values: Vec<_> = arr[0..arr.len() - 1]
                 .iter()
                 .map(|d| if let RespValue::Data(ref d) = *d {
                     d[..].to_owned()
@@ -570,6 +571,8 @@ mod tests {
                     panic!();
                 })
                 .collect();
+            // sort so we have a deterministic sibling order for tests
+            values.sort();
             let vv = if let RespValue::Data(ref d) = arr[arr.len() - 1] {
                 bincode::deserialize(&d[..]).unwrap()
             } else {
@@ -691,10 +694,10 @@ mod tests {
         }
     }
 
-    const TEST_JOIN_SIZE: u64 = 10;
+    const TEST_JOIN_SIZE: u64 = 100;
 
     #[test]
-    fn test_join_migrate() {
+    fn test_bootstrap() {
         let _ = fs::remove_dir_all("t/");
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
@@ -706,6 +709,7 @@ mod tests {
             db1.response_values(i);
         }
 
+        // boostrap node 2 from 1
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         warn!("will check data before balancing");
         for i in 0..TEST_JOIN_SIZE {
@@ -725,7 +729,6 @@ mod tests {
             }
         }
 
-        db1.wait_syncs();
         db2.wait_syncs();
 
         warn!("will check data after balancing");
@@ -735,16 +738,90 @@ mod tests {
                 assert_eq!(db.response_values(i).0, [i.to_string().as_bytes()]);
             }
         }
+
+        // remove first node
+        db2.dht.remove_node(db1.dht.node()).unwrap();
+        sleep_ms(100);
+
+        let db3 = TestDatabase::new("127.0.0.1:9002".parse().unwrap(), "t/db3", false);
+
+        db3.dht.rebalance().unwrap();
+        db3.wait_syncs();
+
+        for i in 0..TEST_JOIN_SIZE {
+            for &db in &[&db2, &db3] {
+                db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
+                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes()]);
+            }
+        }
     }
 
     #[test]
-    fn test_join_sync() {
+    fn test_bootstrap_2() {
+        // similar to the previous, but values in n1 are rewritten + sibling
+        let _ = fs::remove_dir_all("t/");
+        let _ = env_logger::init();
+        let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        for i in 0..TEST_JOIN_SIZE {
+            db1.do_cmd(
+                i,
+                &[b"GETSET", i.to_string().as_bytes(), b"", b"", One],
+            );
+            let (_, vv) = db1.response_values(i);
+
+            // rewrite key
+            db1.do_cmd(
+                i,
+                &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), &encode_vv(&vv), One],
+            );
+            db1.response_values(i);
+
+            // add sibling
+            db1.do_cmd(
+                i,
+                &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), &encode_vv(&vv), One],
+            );
+            db1.response_values(i);
+        }
+
+        // boostrap node 2 from 1
+        let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+
+        db2.dht.rebalance().unwrap();
+        db2.wait_syncs();
+
+        for i in 0..TEST_JOIN_SIZE {
+            for &db in &[&db1, &db2] {
+                db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
+                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes(), i.to_string().as_bytes()]);
+            }
+        }
+
+        // remove first node so node 3 boostrap from 1
+        db2.dht.remove_node(db1.dht.node()).unwrap();
+        sleep_ms(100);
+
+        let db3 = TestDatabase::new("127.0.0.1:9002".parse().unwrap(), "t/db3", false);
+
+        db3.dht.rebalance().unwrap();
+        db3.wait_syncs();
+
+        for i in 0..TEST_JOIN_SIZE {
+            for &db in &[&db2, &db3] {
+                db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
+                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes(), i.to_string().as_bytes()]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_sync() {
         let _ = fs::remove_dir_all("t/");
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        db2.dht.rebalance().unwrap();
 
+        db2.dht.rebalance().unwrap();
         db1.wait_syncs();
         db2.wait_syncs();
 
@@ -755,13 +832,23 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             db1.do_cmd(
                 i,
-                &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), b"", One],
+                &[b"GETSET", i.to_string().as_bytes(), b"", b"", One],
+            );
+            let (_, vv) = db1.response_values(i);
+
+            // rewrite key
+            db1.do_cmd(
+                i,
+                &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), &encode_vv(&vv), One],
             );
             db1.response_values(i);
-        }
-        for i in 0..TEST_JOIN_SIZE {
-            db1.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
-            assert_eq!(db1.response_values(i).0, vec![i.to_string().as_bytes()]);
+
+            // add sibling
+            db1.do_cmd(
+                i,
+                &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), &encode_vv(&vv), One],
+            );
+            db1.response_values(i);
         }
 
         // sim partition heal
@@ -773,22 +860,20 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db1, &db2] {
                 db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), Quorum]);
-                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes()]);
+                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes(), i.to_string().as_bytes()]);
             }
         }
 
         // force some syncs
         warn!("starting syncs");
         db2.force_syncs();
-
-        db1.wait_syncs();
         db2.wait_syncs();
 
-        warn!("will check after balancing");
+        warn!("will check after sync");
         for i in 0..TEST_JOIN_SIZE {
-            for &db in &[&db1, &db2] {
+            for &db in &[&db2] {
                 db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
-                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes()]);
+                assert_eq!(db.response_values(i).0, [i.to_string().as_bytes(), i.to_string().as_bytes()]);
             }
         }
     }
@@ -831,7 +916,6 @@ mod tests {
             assert_eq!(db1.response_resp(0), RespValue::Error("Unavailable".into()));
         }
 
-
         drop(db2);
         for &cl in &[One] {
             db1.do_cmd(0, &[b"GET", b"key", cl]);
@@ -846,5 +930,4 @@ mod tests {
             assert_eq!(db1.response_resp(0), RespValue::Error("Unavailable".into()));
         }
     }
-
 }
