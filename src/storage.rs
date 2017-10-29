@@ -59,7 +59,6 @@ pub struct Storage {
     db: Arc<rocksdb::DB>,
     cf: &'static rocksdb::CFHandle,
     log_cf: &'static rocksdb::CFHandle,
-    iterators_handle: Arc<()>,
     num: u16,
 }
 
@@ -73,15 +72,13 @@ pub struct StorageBatch<'a> {
 
 pub struct StorageIterator {
     db: Arc<rocksdb::DB>,
-    iterator: Box<rocksdb::rocksdb::DBIterator<'static>>,
-    iterators_handle: Arc<()>,
+    iterator: rocksdb::rocksdb::DBIterator<Arc<rocksdb::DB>>,
     first: bool,
 }
 
 pub struct LogStorageIterator {
     db: Arc<rocksdb::DB>,
-    iterator: Box<rocksdb::rocksdb::DBIterator<'static>>,
-    iterators_handle: Arc<()>,
+    iterator: rocksdb::rocksdb::DBIterator<Arc<rocksdb::DB>>,
     first: bool,
 }
 
@@ -112,19 +109,21 @@ impl StorageManager {
 
         let mut block_opts = rocksdb::BlockBasedOptions::new();
         block_opts.set_bloom_filter(10, false);
-        block_opts.set_lru_cache(4 * 32 * 1024 * 1024);
+        block_opts.set_lru_cache(4 * 32 * 1024 * 1024, -1, 0, 0f64);
         def_cf_opts.set_block_based_table_factory(&block_opts);
 
         let mut log_cf_opts = rocksdb::ColumnFamilyOptions::new();
         log_cf_opts.compression(rocksdb::DBCompressionType::No);
-        // TODO: add options to only keep it for X time
+        let mut fifo_opts = rocksdb::FifoCompactionOptions::new();
+        fifo_opts.set_ttl(3600 * 72); // 72 hours
+        log_cf_opts.set_fifo_compaction_options(fifo_opts);
         log_cf_opts.set_compaction_style(rocksdb::DBCompactionStyle::Fifo);
         log_cf_opts.set_write_buffer_size(32 * 1024 * 1024);
         log_cf_opts.set_max_write_buffer_number(4);
 
         let mut block_opts = rocksdb::BlockBasedOptions::new();
         block_opts.set_bloom_filter(10, false);
-        block_opts.set_lru_cache(2 * 32 * 1024 * 1024);
+        block_opts.set_lru_cache(2 * 32 * 1024 * 1024, -1, 0, 0f64);
         log_cf_opts.set_block_based_table_factory(&block_opts);
 
         // TODO: Rocksdb is complicated, we might want to tune some more options
@@ -140,7 +139,7 @@ impl StorageManager {
                 vec![("default", def_cf_opts)],
             )?;
 
-            db.create_cf("log", log_cf_opts)?;
+            db.create_cf(("log", log_cf_opts))?;
             Ok(db)
         })?;
 
@@ -156,7 +155,6 @@ impl StorageManager {
             cf: unsafe { mem::transmute(self.db.cf_handle("default").unwrap()) },
             log_cf: unsafe { mem::transmute(self.db.cf_handle("log").unwrap()) },
             num: db_num,
-            iterators_handle: Arc::new(()),
         })
     }
 }
@@ -174,19 +172,15 @@ impl Storage {
     pub fn iterator(&self) -> StorageIterator {
         let mut key_prefix = [0u8; 2];
         build_key(&mut key_prefix, self.num, b"");
-        unsafe {
-            let mut ro = rocksdb::ReadOptions::new();
-            ro.set_total_order_seek(false);
-            ro.set_prefix_same_as_start(true);
-            let mut iterator = Box::new(self.db.iter_cf_opt(self.cf, ro));
-            iterator.seek(rocksdb::SeekKey::Key(&key_prefix[..]));
-            let result = StorageIterator {
-                db: self.db.clone(),
-                iterator: mem::transmute(iterator),
-                iterators_handle: self.iterators_handle.clone(),
-                first: true,
-            };
-            result
+        let mut ro = rocksdb::ReadOptions::new();
+        ro.set_total_order_seek(false);
+        ro.set_prefix_same_as_start(true);
+        let mut iterator = rocksdb::DBIterator::new_cf(self.db.clone(), self.cf, ro);
+        iterator.seek(rocksdb::SeekKey::Key(&key_prefix[..]));
+        StorageIterator {
+            db: self.db.clone(),
+            iterator: iterator,
+            first: true,
         }
     }
 
@@ -195,18 +189,14 @@ impl Storage {
         build_log_prefix(&mut end_prefix, self.num, prefix + 1);
         let mut start_key = [0u8; 2 + 8 + 8];
         build_log_key(&mut start_key, self.num, (prefix, start));
-        unsafe {
-            let mut ro = rocksdb::ReadOptions::new();
-            ro.set_iterate_upper_bound(&end_prefix[..]);
-            let mut iterator = Box::new(self.db.iter_cf_opt(self.log_cf, ro));
-            iterator.seek(rocksdb::SeekKey::Key(&start_key[..]));
-            let result = LogStorageIterator {
-                db: self.db.clone(),
-                iterator: mem::transmute(iterator),
-                iterators_handle: self.iterators_handle.clone(),
-                first: true,
-            };
-            result
+        let mut ro = rocksdb::ReadOptions::new();
+        ro.set_iterate_upper_bound(&end_prefix[..]);
+        let mut iterator = rocksdb::DBIterator::new_cf(self.db.clone(), self.log_cf, ro);
+        iterator.seek(rocksdb::SeekKey::Key(&start_key[..]));
+        LogStorageIterator {
+            db: self.db.clone(),
+            iterator: iterator,
+            first: true,
         }
     }
 
@@ -275,7 +265,6 @@ impl Storage {
 
     pub fn clear(&self) {
         trace!("clear");
-        self.check_pending_iters();
         let mut from = [0u8; 2];
         let mut to = [0u8; 2];
         (&mut from[..]).write_u16::<BigEndian>(self.num).unwrap();
@@ -301,19 +290,6 @@ impl Storage {
     pub fn sync(&self) -> Result<(), GenericError> {
         debug!("sync");
         Ok(self.db.sync_wal()?)
-    }
-
-    fn check_pending_iters(&self) {
-        let sc = Arc::strong_count(&self.iterators_handle);
-        let wc = Arc::weak_count(&self.iterators_handle);
-        assert!(wc == 0);
-        assert!(sc == 1, "{} pending iterators", sc - 1);
-    }
-}
-
-impl Drop for Storage {
-    fn drop(&mut self) {
-        self.check_pending_iters();
     }
 }
 
