@@ -16,6 +16,8 @@ Theoretically you can use Sucredb with any Redis Cluster clients.
 
 It implements a small subset of Redis commands. Only basic Key-Value/Sets/Hashes operations are supported at this point.
 
+### Key Value
+
 #### GET
 
 *GET* result(s) is/are returned as an array containing the values (zero, one or more if there's conflicting versions) plus the causal context. The context is an binary string and is always returned as the last item of the array even if no values are present.
@@ -42,27 +44,85 @@ It implements a small subset of Redis commands. Only basic Key-Value/Sets/Hashes
 
 #### DEL
 
-*DEL* is like set and also requires a context. Note that the server always returns 1 regardless of the key situation.
+*DEL* is like set and also requires a context when dealing with basic values.
+Following Redis api *del* works for keys with any datastructure, in these cases the context is ignored (you can use an empty string instead).
 
 `> DEL key context {consistency}`
 
-`< 1`
+`< 1 OR 0 (if not found)`
+
+### Data structures
+
+Sucredb also supports a small subset of commands for Hash and Set datatypes. These types are [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) and don't require a context to be sent along the operation. Mutations depend on the coordinator version of the value and conflicts are handled as follow:
+
+* Hash: On values conflict the latest write wins.
+* Set: On values conflict add wins.
 
 #### HGETALL
 
+Gets all key value pairs from a hash.
+
+`> HGETALL key {consistency}`
+
+`< [{KA, VA}, {KB, VB}, ...]`
+
 #### HGET
+
+Gets a specific key from a hash.
+
+`> HGET key hash_key {consistency}`
+
+`< Value OR Nil`
 
 #### HSET
 
+Set key a value pair in a hash.
+
+`> HSET key hash_key value {consistency}`
+
+`< 1 OR 0 (if hash_key already existed) `
+
 #### HDEL
+
+Deletes a key from a hash.
+
+`> HDEL key hash_key {consistency}`
+
+`< 1 OR 0 (if hash_key didn't exist)`
 
 #### SMEMBERS
 
+Gets all values from a set.
+
+`> SMEMBERS key {consistency}`
+
+`< [{KA}, {KB}, ...]`
+
 #### SADD
+
+Adds a value from the set.
+
+`> SADD key value {consistency}`
+
+`< 1 OR 0 (if value already existed) `
 
 #### SREM
 
+Removes a value from the set.
+
+`> SREM key value {consistency}`
+
+`< 1 OR 0 (if value didn't exist) `
+
 #### SPOP
+
+Pops a random value from the set.
+
+`> SPOP key value {consistency}`
+
+`< Value OR Nil`
+
+### Other parameters
 
 #### `context` parameter
 
@@ -175,4 +235,4 @@ It uses a variant of version clocks to track causality. The actual algorithm is 
 
 [2] Mostly due to the try_from and impl trait features that should be stable soon.
 
-[3] Be patient as rocksdb takes a long time to compile.
+[3] Be patient.
