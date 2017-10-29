@@ -395,7 +395,7 @@ pub fn render_set(cube: Cube) -> RespValue {
 }
 
 /*
-Using the vv from cubes as dots doesn't work, example bellow
+Using the vv from cubes to track key dots (the latest version from each node) doesn't work, example:
 
 -> n3 is partitioned out
 -> n1 "SET a v" gets dot n1-1
@@ -420,5 +420,53 @@ n2: c => [n2-3 y][n1 1, n2 3] b => [n2-2 y][n1 1, n2 2] a => [n2-1 z][n1 1, n2 1
 n3: c => [n2-3 y][n1 1, n2 3] log: n2-3 => c, n1-1 => c
 
 n3 stores (n1-1 => c) in dot log but that's wrong
+
+Problem:
+VV from Voids pollutes the vv of new writes.
+
+Solution:
+For the MultiRegister the DotMap with optional values works as it's own dot tracker,
+even if it can have more than 1 version per actor the number s should stay low.
+Counters are similar to the MultiRegister case.
+Sets/Maps carry an additional VV to track the dots.
+Voids don't need any dot, their state is empty and they history is contained in the node clock (previous dots).
+
+*/
+
+/*
+Optimized bootstrap dones't work?
+
+Given n1 with lots of data churn and the only kv left is k => [n1-100 v][n1 100]
+node clock says [n1 1000] and logs have all the expected entries
+
+When n2 bootstrap n1 will send only non-deleted kvs as this is always <= number of dots (optimized bootstrap).
+Thus only k => [n1-100 v][n1 100] is sent.
+n2 will store k as above and log will contain only n1-100 => k
+syncfin will update n2 node clock to [n1 1000]
+
+If asked for any key other than k it'll return the same response as n1.
+That is a void with a causal context [n1 1000]
+
+Problem:
+What if n3 asks to sync dots n1-101 n1-102 ... with n2? It'll get nothing but it'll get it's n1 clock bumped to 1000
+If key y was deleted as dot n1-101 the delete will never get propagated to n3.
+
+Fix: on SyncFin sync only remote (n2) part of clock, like: n3LocalClock[n2].merge(n2RemoteClock[n2])
+It was in the updated paper all the time, I just didn't see it.
+
+*/
+
+/*
+AAE based bootstrap any better?
+
+Given n1 with lots of data churn and the only kv left is k => [n1-100 v][n1 100]
+node clock says [n1 1000] and logs have all the expected entries
+
+n2 comes up (or it was partitioned the entire time) and wants to sync with n1.
+It needs all dots of n1, it'll get k => [n1-100 v][n1 100] and voids for all other keys.
+
+What if n3 asks to sync dots n1-101 n1-102 ... with n2?
+
+Same problem and fix as the above.
 
 */

@@ -7,7 +7,7 @@ use cubes::Cube;
 use database::*;
 use inflightmap::InFlightMap;
 use bincode;
-use utils::IdHasherBuilder;
+use utils::{IdHasherBuilder, split_u64};
 use metrics::{self, Meter};
 use bytes::Bytes;
 
@@ -62,7 +62,7 @@ pub enum Synchronization {
     SyncSender {
         // bvv in peer at the time of sync start
         clocks_in_peer: BitmappedVersionVector,
-        // local bvv at the time of sync start
+        // partial copy of the local bvv at the time of sync start
         clocks_snapshot: BitmappedVersionVector,
         iterator: IteratorFn,
         // TODO: only store keys as resends should be rare
@@ -240,18 +240,23 @@ impl Synchronization {
         debug!("Delta from {:?} to {:?}", state.clocks, clocks_in_peer);
 
         let mut sync_keys = SyncKeysIterator::new(dots_delta);
-        let iterator_fn: IteratorFn = Box::new(move |state| {
-            if let Some(key) = sync_keys.next(state)? {
+        let iterator_fn: IteratorFn =
+            Box::new(move |state| if let Some(key) = sync_keys.next(state)? {
                 let cube = state.storage_get(&key)?;
                 Ok(Some((key, cube)))
             } else {
                 Ok(None)
-            }
-        });
+            });
+
+        // Only send the part of the bvv corresponding to things that this node coordinated.
+        // Even if the dots are registered in the bvv,
+	// there's no guarantee that the dot->key log had the dot.
+        let physical_id = split_u64(db.dht.node()).0;
+        let clocks_snapshot = state.clocks.clone_if(|i| split_u64(i).0 == physical_id);
 
         SyncSender {
             clocks_in_peer: clocks_in_peer,
-            clocks_snapshot: state.clocks.clone(),
+            clocks_snapshot: clocks_snapshot,
             iterator: iterator_fn,
             inflight: InFlightMap::new(),
             cookie: cookie,
@@ -541,20 +546,7 @@ impl Synchronization {
         msg: MsgSyncFin,
     ) -> SyncResult {
         match *self {
-            SyncReceiver { peer, .. } => {
-                if msg.result.is_ok() {
-                    state.clocks.join(msg.result.as_ref().unwrap());
-                    state.save(db, false);
-                    // send it back as a form of ack-ack
-                    let _ = db.fabric.send_msg(peer, msg);
-                    SyncResult::Done
-                } else if msg.result.err() == Some(FabricError::NotReady) {
-                    SyncResult::Continue
-                } else {
-                    SyncResult::Error
-                }
-            }
-            BootstrapReceiver { peer, .. } => {
+            SyncReceiver { peer, .. } | BootstrapReceiver { peer, .. } => {
                 if msg.result.is_ok() {
                     state.clocks.merge(msg.result.as_ref().unwrap());
                     state.save(db, false);
