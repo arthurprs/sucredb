@@ -81,6 +81,8 @@ const FABRIC_RECONNECT_INTERVAL_MS: u64 = 1000;
 /// Currently each node keeps a connection to every other node. Due to the
 /// full-duplex nature of tcp this gives 2 pipes to each server, both are
 /// used to make better use of the socket buffers (is this a good idea though?).
+/// This also helps parallelism as an eventual big message won't affect
+/// the latency as much.
 pub struct Fabric {
     context: Arc<SharedContext>,
     loop_thread: Option<

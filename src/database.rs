@@ -270,7 +270,7 @@ impl Database {
         // save dht
         self.meta_storage
             .set(b"ring", &self.dht.save_ring())
-            .log_error("Can't save ring");
+            .log_error("Can't save ring on dht change");
 
         // register nodes
         self.fabric.set_nodes(self.dht.members().into_iter());
@@ -959,5 +959,92 @@ mod tests {
             db1.do_cmd(0, &[b"GETSET", b"other", b"", b"", cl]);
             assert_eq!(db1.response_resp(0), RespValue::Error("Unavailable".into()));
         }
+    }
+
+    fn stub_aae_converge(drop: usize) {
+        use std::env;
+        use std::ffi::OsString;
+        let _ = fs::remove_dir_all("t/");
+        let _ = env_logger::init();
+        let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
+        let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let db3 = TestDatabase::new("127.0.0.1:9002".parse().unwrap(), "t/db3", false);
+        db1.dht.rebalance().unwrap();
+
+        db1.wait_syncs();
+        db2.wait_syncs();
+        db3.wait_syncs();
+
+        env::set_var("FABRIC_DROP", &OsString::from(drop.to_string()));
+
+        for (j, &db) in [&db1, &db2, &db2].iter().enumerate() {
+            db.do_cmd(
+                0,
+                &[
+                    b"SET",
+                    (j + 10000).to_string().as_bytes(),
+                    (j + 10000).to_string().as_bytes(),
+                    b"",
+                    One,
+                ],
+            );
+            db.response_resp(0);
+            for i in 0..TEST_JOIN_SIZE {
+                db.do_cmd(
+                    0,
+                    &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), b"", One],
+                );
+                let vv = db.response_values(0).1;
+                if i > TEST_JOIN_SIZE / 2 {
+                    db.do_cmd(0, &[b"DEL", i.to_string().as_bytes(), &encode_vv(&vv), One]);
+                    db.response_resp(0);
+                }
+            }
+        }
+
+        env::set_var("FABRIC_DROP", "0");
+
+        db1.force_syncs();
+        db2.force_syncs();
+        db3.force_syncs();
+        db1.wait_syncs();
+        db2.wait_syncs();
+        db3.wait_syncs();
+
+        for &db in &[&db1, &db2, &db2] {
+            for j in 0..3 {
+                db.do_cmd(0, &[b"GET", (j + 10000).to_string().as_bytes(), One]);
+                assert_eq!(
+                    db.response_values(0).0,
+                    [(j + 10000).to_string().as_bytes()]
+                );
+            }
+            for i in 0..TEST_JOIN_SIZE {
+                db.do_cmd(0, &[b"GET", i.to_string().as_bytes(), One]);
+                let values = db.response_values(0).0;
+                if i > TEST_JOIN_SIZE / 2 {
+                    assert_eq!(values.len(), 0);
+                } else {
+                    assert_eq!(
+                        values,
+                        [
+                            i.to_string().as_bytes(),
+                            i.to_string().as_bytes(),
+                            i.to_string().as_bytes()
+                        ]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_aae_converge_100() {
+        stub_aae_converge(100);
+    }
+
+    #[test]
+    fn test_aae_converge_50() {
+        stub_aae_converge(50);
     }
 }
