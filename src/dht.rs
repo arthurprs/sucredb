@@ -18,7 +18,8 @@ use hash::{hash_slot, HASH_SLOTS};
 use database::{NodeId, VNodeId};
 use version_vector::VersionVector;
 use fabric::{Fabric, FabricMsg, FabricMsgType};
-use utils::{GenericError, IdHashMap, IdHashSet};
+use types::PhysicalNodeId;
+use utils::{GenericError, IdHashMap, IdHashSet, split_u64};
 
 // can be called by the network thread or a worker doing a dht mutation
 pub type DHTChangeFn = Box<Fn() + Send + Sync>;
@@ -152,6 +153,15 @@ impl<T: Metadata> Ring<T> {
         self.nodes.values().filter(|n| n.status == Valid).count()
     }
 
+    fn valid_physical_count(&self, physical: PhysicalNodeId) -> usize {
+        self.nodes
+            .iter()
+            .filter(|&(&i, n)|
+                split_u64(i).0 == physical && n.status == Valid
+             )
+            .count()
+    }
+
     fn leave_node(&mut self, this: NodeId, leaving: NodeId) -> Result<(), GenericError> {
         if let Some(node) = self.nodes.get_mut(&leaving) {
             if node.status != Leaving {
@@ -199,6 +209,9 @@ impl<T: Metadata> Ring<T> {
                 node.addr = addr;
                 node.version.event(this);
             }
+        }
+        if self.valid_physical_count(split_u64(node).0) > 1 {
+            return Err("Duplicated physical node id".into());
         }
         self.version.event(this);
         Ok(())
@@ -289,6 +302,9 @@ impl<T: Metadata> Ring<T> {
                 vn.owners.insert(new, status);
                 vn.version.event(this);
             }
+        }
+        if self.valid_physical_count(split_u64(new).0) > 1 {
+            return Err("Duplicated physical node id".into());
         }
         Ok(())
     }
@@ -1050,6 +1066,32 @@ mod tests {
     use config::Config;
     use fabric::Fabric;
     use utils::sleep_ms;
+    use utils::join_u64;
+
+    #[test]
+    fn test_ring_dup_join() {
+        let mut ring = Ring::new("", 64, 3);
+        let addr = "127.0.0.1:1999".parse().unwrap();
+        ring.join_node(0, join_u64(0, 1), addr, ()).unwrap();
+        ring.join_node(0, join_u64(1, 1), addr, ()).unwrap();
+
+        ring.clone().join_node(0, join_u64(0, 2), addr, ()).unwrap_err();
+        ring.clone().join_node(0, join_u64(0, 3), addr, ()).unwrap_err();
+
+        ring.clone().join_node(0, join_u64(1, 2), addr, ()).unwrap_err();
+        ring.clone().join_node(0, join_u64(1, 3), addr, ()).unwrap_err();
+    }
+
+    #[test]
+    fn test_ring_dup_replace() {
+        let mut ring = Ring::new("", 64, 3);
+        let addr = "127.0.0.1:1999".parse().unwrap();
+        ring.join_node(0, join_u64(0, 1), addr, ()).unwrap();
+        ring.join_node(0, join_u64(1, 1), addr, ()).unwrap();
+
+        ring.clone().replace_node(0, join_u64(0, 1), join_u64(1, 2), addr, ()).unwrap_err();
+        ring.clone().replace_node(0, join_u64(1, 1), join_u64(0, 2), addr, ()).unwrap_err();
+    }
 
     #[test]
     fn test_dht_init() {
