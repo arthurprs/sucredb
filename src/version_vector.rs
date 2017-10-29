@@ -68,7 +68,7 @@ impl BitmappedVersion {
         }
     }
 
-    pub fn join(&mut self, other: &Self) {
+    pub fn merge(&mut self, other: &Self) {
         self.bitmap |= &other.bitmap;
         if self.base < other.base {
             self.base = other.base;
@@ -88,6 +88,16 @@ impl BitmappedVersion {
         };
         self.norm();
         true
+    }
+
+    pub fn add_all(&mut self, version: Version) -> bool {
+        if version > self.base {
+            self.base = version;
+            self.norm();
+            true
+        } else {
+            false
+        }
     }
 
     fn norm(&mut self) {
@@ -274,8 +284,15 @@ impl BitmappedVersionVector {
             .add(version)
     }
 
+    pub fn add_all(&mut self, id: Id, version: Version) -> bool {
+        self.0
+            .entry(id)
+            .or_insert_with(Default::default)
+            .add_all(version)
+    }
+
     pub fn add_bv(&mut self, id: Id, bv: &BitmappedVersion) {
-        self.0.entry(id).or_insert_with(Default::default).join(bv);
+        self.0.entry(id).or_insert_with(Default::default).merge(bv);
     }
 
     pub fn get_mut(&mut self, id: Id) -> Option<&mut BitmappedVersion> {
@@ -290,14 +307,6 @@ impl BitmappedVersionVector {
         self.0.entry(id).or_insert_with(Default::default)
     }
 
-    pub fn join(&mut self, other: &Self) {
-        for (&id, other_bitmap_version) in &other.0 {
-            if let Some(bitmap_version) = self.0.get_mut(&id) {
-                bitmap_version.join(other_bitmap_version);
-            }
-        }
-    }
-
     pub fn merge(&mut self, other: &Self) {
         for (&id, other_bitmap_version) in &other.0 {
             match self.0.entry(id) {
@@ -305,7 +314,7 @@ impl BitmappedVersionVector {
                     vac.insert(other_bitmap_version.clone());
                 }
                 LMEntry::Occupied(mut ocu) => {
-                    ocu.get_mut().join(other_bitmap_version);
+                    ocu.get_mut().merge(other_bitmap_version);
                 }
             }
         }
@@ -340,6 +349,16 @@ impl BitmappedVersionVector {
 
     pub fn iter(&self) -> linear_map::Iter<Id, BitmappedVersion> {
         self.0.iter()
+    }
+
+    pub fn clone_if<F: FnMut(Id) -> bool>(&self, mut cond: F) -> Self {
+        let mut result = Self::default();
+        for (&id, bv) in self.0.iter() {
+            if cond(id) {
+                result.add_bv(id, bv);
+            }
+        }
+        result
     }
 
     pub fn delta(&self, other: &Self) -> BitmappedVersionVectorDelta {
@@ -416,7 +435,7 @@ impl DeltaVersionVector {
         false
     }
 
-    fn add_base(&mut self, id: Id, version: Version) {
+    fn add_all(&mut self, id: Id, version: Version) {
         let base_p = if let Some(p) = self.0.iter().position(|x| x.0 == id) {
             p
         } else {
@@ -456,7 +475,7 @@ impl DeltaVersionVector {
         self.0.drain(base_p + 1..p);
     }
 
-    pub fn add_single(&mut self, id: Id, version: Version) {
+    pub fn add(&mut self, id: Id, version: Version) {
         assert!(version != 0, "Version 0 is not valid");
         let base_p = if let Some(p) = self.0.iter().position(|x| x.0 == id) {
             p
@@ -514,10 +533,10 @@ impl DeltaVersionVector {
         let mut p = 0;
         while p < other.0.len() {
             let (id, v) = other.0[p];
-            self.add_base(id, v);
+            self.add_all(id, v);
             p += 1;
             while p < other.0.len() && other.0[p].0 == id {
-                self.add_single(id, other.0[p].1);
+                self.add(id, other.0[p].1);
                 p += 1;
             }
         }
@@ -832,24 +851,6 @@ mod test_bvv {
     }
 
     #[test]
-    fn merge() {
-        let mut a = BitmappedVersionVector::new();
-        a.0.insert(1, BitmappedVersion::new(5, 3));
-        let mut b = BitmappedVersionVector::new();
-        b.0.insert(1, BitmappedVersion::new(2, 4));
-        a.merge(&b);
-        assert_eq!(a.get(1).unwrap(), &BitmappedVersion::new(7, 0));
-
-        a = BitmappedVersionVector::new();
-        a.0.insert(1, BitmappedVersion::new(5, 3));
-        b = BitmappedVersionVector::new();
-        b.0.insert(2, BitmappedVersion::new(2, 4));
-        a.merge(&b);
-        assert_eq!(a.get(1).unwrap(), &BitmappedVersion::new(5, 3));
-        assert_eq!(a.get(2).unwrap(), &BitmappedVersion::new(2, 4));
-    }
-
-    #[test]
     fn delta() {
         let mut bvv1 = BitmappedVersionVector::new();
         let mut bvv2 = BitmappedVersionVector::new();
@@ -872,28 +873,28 @@ mod test_bvv {
     }
 
     #[test]
-    fn join() {
+    fn merge() {
         let mut a = BitmappedVersionVector::new();
         a.0.insert(1, BitmappedVersion::new(5, 3));
         let mut b = BitmappedVersionVector::new();
         b.0.insert(1, BitmappedVersion::new(2, 4));
-        a.join(&b);
+        a.merge(&b);
         assert_eq!(a.get(1).unwrap(), &BitmappedVersion::new(7, 0));
 
         let mut a = BitmappedVersionVector::new();
         a.0.insert(1, BitmappedVersion::new(2, 4));
         let mut b = BitmappedVersionVector::new();
         b.0.insert(1, BitmappedVersion::new(5, 3));
-        a.join(&b);
+        a.merge(&b);
         assert_eq!(a.get(1).unwrap(), &BitmappedVersion::new(7, 0));
 
         let mut a = BitmappedVersionVector::new();
         a.0.insert(1, BitmappedVersion::new(5, 3));
         let mut b = BitmappedVersionVector::new();
         b.0.insert(2, BitmappedVersion::new(2, 4));
-        a.join(&b);
+        a.merge(&b);
         assert_eq!(a.get(1).unwrap(), &BitmappedVersion::new(5, 3));
-        assert!(a.get(2).is_none());
+        assert_eq!(a.get(2).unwrap(), &BitmappedVersion::new(2, 4));
     }
 
     #[test]
@@ -913,47 +914,47 @@ mod test_dvv {
     use super::*;
 
     #[test]
-    fn test_add_base() {
+    fn test_add_all() {
         let mut dvv = DeltaVersionVector::new();
-        dvv.add_base(1, 0);
+        dvv.add_all(1, 0);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 0)]));
-        dvv.add_base(1, 5);
+        dvv.add_all(1, 5);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 5)]));
-        dvv.add_base(1, 5);
+        dvv.add_all(1, 5);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 5)]));
-        dvv.add_base(1, 1);
+        dvv.add_all(1, 1);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 5)]));
-        dvv.add_base(2, 2);
+        dvv.add_all(2, 2);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 5), (2, 2)]));
-        dvv.add_base(2, 3);
+        dvv.add_all(2, 3);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 5), (2, 3)]));
-        dvv.add_base(2, 1);
+        dvv.add_all(2, 1);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 5), (2, 3)]));
 
         let mut dvv = DeltaVersionVector(vec![(1, 0), (1, 3)]);
-        dvv.add_base(1, 2);
+        dvv.add_all(1, 2);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 3)]));
     }
 
     #[test]
-    fn test_add_single() {
+    fn test_add() {
         let mut dvv = DeltaVersionVector::new();
-        dvv.add_single(1, 1);
+        dvv.add(1, 1);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 1)]));
-        dvv.add_single(1, 3);
+        dvv.add(1, 3);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 1), (1, 3)]));
-        dvv.add_single(1, 3);
+        dvv.add(1, 3);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 1), (1, 3)]));
-        dvv.add_single(1, 4);
+        dvv.add(1, 4);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 1), (1, 3), (1, 4)]));
-        dvv.add_single(2, 2);
+        dvv.add(2, 2);
         assert_eq!(
             dvv,
             DeltaVersionVector(vec![(1, 1), (1, 3), (1, 4), (2, 0), (2, 2)])
         );
-        dvv.add_single(1, 2);
+        dvv.add(1, 2);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 4), (2, 0), (2, 2)]));
-        dvv.add_single(2, 1);
+        dvv.add(2, 1);
         assert_eq!(dvv, DeltaVersionVector(vec![(1, 4), (2, 2)]));
     }
 
