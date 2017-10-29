@@ -156,9 +156,7 @@ impl<T: Metadata> Ring<T> {
     fn valid_physical_count(&self, physical: PhysicalNodeId) -> usize {
         self.nodes
             .iter()
-            .filter(|&(&i, n)|
-                split_u64(i).0 == physical && n.status == Valid
-             )
+            .filter(|&(&i, n)| split_u64(i).0 == physical && n.status == Valid)
             .count()
     }
 
@@ -1075,11 +1073,19 @@ mod tests {
         ring.join_node(0, join_u64(0, 1), addr, ()).unwrap();
         ring.join_node(0, join_u64(1, 1), addr, ()).unwrap();
 
-        ring.clone().join_node(0, join_u64(0, 2), addr, ()).unwrap_err();
-        ring.clone().join_node(0, join_u64(0, 3), addr, ()).unwrap_err();
+        ring.clone()
+            .join_node(0, join_u64(0, 2), addr, ())
+            .unwrap_err();
+        ring.clone()
+            .join_node(0, join_u64(0, 3), addr, ())
+            .unwrap_err();
 
-        ring.clone().join_node(0, join_u64(1, 2), addr, ()).unwrap_err();
-        ring.clone().join_node(0, join_u64(1, 3), addr, ()).unwrap_err();
+        ring.clone()
+            .join_node(0, join_u64(1, 2), addr, ())
+            .unwrap_err();
+        ring.clone()
+            .join_node(0, join_u64(1, 3), addr, ())
+            .unwrap_err();
     }
 
     #[test]
@@ -1089,8 +1095,12 @@ mod tests {
         ring.join_node(0, join_u64(0, 1), addr, ()).unwrap();
         ring.join_node(0, join_u64(1, 1), addr, ()).unwrap();
 
-        ring.clone().replace_node(0, join_u64(0, 1), join_u64(1, 2), addr, ()).unwrap_err();
-        ring.clone().replace_node(0, join_u64(1, 1), join_u64(0, 2), addr, ()).unwrap_err();
+        ring.clone()
+            .replace_node(0, join_u64(0, 1), join_u64(1, 2), addr, ())
+            .unwrap_err();
+        ring.clone()
+            .replace_node(0, join_u64(1, 1), join_u64(0, 2), addr, ())
+            .unwrap_err();
     }
 
     #[test]
@@ -1123,19 +1133,19 @@ mod tests {
             ..Default::default()
         };
 
-        let fabric1 = Arc::new(Fabric::new(1, &config1).unwrap());
+        let fabric1 = Arc::new(Fabric::new(join_u64(0, 0), &config1).unwrap());
         let dht1 = DHT::init(fabric1, &config1, (), RingDescription::new(2, 32), None).unwrap();
 
-        let fabric2 = Arc::new(Fabric::new(2, &config2).unwrap());
+        let fabric2 = Arc::new(Fabric::new(join_u64(1, 0), &config2).unwrap());
         let dht2 = DHT::join_cluster(fabric2, &config2, (), &[config1.fabric_addr], None).unwrap();
 
         sleep_ms(100);
         for dht in &[&dht1, &dht2] {
-            assert_eq!(dht.nodes_for_vnode(0, false, false), &[1]);
-            assert_eq!(dht.nodes_for_vnode(0, true, false), &[1]);
+            assert_eq!(dht.nodes_for_vnode(0, false, false), &[join_u64(0, 0)]);
+            assert_eq!(dht.nodes_for_vnode(0, true, false), &[join_u64(0, 0)]);
             assert_eq!(
                 dht.members(),
-                [(1, config1.fabric_addr), (2, config2.fabric_addr)]
+                [(join_u64(0, 0), config1.fabric_addr), (join_u64(1, 0), config2.fabric_addr)]
                     .iter()
                     .cloned()
                     .collect()
@@ -1145,11 +1155,14 @@ mod tests {
         dht1.rebalance().unwrap();
         sleep_ms(100);
         for dht in &[&dht1, &dht2] {
-            assert_eq!(dht.nodes_for_vnode(0, false, false), &[1]);
-            assert_eq!(dht.nodes_for_vnode(0, true, false), &[1, 2]);
+            assert_eq!(dht.nodes_for_vnode(0, false, false), &[join_u64(0, 0)]);
+            assert_eq!(
+                dht.nodes_for_vnode(0, true, false),
+                &[join_u64(0, 0), join_u64(1, 0)]
+            );
             assert_eq!(
                 dht.members(),
-                [(1, config1.fabric_addr), (2, config2.fabric_addr)]
+                [(join_u64(0, 0), config1.fabric_addr), (join_u64(1, 0), config2.fabric_addr)]
                     .iter()
                     .cloned()
                     .collect()
@@ -1159,11 +1172,17 @@ mod tests {
         dht1.finish_rebalance().unwrap();
         sleep_ms(100);
         for dht in &[&dht1, &dht2] {
-            assert_eq!(dht.nodes_for_vnode(0, false, false), &[1, 2]);
-            assert_eq!(dht.nodes_for_vnode(0, true, false), &[1, 2]);
+            assert_eq!(
+                dht.nodes_for_vnode(0, false, false),
+                &[join_u64(0, 0), join_u64(1, 0)]
+            );
+            assert_eq!(
+                dht.nodes_for_vnode(0, true, false),
+                &[join_u64(0, 0), join_u64(1, 0)]
+            );
             assert_eq!(
                 dht.members(),
-                [(1, config1.fabric_addr), (2, config2.fabric_addr)]
+                [(join_u64(0, 0), config1.fabric_addr), (join_u64(1, 0), config2.fabric_addr)]
                     .iter()
                     .cloned()
                     .collect()
@@ -1206,10 +1225,10 @@ mod tests {
             ..Default::default()
         };
 
-        let fabric1 = Arc::new(Fabric::new(1, &config1).unwrap());
+        let fabric1 = Arc::new(Fabric::new(join_u64(0, 0), &config1).unwrap());
         let dht1 = DHT::init(fabric1, &config1, (), RingDescription::new(2, 32), None).unwrap();
 
-        let fabric2 = Arc::new(Fabric::new(2, &config2).unwrap());
+        let fabric2 = Arc::new(Fabric::new(join_u64(1, 0), &config2).unwrap());
         let _dht2 =
             DHT::join_cluster(fabric2.clone(), &config2, (), &[config1.fabric_addr], None).unwrap();
 
@@ -1245,7 +1264,7 @@ mod tests {
             let partitions = 32;
             let mut ring = Ring::new("", partitions as u16, 1 + thread_rng().gen::<u8>() % 4);
             for i in 0..1 + thread_rng().gen::<u64>() % partitions as u64 {
-                ring.join_node(i, i, addr, ()).unwrap();
+                ring.join_node(0, join_u64(i as _, 0), addr, ()).unwrap();
             }
             if thread_rng().gen::<f64>() < 0.5 {
                 ring.rebalance(0).unwrap();
@@ -1253,7 +1272,7 @@ mod tests {
             }
 
             for i in 1..thread_rng().gen::<u64>() % ring.valid_nodes_count() as u64 {
-                ring.leave_node(i, i).unwrap();
+                ring.leave_node(0, join_u64(i as _, 0)).unwrap();
             }
             ring.rebalance(0).unwrap();
             ring.finish_rebalance(0).unwrap();
@@ -1268,21 +1287,17 @@ mod tests {
             let partitions = 32;
             let mut ring = Ring::new("", partitions as u16, 1 + thread_rng().gen::<u8>() % 4);
             for i in 0..1 + thread_rng().gen::<u64>() % partitions as u64 {
-                ring.join_node(i, i, addr, ()).unwrap();
+                ring.join_node(0, join_u64(i as _, 0), addr, ()).unwrap();
             }
-            println!("{:?}", ring);
             if thread_rng().gen::<f64>() < 0.5 {
                 ring.rebalance(0).unwrap();
                 ring.finish_rebalance(0).unwrap();
             }
 
             for i in 1..thread_rng().gen::<u64>() % ring.valid_nodes_count() as u64 {
-                ring.remove_node(i, i).unwrap();
+                ring.remove_node(0, join_u64(i as _, 0)).unwrap();
             }
-            println!("{:?}", ring);
-            let r = ring.rebalance(0);
-            println!("{:?}", ring);
-            r.unwrap();
+            ring.rebalance(0).unwrap();
             ring.finish_rebalance(0).unwrap();
         }
     }

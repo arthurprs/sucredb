@@ -250,7 +250,7 @@ impl Synchronization {
 
         // Only send the part of the bvv corresponding to things that this node coordinated.
         // Even if the dots are registered in the bvv,
-	// there's no guarantee that the dot->key log had the dot.
+        // there's no guarantee that the dot->key log had the dot.
         let physical_id = split_u64(db.dht.node()).0;
         let clocks_snapshot = state.clocks.clone_if(|i| split_u64(i).0 == physical_id);
 
