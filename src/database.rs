@@ -46,14 +46,14 @@ pub struct Database {
 
 macro_rules! fabric_send_error{
     ($db: expr, $to: expr, $msg: expr, $emsg: ident, $err: expr) => {
-        $db.fabric.send_msg($to, $emsg {
+        $db.fabric.send_msg($to, &$emsg {
             vnode: $msg.vnode,
             cookie: $msg.cookie,
             result: Err($err),
         })
     };
     ($db: expr, $to: expr, $vnode: expr, $cookie: expr, $emsg: ident, $err: expr) => {
-        $db.fabric.send_msg($to, $emsg {
+        $db.fabric.send_msg($to, *$emsg {
             vnode: $vnode,
             cookie: $cookie,
             result: Err($err),
@@ -183,19 +183,21 @@ impl Database {
 
         db.workers.lock().unwrap().start(|| {
             let cdb = Arc::downgrade(&db);
-            Box::new(move |chan| for wm in chan {
-                let db = if let Some(db) = cdb.upgrade() {
-                    db
-                } else {
-                    break;
-                };
-                match wm {
-                    WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
-                    WorkerMsg::Command(token, cmd) => db.handler_cmd(token, cmd),
-                    WorkerMsg::Tick(time) => db.handler_tick(time),
-                    WorkerMsg::DHTFabric(from, m) => db.dht.handler_fabric_msg(from, m),
-                    WorkerMsg::DHTChange => db.handler_dht_change(),
-                    WorkerMsg::Exit => break,
+            Box::new(move |chan| {
+                for wm in chan {
+                    let db = if let Some(db) = cdb.upgrade() {
+                        db
+                    } else {
+                        break;
+                    };
+                    match wm {
+                        WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
+                        WorkerMsg::Command(token, cmd) => db.handler_cmd(token, cmd),
+                        WorkerMsg::Tick(time) => db.handler_tick(time),
+                        WorkerMsg::DHTFabric(from, m) => db.dht.handler_fabric_msg(from, m),
+                        WorkerMsg::DHTChange => db.handler_dht_change(),
+                        WorkerMsg::Exit => break,
+                    }
                 }
             })
         });
@@ -565,10 +567,12 @@ mod tests {
         if let RespValue::Array(ref arr) = value {
             let mut values: Vec<_> = arr[0..arr.len() - 1]
                 .iter()
-                .map(|d| if let RespValue::Data(ref d) = *d {
-                    d[..].to_owned()
-                } else {
-                    panic!();
+                .map(|d| {
+                    if let RespValue::Data(ref d) = *d {
+                        d[..].to_owned()
+                    } else {
+                        panic!();
+                    }
                 })
                 .collect();
             // sort so we have a deterministic sibling order for tests

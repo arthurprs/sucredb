@@ -316,28 +316,24 @@ impl VNode {
         let req = ReqState::new(token, nodes.len(), consistency, response_fn);
         assert!(self.requests.insert(cookie, req, expire).is_none());
 
-        // fast path for cl One and this node owns data
-        if consistency == ConsistencyLevel::One && nodes.contains(&db.dht.node()) {
+        // fast path
+        if nodes == &[db.dht.node()] {
             let opt_cube = self.state.storage_get(key).ok();
             self.process_get(db, cookie, opt_cube);
             return;
         }
 
+        let msg = MsgRemoteGet {
+            cookie: cookie,
+            vnode: self.state.num,
+            key: key.into(),
+        };
         for node in nodes {
             if node == db.dht.node() {
                 let opt_cube = self.state.storage_get(key).ok();
                 self.process_get(db, cookie, opt_cube);
             } else {
-                let ok = db.fabric
-                    .send_msg(
-                        node,
-                        MsgRemoteGet {
-                            cookie: cookie,
-                            vnode: self.state.num,
-                            key: key.into(),
-                        },
-                    )
-                    .is_ok();
+                let ok = db.fabric.send_msg(node, &msg).is_ok();
                 if !ok {
                     self.process_get(db, cookie, None);
                 }
@@ -408,21 +404,17 @@ impl VNode {
         assert!(self.requests.insert(cookie, req, expire).is_none());
 
         let reply = consistency != ConsistencyLevel::One;
+        let msg = MsgRemoteSet {
+            cookie: cookie,
+            vnode: self.state.num,
+            key: key.into(),
+            value: cube.clone(),
+            reply: reply,
+            reply_result: reply && reply_result,
+        };
         for node in nodes {
             if node != db.dht.node() {
-                let ok = db.fabric
-                    .send_msg(
-                        node,
-                        MsgRemoteSet {
-                            cookie: cookie,
-                            vnode: self.state.num,
-                            key: key.into(),
-                            value: cube.clone(),
-                            reply: reply,
-                            reply_result: reply && reply_result,
-                        },
-                    )
-                    .is_ok();
+                let ok = db.fabric.send_msg(node, &msg).is_ok();
                 if !ok {
                     self.process_set(db, cookie, Err(FabricError::NoRoute));
                 }
@@ -536,7 +528,7 @@ impl VNode {
             .map_err(|_| FabricError::StorageError);
         let _ = db.fabric.send_msg(
             from,
-            MsgRemoteGetAck {
+            &MsgRemoteGetAck {
                 cookie: msg.cookie,
                 vnode: msg.vnode,
                 result: result,
@@ -568,7 +560,7 @@ impl VNode {
         if reply && !reply_result {
             let _ = db.fabric.send_msg(
                 from,
-                MsgRemoteSetAck {
+                &MsgRemoteSetAck {
                     vnode: vnode,
                     cookie: cookie,
                     result: Ok(None),
@@ -581,7 +573,7 @@ impl VNode {
         if reply_result {
             let _ = db.fabric.send_msg(
                 from,
-                MsgRemoteSetAck {
+                &MsgRemoteSetAck {
                     vnode: vnode,
                     cookie: cookie,
                     result: result,
@@ -990,8 +982,10 @@ impl VNodeState {
         let mut batch = self.storage.batch_new(0);
         {
             let clocks = &mut self.clocks;
-            proposed.for_each_dot(|i, v| if clocks.add(i, v) {
-                batch.log_set((i, v), key);
+            proposed.for_each_dot(|i, v| {
+                if clocks.add(i, v) {
+                    batch.log_set((i, v), key);
+                }
             });
         }
 

@@ -48,7 +48,7 @@ pub enum SyncDirection {
 
 type IteratorFn = Box<FnMut(&VNodeState) -> Result<Option<(Bytes, Cube)>, ()> + Send>;
 
-type InFlightSyncMsgMap = InFlightMap<u64, (Bytes, Cube), Instant, IdHasherBuilder>;
+type InFlightSyncMsgMap = InFlightMap<u64, MsgSyncSend, Instant, IdHasherBuilder>;
 
 struct SyncKeysIterator {
     dots_delta: BitmappedVersionVectorDelta,
@@ -240,13 +240,14 @@ impl Synchronization {
         debug!("Delta from {:?} to {:?}", state.clocks, clocks_in_peer);
 
         let mut sync_keys = SyncKeysIterator::new(dots_delta);
-        let iterator_fn: IteratorFn =
-            Box::new(move |state| if let Some(key) = sync_keys.next(state)? {
+        let iterator_fn: IteratorFn = Box::new(move |state| {
+            if let Some(key) = sync_keys.next(state)? {
                 let cube = state.storage_get(&key)?;
                 Ok(Some((key, cube)))
             } else {
                 Ok(None)
-            });
+            }
+        });
 
         // Only send the part of the bvv corresponding to things that this node coordinated.
         // Even if the dots are registered in the bvv,
@@ -296,7 +297,7 @@ impl Synchronization {
         db.fabric
             .send_msg(
                 peer,
-                MsgSyncStart {
+                &MsgSyncStart {
                     cookie: cookie,
                     vnode: state.num(),
                     clocks_in_peer: clocks_in_peer,
@@ -341,7 +342,7 @@ impl Synchronization {
                 *last_send = Instant::now();
                 let _ = db.fabric.send_msg(
                     peer,
-                    MsgSyncFin {
+                    &MsgSyncFin {
                         cookie: cookie,
                         vnode: state.num(),
                         result: Err(error),
@@ -374,7 +375,7 @@ impl Synchronization {
                 db.fabric
                     .send_msg(
                         peer,
-                        MsgSyncFin {
+                        &MsgSyncFin {
                             cookie: cookie,
                             vnode: state.num(),
                             result: Ok(clocks_snapshot.clone()),
@@ -410,35 +411,24 @@ impl Synchronization {
                 ref mut last_send,
                 ..
             } => {
-                while let Some((seq, &(ref k, ref v))) = inflight.touch_expired(now, timeout) {
+                while let Some((seq, msg)) = inflight.touch_expired(now, timeout) {
                     debug!("resending seq {} for sync/bootstrap {:?}", seq, cookie);
-                    let _ = stry!(db.fabric.send_msg(
-                        peer,
-                        MsgSyncSend {
-                            cookie: cookie,
-                            vnode: state.num(),
-                            seq: seq,
-                            key: k.clone(),
-                            value: v.clone(),
-                        },
-                    ));
+                    let _ = stry!(db.fabric.send_msg(peer, msg,));
                     metrics::SYNC_RESEND.mark(1);
                 }
                 let mut error = false;
                 while inflight.len() < db.config.sync_msg_inflight as usize {
                     match iterator(state) {
                         Ok(Some((k, v))) => {
-                            let _ = stry!(db.fabric.send_msg(
-                                peer,
-                                MsgSyncSend {
-                                    cookie: cookie,
-                                    vnode: state.num(),
-                                    seq: *count,
-                                    key: k.clone(),
-                                    value: v.clone(),
-                                },
-                            ));
-                            inflight.insert(*count, (k, v), timeout);
+                            let msg = MsgSyncSend {
+                                cookie: cookie,
+                                vnode: state.num(),
+                                seq: *count,
+                                key: k.clone(),
+                                value: v.clone(),
+                            };
+                            let _ = stry!(db.fabric.send_msg(peer, &msg,));
+                            inflight.insert(*count, msg, timeout);
                             *count += 1;
                             *last_send = now;
                             metrics::SYNC_SEND.mark(1);
@@ -551,7 +541,7 @@ impl Synchronization {
                     state.clocks.merge(msg.result.as_ref().unwrap());
                     state.save(db, false);
                     // send it back as a form of ack-ack
-                    let _ = db.fabric.send_msg(peer, msg);
+                    let _ = db.fabric.send_msg(peer, &msg);
                     SyncResult::Done
                 } else if msg.result.err() == Some(FabricError::NotReady) {
                     SyncResult::Continue
@@ -589,7 +579,7 @@ impl Synchronization {
 
                 let _ = db.fabric.send_msg(
                     peer,
-                    MsgSyncAck {
+                    &MsgSyncAck {
                         cookie: msg.cookie,
                         vnode: state.num(),
                         seq: msg.seq,

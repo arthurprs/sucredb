@@ -17,7 +17,7 @@ use config::Config;
 use hash::{hash_slot, HASH_SLOTS};
 use database::{NodeId, VNodeId};
 use version_vector::VersionVector;
-use fabric::{Fabric, FabricMsg, FabricMsgType};
+use fabric::{Fabric, FabricMsg, FabricMsgRef, FabricMsgType};
 use types::PhysicalNodeId;
 use utils::{GenericError, IdHashMap, IdHashSet, split_u64};
 
@@ -513,10 +513,12 @@ impl<T: Metadata> Ring<T> {
                 // only consider nodes in node_map (others could be leaving/invalid)
                 if let Some((_, node)) = vn.owners
                     .iter()
-                    .filter_map(|(&n, &s)| if s == Retiring {
-                        node_map.get(&n).map(|p| (p.len(), n))
-                    } else {
-                        None
+                    .filter_map(|(&n, &s)| {
+                        if s == Retiring {
+                            node_map.get(&n).map(|p| (p.len(), n))
+                        } else {
+                            None
+                        }
                     })
                     .min()
                 {
@@ -565,10 +567,12 @@ impl<T: Metadata> Ring<T> {
         for vn in self.vnodes.iter_mut() {
             vn.owners = vn.owners
                 .iter()
-                .filter_map(|(&n, &s)| if s == Retiring {
-                    None
-                } else {
-                    Some((n, Owner))
+                .filter_map(|(&n, &s)| {
+                    if s == Retiring {
+                        None
+                    } else {
+                        Some((n, Owner))
+                    }
                 })
                 .collect();
         }
@@ -766,10 +770,10 @@ impl<T: Metadata> DHT<T> {
 
     fn on_connection(inner: &Inner<T>, from: NodeId) {
         if inner.sync_on_connect && !inner.ring.vnodes.is_empty() {
-            let _ = inner.fabric.send_msg(
-                from,
-                FabricMsg::DHTSync(Ring::serialize(&inner.ring).unwrap().into()),
-            );
+            let serialized_ring: Bytes = Ring::serialize(&inner.ring).unwrap().into();
+            let _ = inner
+                .fabric
+                .send_msg(from, &FabricMsg::DHTSync(serialized_ring));
         }
     }
 
@@ -778,12 +782,12 @@ impl<T: Metadata> DHT<T> {
             FabricMsg::DHTAE(version) => if inner.ring.vnodes.is_empty() {
                 warn!("Can't reply DHTAE while starting up");
             } else if !version.descends(&inner.ring.version) {
-                // received version precends the local version
+                // received version precends the local v
+                let serialized_ring: Bytes = Ring::serialize(&inner.ring).unwrap().into();
                 debug!("Replying DHTAE");
-                let _ = inner.fabric.send_msg(
-                    from,
-                    FabricMsg::DHTSync(Ring::serialize(&inner.ring).unwrap().into()),
-                );
+                let _ = inner
+                    .fabric
+                    .send_msg(from, &FabricMsg::DHTSync(serialized_ring));
             },
             FabricMsg::DHTSync(bytes) => {
                 debug!("Incoming DHTSync");
@@ -808,14 +812,14 @@ impl<T: Metadata> DHT<T> {
     }
 
     fn broadcast(inner: &Inner<T>) {
-        let serialized_ring: Bytes = Ring::serialize(&inner.ring).unwrap().into();
+        let msg = FabricMsg::DHTSync(Ring::serialize(&inner.ring).unwrap().into());
         for (&node_id, node) in inner.ring.nodes.iter() {
             if node_id == inner.node || node.status != NodeStatus::Valid {
                 continue;
             }
             let _ = inner
                 .fabric
-                .send_msg(node_id, FabricMsg::DHTSync(serialized_ring.clone()));
+                .send_msg(node_id, &msg);
         }
     }
 
@@ -838,7 +842,7 @@ impl<T: Metadata> DHT<T> {
             if rng.next_f32() < chance {
                 let _ = inner
                     .fabric
-                    .send_msg(node_id, FabricMsg::DHTAE(inner.ring.version.clone()));
+                    .send_msg(node_id, FabricMsgRef::DHTAE(&inner.ring.version));
             }
         }
     }

@@ -7,7 +7,7 @@ use std::collections::hash_map::Entry as HMEntry;
 
 use linear_map::LinearMap;
 use rand::{thread_rng, Rng};
-use bytes::{BufMut, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use bincode;
 
@@ -52,15 +52,23 @@ impl codec::Decoder for FramedBincodeCodec {
     }
 }
 
+impl FramedBincodeCodec {
+    fn serialize(item: FabricMsgRef) -> Bytes {
+        let item_size = bincode::serialized_size(&item);
+        let mut dst = BytesMut::with_capacity(item_size as usize + 4);
+        dst.put_u32::<LittleEndian>(item_size as u32);
+        bincode::serialize_into(&mut (&mut dst).writer(), &item, bincode::Infinite).unwrap();
+        dst.into()
+    }
+}
+
 impl codec::Encoder for FramedBincodeCodec {
-    type Item = FabricMsg;
+    type Item = Bytes;
     type Error = io::Error;
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> io::Result<()> {
-        let item_size = bincode::serialized_size(&item);
-        dst.reserve(4 + item_size as usize);
-        dst.put_u32::<LittleEndian>(item_size as u32);
-        bincode::serialize_into(&mut dst.writer(), &item, bincode::Infinite).unwrap();
+        dst.reserve(item.len());
+        dst.put(&item);
         Ok(())
     }
 }
@@ -69,7 +77,7 @@ impl codec::Encoder for FramedBincodeCodec {
 pub type FabricMsgFn = Box<FnMut(NodeId, FabricMsg) + Send>;
 pub type FabricConFn = Box<FnMut(NodeId) + Send>;
 
-type SenderChan = fmpsc::UnboundedSender<FabricMsg>;
+type SenderChan = fmpsc::UnboundedSender<Bytes>;
 type InitType = io::Result<(Arc<SharedContext>, foneshot::Sender<()>)>;
 
 const FABRIC_KEEPALIVE_MS: u64 = 1000;
@@ -463,7 +471,7 @@ impl Fabric {
     }
 
     // TODO: take msgs as references and buffer serialized bytes instead
-    pub fn send_msg<T: Into<FabricMsg>>(&self, node: NodeId, msg: T) -> Result<(), FabricError> {
+    pub fn send_msg<'a, T: Into<FabricMsgRef<'a>>>(&'a self, node: NodeId, msg: T) -> Result<(), FabricError> {
         let msg = msg.into();
         debug!("send_msg node:{} {:?}", node, msg);
         if node == self.context.node {
@@ -485,16 +493,13 @@ impl Fabric {
                 }
             }
         }
+
+        let serialized_msg = FramedBincodeCodec::serialize(msg);
         let connections = self.context.connections.read().unwrap();
         if let Some(o) = connections.get(&node) {
-            if let Some(&(connection_id, ref chan)) = thread_rng().choose(o) {
-                if let Err(e) = chan.unbounded_send(msg) {
-                    warn!(
-                        "Can't send to fabric {}-{} chan: {:?}",
-                        node,
-                        connection_id,
-                        e
-                    );
+            if let Some(&(connection_id, ref chan)) = thread_rng().choose::<(_, _)>(o) {
+                if let Err(_) = chan.unbounded_send(serialized_msg) {
+                    warn!("Can't send to fabric {}-{} chan", node, connection_id,);
                 } else {
                     return Ok(());
                 }
@@ -557,7 +562,7 @@ mod tests {
             fabric1
                 .send_msg(
                     2,
-                    MsgRemoteSetAck {
+                    &MsgRemoteSetAck {
                         cookie: Default::default(),
                         vnode: Default::default(),
                         result: Ok(None),

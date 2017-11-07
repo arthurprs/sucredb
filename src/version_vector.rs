@@ -723,7 +723,9 @@ impl<T> CausalValue for DotMap<T> {
     }
 }
 
-// WARN: the implementation assumes full-state crdts
+// FIXME: the implementation assumes always full-state crdts and
+// that the operation causal context is the same as the object.
+// Just enough for now.
 impl<K: Eq + Hash, V: CausalValue> CausalMap<K, V> {
     pub fn new() -> Self {
         CausalMap(Default::default())
