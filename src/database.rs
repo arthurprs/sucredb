@@ -1,7 +1,7 @@
 use std::{net, time};
 use std::sync::{Arc, Mutex, RwLock};
+use bytes::Bytes;
 use dht::{RingDescription, DHT};
-use version_vector::*;
 use fabric::*;
 use vnode::*;
 use workers::*;
@@ -17,12 +17,62 @@ use metrics::{self, Gauge};
 use vnode_sync::SyncDirection;
 
 // require sync as it can be called from any worker thread
-pub type DatabaseResponseFn = Box<Fn(Token, RespValue) + Send + Sync>;
+pub type DatabaseResponseFn = Box<Fn(Context) + Send + Sync>;
 
 #[derive(Default)]
 struct Stats {
     incomming_syncs: u16,
     outgoing_syncs: u16,
+}
+
+// S: -> Get
+// D: <- Get
+// D: -> Get res
+// S: <- Get res
+//--
+// S: -> MULTI, SET a, SET b, EXEC
+// D: <- MULTI, SET a, SET b, EXEC
+// D: -> Ok, Queued, Queued, [SET a res, SET b res]
+// S: <- Ok, Queued, Queued, [SET a res, SET b res]
+#[derive(Debug)]
+pub struct Context {
+    pub token: Token,
+    pub is_multi: bool,
+    pub is_exec: bool,
+    vnode: Option<VNodeId>, // if vnode changes mid way a multi batch we need to error ;)
+    response: Vec<RespValue>, // response
+    cmds: Vec<RespValue>, // multi commands get added here
+    writes: Vec<(Bytes, Cube)>, // multi command writes go here
+}
+
+impl Context {
+    pub fn new(token: Token) -> Self {
+        Context {
+            token,
+            is_multi: false,
+            is_exec: false,
+            vnode: None,
+            response: Default::default(),
+            cmds: Default::default(),
+            writes: Default::default(),
+        }
+    }
+
+    pub fn take_response(&mut self) -> RespValue {
+        if self.is_multi {
+            RespValue::Array(::std::mem::replace(&mut self.response, Default::default()))
+        } else {
+            self.response.pop().unwrap()
+        }
+    }
+
+    pub fn push_cmd(&mut self, cmd: RespValue) {
+        self.cmds.push(cmd);
+    }
+
+    pub fn push_response(&mut self, response: RespValue) {
+        self.response.push(response);
+    }
 }
 
 // TODO: some things to investigate
@@ -192,7 +242,7 @@ impl Database {
                     };
                     match wm {
                         WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
-                        WorkerMsg::Command(token, cmd) => db.handler_cmd(token, cmd),
+                        WorkerMsg::Command(context, cmd) => db.handler_cmd(context, cmd),
                         WorkerMsg::Tick(time) => db.handler_tick(time),
                         WorkerMsg::DHTFabric(from, m) => db.dht.handler_fabric_msg(from, m),
                         WorkerMsg::DHTChange => db.handler_dht_change(),
@@ -408,39 +458,45 @@ impl Database {
     // CLIENT CRUD
     pub fn set(
         &self,
-        token: Token,
+        mut context: Context,
         key: &[u8],
         mutator_fn: MutatorFn,
-        vv: VersionVector,
         consistency: ConsistencyLevel,
         reply_result: bool,
         response_fn: ResponseFn,
     ) {
         let vnode = self.dht.key_vnode(key);
-        vnode!(self, vnode, |mut vn| {
-            vn.do_set(
-                self,
-                token,
-                key,
-                mutator_fn,
-                vv,
-                consistency,
-                reply_result,
-                response_fn,
-            );
-        });
+        if context.is_exec {
+            if context.vnode.is_some() {
+                context.vnode = Some(vnode);
+            } else if context.vnode != Some(vnode) {
+                unimplemented!();
+            }
+        } else {
+            vnode!(self, vnode, |mut vn| {
+                vn.do_set(
+                    self,
+                    context,
+                    key,
+                    mutator_fn,
+                    consistency,
+                    reply_result,
+                    response_fn,
+                );
+            });
+        }
     }
 
     pub fn get(
         &self,
-        token: Token,
+        context: Context,
         key: &[u8],
         consistency: ConsistencyLevel,
         response_fn: ResponseFn,
     ) {
         let vnode = self.dht.key_vnode(key);
         vnode!(self, vnode, |mut vn| {
-            vn.do_get(self, token, key, consistency, response_fn);
+            vn.do_get(self, context, key, consistency, response_fn);
         });
     }
 }
@@ -504,9 +560,9 @@ mod tests {
             };
             let db = Database::new(
                 &config,
-                Box::new(move |t, v| {
-                    info!("response for {}", t);
-                    let r = responses1.lock().unwrap().insert(t, v);
+                Box::new(move |mut ctx| {
+                    info!("response for {}", ctx.token);
+                    let r = responses1.lock().unwrap().insert(ctx.token, ctx.take_response());
                     assert!(r.is_none(), "replaced a result");
                 }),
             );
@@ -550,7 +606,7 @@ mod tests {
 
         fn do_cmd(&self, token: Token, args: &[&[u8]]) {
             self.handler_cmd(
-                token,
+                Context::new(token),
                 RespValue::Array(args.iter().map(|&x| RespValue::Data(x.into())).collect()),
             )
         }
@@ -571,7 +627,7 @@ mod tests {
                     if let RespValue::Data(ref d) = *d {
                         d[..].to_owned()
                     } else {
-                        panic!();
+                        panic!("cant decode values from {:?}", value);
                     }
                 })
                 .collect();
@@ -580,7 +636,7 @@ mod tests {
             let vv = if let RespValue::Data(ref d) = arr[arr.len() - 1] {
                 bincode::deserialize(&d[..]).unwrap()
             } else {
-                panic!();
+                panic!("cant decode values from {:?}", value);
             };
             return (values, vv);
         }

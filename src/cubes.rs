@@ -7,7 +7,7 @@ use command::CommandError;
 use resp::RespValue;
 use bincode;
 
-pub type MutatorFn<'a> = &'a mut FnMut(Id, Version, Cube, &VersionVector)
+pub type MutatorFn<'a> = &'a mut FnMut(Id, Version, Cube)
     -> Result<(Cube, Option<RespValue>), CommandError>;
 // TODO: this will eventually become a Box<Fn...>
 pub type ResponseFn = fn(Cube) -> RespValue;

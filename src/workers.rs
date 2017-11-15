@@ -1,14 +1,14 @@
 use std::{thread, time};
 use std::sync::mpsc;
 use fabric::FabricMsg;
-use database::{NodeId, Token};
+use database::{Context, NodeId};
 use rand::{thread_rng, Rng};
 use resp::RespValue;
 
 #[derive(Debug)]
 pub enum WorkerMsg {
     Fabric(NodeId, FabricMsg),
-    Command(Token, RespValue),
+    Command(Context, RespValue),
     Tick(time::Instant),
     DHTFabric(NodeId, FabricMsg),
     DHTChange,

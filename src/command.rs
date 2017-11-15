@@ -4,7 +4,7 @@ use std::convert::TryInto;
 use bytes::Bytes;
 use bincode;
 use resp::RespValue;
-use database::Database;
+use database::{Context, Database};
 use types::*;
 use config;
 use version_vector::*;
@@ -25,6 +25,7 @@ pub enum CommandError {
     InvalidValue,
     InvalidConsistencyValue,
     InvalidIntValue,
+    InvalidCommand,
     Unavailable,
 }
 
@@ -71,9 +72,9 @@ fn check_value_len(value_len: usize) -> Result<(), CommandError> {
 }
 
 impl Database {
-    pub fn handler_cmd(&self, token: u64, cmd: RespValue) {
-        debug!("Processing ({:?}) {:?}", token, cmd);
-
+    pub fn handler_cmd(&self, context: Context, cmd: RespValue) {
+        debug!("Processing ({:?}) {:?}", context.token, cmd);
+        let token = context.token;
         let dummy = Bytes::new();
         let mut argc = 0;
         let mut args = [&dummy; 8];
@@ -91,36 +92,53 @@ impl Database {
         }
 
         if argc == 0 {
-            self.respond_error(token, CommandError::ProtocolError);
+            self.respond_error(context, CommandError::ProtocolError);
             return;
         }
 
         let arg0 = args[0];
         let args = &args[1..argc];
 
+        // if context.is_multi {
+        //     let ret = match arg0.as_ref() {
+        //         b"EXEC"| b"exec" => self.cmd_exec(context, args),
+        //         _ => context.push_cmd(cmd.clone()),
+        //     };
+        //     if let Err(err) = ret {
+        //         self.respond_error(context, err);
+        //     } else {
+        //         self.respond(context, RespValue::Status("QUEUED".into()));
+        //     }
+        //     return;
+        // }
+
         let ret = match arg0.as_ref() {
-            b"GET" | b"get" => self.cmd_get(token, args),
-            b"SET" | b"set" => self.cmd_set(token, args, false),
-            b"HGETALL" | b"hgetall" => self.cmd_hgetall(token, args),
-            b"HSET" | b"hset" => self.cmd_hset(token, args),
-            b"HDEL" | b"hdel" => self.cmd_hdel(token, args),
-            b"SMEMBERS" | b"smembers" => self.cmd_smembers(token, args),
-            b"SADD" | b"sadd" => self.cmd_sadd(token, args),
-            b"SREM" | b"srem" => self.cmd_srem(token, args),
-            b"SPOP" | b"spop" => self.cmd_spop(token, args),
-            b"GETSET" | b"getset" => self.cmd_set(token, args, true),
-            b"DEL" | b"del" => self.cmd_del(token, args),
-            b"CLUSTER" | b"cluster" => self.cmd_cluster(token, args),
-            b"TYPE" | b"type" => self.cmd_type(token, args),
+            b"GET" | b"get" => self.cmd_get(context, args),
+            b"SET" | b"set" => self.cmd_set(context, args, false),
+            b"HGETALL" | b"hgetall" => self.cmd_hgetall(context, args),
+            b"HSET" | b"hset" => self.cmd_hset(context, args),
+            b"HDEL" | b"hdel" => self.cmd_hdel(context, args),
+            b"SMEMBERS" | b"smembers" => self.cmd_smembers(context, args),
+            b"SADD" | b"sadd" => self.cmd_sadd(context, args),
+            b"SREM" | b"srem" => self.cmd_srem(context, args),
+            b"SPOP" | b"spop" => self.cmd_spop(context, args),
+            b"GETSET" | b"getset" => self.cmd_set(context, args, true),
+            b"DEL" | b"del" => self.cmd_del(context, args),
+            b"CLUSTER" | b"cluster" => self.cmd_cluster(context, args),
+            b"TYPE" | b"type" => self.cmd_type(context, args),
+            b"MULTI" | b"multi" => self.cmd_multi(context, args),
+            b"EXEC" | b"exec" => self.cmd_exec(context, args),
             b"ECHO" | b"echo" => {
-                self.respond(token, cmd.clone());
+                self.respond(context, cmd.clone());
                 Ok(())
             }
             b"ASKING" | b"asking" | b"READONLY" | b"readonly" | b"READWRITE" | b"readwrite" => {
-                self.respond_ok(token);
-                Ok(())
+                check_arg_count(args.len(), 0, 0).and_then(|_| {
+                    self.respond_ok(context);
+                    Ok(())
+                })
             }
-            b"CONFIG" | b"config" => self.cmd_config(token, args),
+            b"CONFIG" | b"config" => self.cmd_config(context, args),
             _ => {
                 debug!("Unknown command {:?}", cmd);
                 Err(CommandError::UnknownCommand)
@@ -128,7 +146,8 @@ impl Database {
         };
 
         if let Err(err) = ret {
-            self.respond_error(token, err);
+            // NOTE that the context here is recreated
+            self.respond_error(Context::new(token), err);
         }
     }
 
@@ -158,60 +177,78 @@ impl Database {
         })
     }
 
-    fn cmd_config(&self, token: u64, _args: &[&Bytes]) -> Result<(), CommandError> {
-        Ok(self.respond(token, RespValue::Array(Default::default())))
+    fn cmd_multi(&self, context: Context, args: &[&Bytes]) -> Result<(), CommandError> {
+        check_arg_count(args.len(), 0, 0)?;
+        if context.is_multi {
+            Err(CommandError::InvalidCommand)
+        } else {
+            // context.is_multi = true;
+            Ok(())
+        }
     }
 
-    fn cmd_hgetall(&self, token: u64, args: &[&Bytes]) -> Result<(), CommandError> {
+    fn cmd_exec(&self, context: Context, args: &[&Bytes]) -> Result<(), CommandError> {
+        check_arg_count(args.len(), 0, 1)?;
+        let _consistency = self.parse_consistency(args.len() > 0, args, 0)?;
+        if context.is_multi {
+            unimplemented!()
+        } else {
+            Err(CommandError::InvalidCommand)
+        }
+    }
+
+    fn cmd_config(&self, context: Context, _args: &[&Bytes]) -> Result<(), CommandError> {
+        Ok(self.respond(context, RespValue::Array(Default::default())))
+    }
+
+    fn cmd_hgetall(&self, context: Context, args: &[&Bytes]) -> Result<(), CommandError> {
         metrics::REQUEST_GET.mark(1);
         check_arg_count(args.len(), 1, 2)?;
         check_key_len(args[0].len())?;
-        let consistency = self.parse_consistency(args.len() >= 2, args, 1)?;
+        let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
         Ok(self.get(
-            token,
+            context,
             args[0].as_ref(),
             consistency,
             cubes::render_map,
         ))
     }
 
-    fn cmd_hset(&self, token: u64, args: &[&Bytes]) -> Result<(), CommandError> {
+    fn cmd_hset(&self, context: Context, args: &[&Bytes]) -> Result<(), CommandError> {
         metrics::REQUEST_SET.mark(1);
         check_arg_count(args.len(), 3, 4)?;
         check_key_len(args[0].len())?;
         check_key_len(args[1].len())?;
         check_value_len(args[2].len())?;
-        let consistency = self.parse_consistency(args.len() >= 4, args, 3)?;
+        let consistency = self.parse_consistency(args.len() > 3, args, 3)?;
         Ok(self.set(
-            token,
+            context,
             args[0].as_ref(),
-            &mut |i, v, c, _vv| {
+            &mut |i, v, c| {
                 let mut map = c.into_map().ok_or(CommandError::TypeError)?;
                 let result = map.insert(i, v, args[1].clone(), args[2].clone()) as i64;
                 Ok((Cube::Map(map), Some(RespValue::Int(result))))
             },
-            Default::default(),
             consistency,
             false,
             cubes::render_dummy,
         ))
     }
 
-    fn cmd_hdel(&self, token: u64, args: &[&Bytes]) -> Result<(), CommandError> {
+    fn cmd_hdel(&self, context: Context, args: &[&Bytes]) -> Result<(), CommandError> {
         metrics::REQUEST_DEL.mark(1);
         check_arg_count(args.len(), 2, 3)?;
         check_key_len(args[0].len())?;
         check_key_len(args[1].len())?;
-        let consistency = self.parse_consistency(args.len() >= 3, args, 2)?;
+        let consistency = self.parse_consistency(args.len() > 2, args, 2)?;
         Ok(self.set(
-            token,
+            context,
             args[0],
-            &mut |i, v, c, _vv| {
+            &mut |i, v, c| {
                 let mut map = c.into_map().ok_or(CommandError::TypeError)?;
                 let result = map.remove(i, v, &args[1]) as i64;
                 Ok((Cube::Map(map), Some(RespValue::Int(result))))
             },
-            Default::default(),
             consistency,
             false,
             cubes::render_dummy,
@@ -219,70 +256,68 @@ impl Database {
     }
 
 
-    fn cmd_smembers(&self, token: u64, args: &[&Bytes]) -> Result<(), CommandError> {
+    fn cmd_smembers(&self, context: Context, args: &[&Bytes]) -> Result<(), CommandError> {
         metrics::REQUEST_GET.mark(1);
         check_arg_count(args.len(), 1, 2)?;
         check_key_len(args[0].len())?;
-        let consistency = self.parse_consistency(args.len() >= 2, args, 1)?;
+        let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
         Ok(self.get(
-            token,
+            context,
             args[0].as_ref(),
             consistency,
             cubes::render_set,
         ))
     }
 
-    fn cmd_sadd(&self, token: u64, args: &[&Bytes]) -> Result<(), CommandError> {
+    fn cmd_sadd(&self, context: Context, args: &[&Bytes]) -> Result<(), CommandError> {
         metrics::REQUEST_SET.mark(1);
         check_arg_count(args.len(), 2, 3)?;
         check_key_len(args[0].len())?;
         check_value_len(args[1].len())?;
-        let consistency = self.parse_consistency(args.len() >= 3, args, 2)?;
+        let consistency = self.parse_consistency(args.len() > 2, args, 2)?;
         Ok(self.set(
-            token,
+            context,
             args[0].as_ref(),
-            &mut |i, v, c, _vv| {
+            &mut |i, v, c| {
                 let mut set = c.into_set().ok_or(CommandError::TypeError)?;
                 let result = set.insert(i, v, args[1].clone()) as i64;
                 Ok((Cube::Set(set), Some(RespValue::Int(result))))
             },
-            Default::default(),
             consistency,
             false,
             cubes::render_dummy,
         ))
     }
 
-    fn cmd_srem(&self, token: u64, args: &[&Bytes]) -> Result<(), CommandError> {
+    fn cmd_srem(&self, context: Context, args: &[&Bytes]) -> Result<(), CommandError> {
         metrics::REQUEST_DEL.mark(1);
         check_arg_count(args.len(), 2, 3)?;
         check_key_len(args[0].len())?;
         check_key_len(args[1].len())?;
-        let consistency = self.parse_consistency(args.len() >= 3, args, 2)?;
+        let consistency = self.parse_consistency(args.len() > 2, args, 2)?;
         Ok(self.set(
-            token,
+            context,
             args[0],
-            &mut |i, v, c, _vv| {
+            &mut |i, v, c| {
                 let mut set = c.into_set().ok_or(CommandError::TypeError)?;
                 let result = set.remove(i, v, &args[1]) as i64;
                 Ok((Cube::Set(set), Some(RespValue::Int(result))))
             },
-            Default::default(),
             consistency,
             false,
             cubes::render_dummy,
         ))
     }
 
-    fn cmd_spop(&self, token: u64, args: &[&Bytes]) -> Result<(), CommandError> {
+    fn cmd_spop(&self, context: Context, args: &[&Bytes]) -> Result<(), CommandError> {
         metrics::REQUEST_DEL.mark(1);
         check_arg_count(args.len(), 1, 2)?;
         check_key_len(args[0].len())?;
-        let consistency = self.parse_consistency(args.len() >= 2, args, 1)?;
+        let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
         Ok(self.set(
-            token,
+            context,
             args[0],
-            &mut |i, v, c, _vv| {
+            &mut |i, v, c| {
                 let mut set = c.into_set().ok_or(CommandError::TypeError)?;
                 let result = set.pop(i, v);
                 let resp = result
@@ -290,39 +325,43 @@ impl Database {
                     .unwrap_or_else(|| RespValue::Nil);
                 Ok((Cube::Set(set), Some(resp)))
             },
-            Default::default(),
             consistency,
             false,
             cubes::render_dummy,
         ))
     }
 
-    fn cmd_get(&self, token: u64, args: &[&Bytes]) -> Result<(), CommandError> {
+    fn cmd_get(&self, context: Context, args: &[&Bytes]) -> Result<(), CommandError> {
         metrics::REQUEST_GET.mark(1);
         check_arg_count(args.len(), 1, 2)?;
         check_key_len(args[0].len())?;
-        let consistency = self.parse_consistency(args.len() >= 2, args, 1)?;
+        let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
         Ok(self.get(
-            token,
+            context,
             args[0].as_ref(),
             consistency,
             cubes::render_value_or_counter,
         ))
     }
 
-    fn cmd_set(&self, token: u64, args: &[&Bytes], reply_result: bool) -> Result<(), CommandError> {
+    fn cmd_set(
+        &self,
+        context: Context,
+        args: &[&Bytes],
+        reply_result: bool,
+    ) -> Result<(), CommandError> {
         metrics::REQUEST_SET.mark(1);
         check_arg_count(args.len(), 2, 4)?;
         check_key_len(args[0].len())?;
         check_value_len(args[1].len())?;
-        let vv = self.parse_vv(args.len() >= 3 && !args[2].is_empty(), args, 2)?;
-        let consistency = self.parse_consistency(args.len() >= 4, args, 3)?;
+        let vv = self.parse_vv(args.len() > 2 && !args[2].is_empty(), args, 2)?;
+        let consistency = self.parse_consistency(args.len() > 3, args, 3)?;
         Ok(self.set(
-            token,
+            context,
             args[0],
-            &mut |i, v, c, vv| {
+            &mut |i, v, c| {
                 let mut value = c.into_value().ok_or(CommandError::TypeError)?;
-                value.set(i, v, Some(args[1].clone()), vv);
+                value.set(i, v, Some(args[1].clone()), &vv);
                 let resp = if reply_result {
                     None
                 } else {
@@ -330,7 +369,6 @@ impl Database {
                 };
                 Ok((Cube::Value(value), resp))
             },
-            vv,
             consistency,
             reply_result,
             if reply_result {
@@ -341,43 +379,42 @@ impl Database {
         ))
     }
 
-    fn cmd_del(&self, token: u64, args: &[&Bytes]) -> Result<(), CommandError> {
+    fn cmd_del(&self, context: Context, args: &[&Bytes]) -> Result<(), CommandError> {
         metrics::REQUEST_DEL.mark(1);
         check_arg_count(args.len(), 1, 3)?;
         check_key_len(args[0].len())?;
-        let vv = self.parse_vv(args.len() >= 2 && !args[1].is_empty(), args, 1)?;
-        let consistency = self.parse_consistency(args.len() >= 3, args, 2)?;
+        let vv = self.parse_vv(args.len() > 1 && !args[1].is_empty(), args, 1)?;
+        let consistency = self.parse_consistency(args.len() > 2, args, 2)?;
         Ok(self.set(
-            token,
+            context,
             args[0],
-            &mut |i, v, mut c, vv| {
-                let result = c.del(i, v, vv) as i64;
+            &mut |i, v, mut c| {
+                let result = c.del(i, v, &vv) as i64;
                 Ok((c, Some(RespValue::Int(result))))
             },
-            vv,
             consistency,
             false,
             cubes::render_dummy,
         ))
     }
 
-    fn cmd_type(&self, token: u64, args: &[&Bytes]) -> Result<(), CommandError> {
+    fn cmd_type(&self, context: Context, args: &[&Bytes]) -> Result<(), CommandError> {
         check_arg_count(args.len(), 1, 2)?;
-        let consistency = self.parse_consistency(args.len() >= 2, args, 1)?;
+        let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
         Ok(self.get(
-            token,
+            context,
             args[0].as_ref(),
             consistency,
             cubes::render_type,
         ))
     }
 
-    fn cmd_cluster(&self, token: u64, args: &[&Bytes]) -> Result<(), CommandError> {
+    fn cmd_cluster(&self, context: Context, args: &[&Bytes]) -> Result<(), CommandError> {
         check_arg_count(args.len(), 1, 1)?;
         match args[0].as_ref() {
             b"REBALANCE" | b"rebalance" => {
                 self.dht.rebalance().unwrap();
-                Ok(self.respond_ok(token))
+                Ok(self.respond_ok(context))
             }
             b"SLOTS" | b"slots" => {
                 let mut slots = Vec::new();
@@ -392,39 +429,40 @@ impl Database {
                     }));
                     slots.push(RespValue::Array(slot));
                 }
-                Ok(self.respond(token, RespValue::Array(slots)))
+                Ok(self.respond(context, RespValue::Array(slots)))
             }
             _ => Err(CommandError::UnknownCommand),
         }
     }
 
-    pub fn respond(&self, token: Token, resp: RespValue) {
-        debug!("Respond request ({}) {:?}", token, resp);
-        (&self.response_fn)(token, resp);
+    pub fn respond(&self, mut context: Context, resp: RespValue) {
+        debug!("Respond request ({}) {:?}", context.token, resp);
+        context.push_response(resp);
+        (&self.response_fn)(context);
     }
 
-    pub fn respond_int(&self, token: Token, int: i64) {
-        self.respond(token, RespValue::Int(int));
+    pub fn respond_int(&self, context: Context, int: i64) {
+        self.respond(context, RespValue::Int(int));
     }
 
-    pub fn respond_ok(&self, token: Token) {
-        self.respond(token, RespValue::Status("OK".into()));
+    pub fn respond_ok(&self, context: Context) {
+        self.respond(context, RespValue::Status("OK".into()));
     }
 
-    pub fn respond_error(&self, token: Token, error: CommandError) {
-        self.respond(token, error.into());
+    pub fn respond_error(&self, context: Context, error: CommandError) {
+        self.respond(context, error.into());
     }
 
-    pub fn respond_moved(&self, token: Token, vnode: VNodeId, addr: net::SocketAddr) {
+    pub fn respond_moved(&self, context: Context, vnode: VNodeId, addr: net::SocketAddr) {
         self.respond(
-            token,
+            context,
             RespValue::Error(format!("MOVED {} {}", vnode, addr).into()),
         );
     }
 
-    pub fn respond_ask(&self, token: Token, vnode: VNodeId, addr: net::SocketAddr) {
+    pub fn respond_ask(&self, context: Context, vnode: VNodeId, addr: net::SocketAddr) {
         self.respond(
-            token,
+            context,
             RespValue::Error(format!("ASK {} {}", vnode, addr).into()),
         );
     }

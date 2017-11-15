@@ -817,9 +817,7 @@ impl<T: Metadata> DHT<T> {
             if node_id == inner.node || node.status != NodeStatus::Valid {
                 continue;
             }
-            let _ = inner
-                .fabric
-                .send_msg(node_id, &msg);
+            let _ = inner.fabric.send_msg(node_id, &msg);
         }
     }
 
