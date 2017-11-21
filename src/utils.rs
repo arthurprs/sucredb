@@ -48,6 +48,10 @@ impl Hasher for IdHasher {
     }
 }
 
+pub fn replace_default<T: Default>(subject: &mut T) -> T {
+    ::std::mem::replace(subject, Default::default())
+}
+
 pub fn into_io_error<E: Error + Send + Sync + 'static>(e: E) -> io::Error {
     io::Error::new(io::ErrorKind::Other, e)
 }

@@ -569,7 +569,7 @@ mod tests {
                     &MsgRemoteSetAck {
                         cookie: Default::default(),
                         vnode: Default::default(),
-                        result: Ok(None),
+                        result: Ok(Vec::new()),
                     },
                 )
                 .unwrap();

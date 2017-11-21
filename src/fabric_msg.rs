@@ -89,31 +89,29 @@ impl<'a> FabricMsgRef<'a> {
 pub struct MsgRemoteGet {
     pub vnode: VNodeId,
     pub cookie: Cookie,
-    pub key: Bytes,
+    pub keys: Vec<Bytes>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgRemoteGetAck {
     pub vnode: VNodeId,
     pub cookie: Cookie,
-    pub result: Result<Cube, FabricError>,
+    pub result: Result<Vec<Cube>, FabricError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgRemoteSet {
     pub vnode: VNodeId,
     pub cookie: Cookie,
-    pub key: Bytes,
-    pub value: Cube,
+    pub writes: Vec<(Bytes, Cube, bool)>,
     pub reply: bool,
-    pub reply_result: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgRemoteSetAck {
     pub vnode: VNodeId,
     pub cookie: Cookie,
-    pub result: Result<Option<Cube>, FabricError>,
+    pub result: Result<Vec<Option<Cube>>, FabricError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

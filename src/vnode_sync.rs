@@ -574,7 +574,7 @@ impl Synchronization {
             } => {
                 // TODO: what to do with errors here?
                 state
-                    .storage_set_remote(db, &msg.key, msg.value, false)
+                    .storage_set_remote(db, vec![(msg.key, msg.value, false)])
                     .unwrap();
 
                 let _ = db.fabric.send_msg(

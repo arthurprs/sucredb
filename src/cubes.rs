@@ -34,6 +34,12 @@ macro_rules! impl_into{
     }
 }
 
+impl Default for Cube {
+    fn default() -> Self {
+        Cube::Void(Default::default())
+    }
+}
+
 impl Cube {
     pub fn is_subsumed(&self, bvv: &BitmappedVersionVector) -> bool {
         use self::Cube::*;

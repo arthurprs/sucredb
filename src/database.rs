@@ -2,15 +2,17 @@ use std::{net, time};
 use std::sync::{Arc, Mutex, RwLock};
 use bytes::Bytes;
 use dht::{RingDescription, DHT};
+use command::CommandError;
 use fabric::*;
 use vnode::*;
 use workers::*;
 use resp::RespValue;
 use storage::{Storage, StorageManager};
 use rand::{thread_rng, Rng};
-use utils::{assume_str, is_dir_empty_or_absent, IdHashMap, join_u64, split_u64};
+use utils::{assume_str, is_dir_empty_or_absent, IdHashMap, join_u64, split_u64, replace_default};
 use cubes::*;
 pub use types::*;
+use version_vector::Version;
 use utils::LoggerExt;
 use config::Config;
 use metrics::{self, Gauge};
@@ -34,15 +36,16 @@ struct Stats {
 // D: <- MULTI, SET a, SET b, EXEC
 // D: -> Ok, Queued, Queued, [SET a res, SET b res]
 // S: <- Ok, Queued, Queued, [SET a res, SET b res]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Context {
+    vnode: Option<VNodeId>, // if vnode changes mid way a batch we need to error ;)
     pub token: Token,
     pub is_multi: bool,
     pub is_exec: bool,
-    vnode: Option<VNodeId>, // if vnode changes mid way a multi batch we need to error ;)
-    response: Vec<RespValue>, // response
-    cmds: Vec<RespValue>, // multi commands get added here
-    writes: Vec<(Bytes, Cube)>, // multi command writes go here
+    pub response: Vec<RespValue>, // response
+    pub cmds: Vec<RespValue>, // multi commands get added here
+    pub reads: Vec<(Cube, ResponseFn)>,
+    pub writes: Vec<(Version, Bytes, Cube, bool, Result<RespValue, ResponseFn>)>, // multi command writes go here
 }
 
 impl Context {
@@ -55,23 +58,28 @@ impl Context {
             response: Default::default(),
             cmds: Default::default(),
             writes: Default::default(),
+            reads: Default::default(),
         }
     }
 
     pub fn take_response(&mut self) -> RespValue {
         if self.is_multi {
-            RespValue::Array(::std::mem::replace(&mut self.response, Default::default()))
+            RespValue::Array(replace_default(&mut self.response))
         } else {
             self.response.pop().unwrap()
         }
     }
 
-    pub fn push_cmd(&mut self, cmd: RespValue) {
-        self.cmds.push(cmd);
+    pub fn respond(&mut self, response: RespValue) {
+        self.response.push(response);
     }
 
-    pub fn push_response(&mut self, response: RespValue) {
-        self.response.push(response);
+    pub fn clear(&mut self) {
+        self.response.clear();
+        self.cmds.clear();
+        self.writes.clear();
+        self.is_multi = false;
+        self.is_exec = false;
     }
 }
 
@@ -456,47 +464,65 @@ impl Database {
     }
 
     // CLIENT CRUD
+    pub fn flush(
+        &self,
+        context: &mut Context,
+        consistency: ConsistencyLevel,
+    ) {
+        if let Some(vnode) = context.vnode {
+            vnode!(self, vnode, |mut vn| {
+                vn.do_flush(self, context, consistency)
+            });
+        } else {
+            // TODO:
+        }
+    }
+
     pub fn set(
         &self,
-        mut context: Context,
-        key: &[u8],
+        context: &mut Context,
+        key: &Bytes,
         mutator_fn: MutatorFn,
         consistency: ConsistencyLevel,
         reply_result: bool,
         response_fn: ResponseFn,
-    ) {
+    ) -> Result<(), CommandError> {
         let vnode = self.dht.key_vnode(key);
-        if context.is_exec {
-            if context.vnode.is_some() {
-                context.vnode = Some(vnode);
-            } else if context.vnode != Some(vnode) {
-                unimplemented!();
+        // if context.vnode.is_none() {
+        //     context.vnode = Some(vnode);
+        // } else if context.vnode != Some(vnode) {
+        //     context.respond_error(CommandError::InvalidCommand);
+        //     return Ok(());
+        // }
+
+        vnode!(self, vnode, |mut vn| {
+            vn.do_set(
+                self,
+                context,
+                key,
+                mutator_fn,
+                consistency,
+                reply_result,
+                response_fn,
+            );
+            if !context.is_multi {
+                vn.do_flush(self, context, consistency);
             }
-        } else {
-            vnode!(self, vnode, |mut vn| {
-                vn.do_set(
-                    self,
-                    context,
-                    key,
-                    mutator_fn,
-                    consistency,
-                    reply_result,
-                    response_fn,
-                );
-            });
-        }
+        });
+
+        Ok(())
     }
 
     pub fn get(
         &self,
-        context: Context,
-        key: &[u8],
+        context: &mut Context,
+        key: &Bytes,
         consistency: ConsistencyLevel,
         response_fn: ResponseFn,
     ) {
         let vnode = self.dht.key_vnode(key);
         vnode!(self, vnode, |mut vn| {
-            vn.do_get(self, context, key, consistency, response_fn);
+            vn.do_get(self, context, &[key], consistency, response_fn);
         });
     }
 }
