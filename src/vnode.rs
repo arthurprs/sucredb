@@ -10,7 +10,7 @@ use fabric::*;
 use vnode_sync::*;
 use hash::hash_slot;
 use rand::{thread_rng, Rng};
-use utils::{IdHashMap, IdHashSet, IdHasherBuilder, replace_default};
+use utils::{replace_default, IdHashMap, IdHashSet, IdHasherBuilder};
 use bincode;
 use bytes::Bytes;
 
@@ -105,11 +105,7 @@ macro_rules! forward {
 }
 
 impl ReqState {
-    fn new(
-        context: Context,
-        nodes: usize,
-        consistency: ConsistencyLevel,
-    ) -> Self {
+    fn new(context: Context, nodes: usize, consistency: ConsistencyLevel) -> Self {
         ReqState {
             required: consistency.required(nodes as u8),
             total: nodes as u8,
@@ -169,8 +165,8 @@ impl VNode {
         self.syncs
             .values()
             .fold((pend, 0), |(inc, out), s| match *s {
-                Synchronization::BootstrapReceiver { .. } |
-                Synchronization::SyncReceiver { .. } => (inc + 1, out),
+                Synchronization::BootstrapReceiver { .. }
+                | Synchronization::SyncReceiver { .. } => (inc + 1, out),
                 Synchronization::BootstrapSender { .. } | Synchronization::SyncSender { .. } => {
                     (inc, out + 1)
                 }
@@ -190,8 +186,8 @@ impl VNode {
         }
         let status = self.status();
         match (status, x_status) {
-            (VNodeStatus::Ready, VNodeStatus::Absent) |
-            (VNodeStatus::Bootstrap, VNodeStatus::Absent) => {
+            (VNodeStatus::Ready, VNodeStatus::Absent)
+            | (VNodeStatus::Bootstrap, VNodeStatus::Absent) => {
                 {
                     // cancel incomming syncs
                     let state = &mut self.state;
@@ -267,7 +263,11 @@ impl VNode {
 
         let now = Instant::now();
         while let Some((cookie, mut req)) = self.requests.pop_expired(now) {
-            debug!("Request cookie:{:?} token:{} timed out", cookie, req.context.token);
+            debug!(
+                "Request cookie:{:?} token:{} timed out",
+                cookie,
+                req.context.token
+            );
             db.respond_error(&mut req.context, CommandError::Timeout);
         }
 
@@ -347,55 +347,45 @@ impl VNode {
         db: &Database,
         context: &mut Context,
         status: VNodeStatus,
-        key: &[u8],
     ) {
+        let hash_slot = hash_slot(&context.writes[0].1);
+        context.writes.clear();
+
         let mut nodes = db.dht.nodes_for_vnode_ex(self.state.num(), true, false);
         thread_rng().shuffle(&mut nodes);
         for (node, (_, addr)) in nodes {
             if node != db.dht.node() {
-                let hash_slot = hash_slot(key);
                 match status {
                     VNodeStatus::Absent | VNodeStatus::Zombie => {
-                        return context.respond_moved(hash_slot, addr);
+                        return db.respond_moved(context, hash_slot, addr);
                     }
                     VNodeStatus::Bootstrap => {
-                        return context.respond_ask(hash_slot, addr);
+                        return db.respond_ask(context, hash_slot, addr);
                     }
                     VNodeStatus::Ready => unreachable!(),
                 }
             }
         }
 
-        context.respond_error(CommandError::Unavailable);
+        db.respond_error(context, CommandError::Unavailable);
     }
 
     pub fn do_set(
         &mut self,
-        db: &Database,
+        _db: &Database,
         context: &mut Context,
         key: &Bytes,
         mutator: MutatorFn,
-        _consistency: ConsistencyLevel,
         reply_result: bool,
         response_fn: ResponseFn,
     ) {
-        match self.status() {
-            VNodeStatus::Ready => (),
-            status => return self.respond_cant_coordinate(db, context, status, key),
-        }
-
-        let old_cube = match self.state.storage_get(key).map_err(|_| CommandError::StorageError) {
-            Ok(old_cube) => old_cube,
-            Err(e) => return context.respond_error(e),
-        };
-
-        let version = self.state.clocks.event(db.dht.node());
-        let (cube, opt_resp) = match mutator(db.dht.node(), version, old_cube) {
-            Ok(cr) => cr,
-            Err(e) => return context.respond_error(e),
-        };
-
-        context.writes.push((version, key.clone(), cube, reply_result, opt_resp.ok_or(response_fn)));
+        context.writes.push((
+            Err(mutator),
+            key.clone(),
+            Default::default(),
+            reply_result,
+            Err(response_fn),
+        ));
     }
 
     pub fn do_flush(
@@ -404,11 +394,55 @@ impl VNode {
         context: &mut Context,
         consistency: ConsistencyLevel,
     ) {
+        match self.status() {
+            VNodeStatus::Ready => (),
+            status => return self.respond_cant_coordinate(db, context, status),
+        }
+
+        let mut error = None;
+        for write in &mut context.writes {
+            let old_cube = match self.state
+                .storage_get(&write.1)
+                .map_err(|_| CommandError::StorageError)
+            {
+                Ok(old_cube) => old_cube,
+                Err(e) => {
+                    error = Some(e);
+                    break;
+                }
+            };
+
+            let version = self.state.clocks.event(db.dht.node());
+            let mutator = ::std::mem::replace(&mut write.0, Ok(version)).unwrap_err();
+            match mutator(db.dht.node(), version, old_cube) {
+                Ok((cube, opt_resp)) => {
+                    write.2 = cube;
+                    if let Some(resp) = opt_resp {
+                        write.4 = Ok(resp);
+                    }
+                }
+                Err(e) => {
+                    error = Some(e);
+                    break;
+                }
+            };
+        }
+
+        if let Some(e) = error {
+            return db.respond_error(context, e);
+        }
+
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(db.config.request_timeout as _);
         let nodes = db.dht.nodes_for_vnode(self.state.num, true, true);
 
-        match self.state.storage_set_local(db, context.writes.iter().map(|x| (x.0, &x.1[..], &x.2))) {
+        match self.state.storage_set_local(
+            db,
+            context
+                .writes
+                .iter()
+                .map(|x| (*x.0.as_ref().ok().unwrap(), &x.1[..], &x.2)),
+        ) {
             Ok(()) => (),
             Err(e) => return db.respond_error(context, e),
         };
@@ -417,7 +451,11 @@ impl VNode {
         let msg = MsgRemoteSet {
             cookie: cookie,
             vnode: self.state.num,
-            writes: context.writes.iter().map(|x| (x.1.clone(), x.2.clone(), x.3.clone())).collect(),
+            writes: context
+                .writes
+                .iter()
+                .map(|x| (x.1.clone(), x.2.clone(), x.3.clone()))
+                .collect(),
             reply: consistency != ConsistencyLevel::One,
         };
 
@@ -437,7 +475,12 @@ impl VNode {
     }
 
     // OTHER
-    fn process_get(&mut self, db: &Database, cookie: Cookie, response: Result<Vec<Cube>, FabricError>) -> bool {
+    fn process_get(
+        &mut self,
+        db: &Database,
+        cookie: Cookie,
+        response: Result<Vec<Cube>, FabricError>,
+    ) -> bool {
         if let HMEntry::Occupied(mut o) = self.requests.entry(cookie) {
             debug!("process_get {:?}", cookie);
             let done = {
@@ -458,11 +501,10 @@ impl VNode {
                     debug!("get {:?} done but not satisfied", cookie);
                     db.respond_error(&mut state.context, CommandError::Unavailable);
                 } else {
-                    let ReqState {
-                        mut context,
-                        ..
-                    } = state;
-                    context.response.extend(context.reads.drain(..).map(|(c, rf)| rf(c)));
+                    let ReqState { mut context, .. } = state;
+                    context
+                        .response
+                        .extend(context.reads.drain(..).map(|(c, rf)| rf(c)));
                     db.respond(&mut context);
                 }
             }
@@ -501,18 +543,13 @@ impl VNode {
                     debug!("set {:?} done but not satisfied", cookie);
                     db.respond_error(&mut state.context, CommandError::Unavailable);
                 } else {
-                    let ReqState {
-                        mut context,
-                        ..
-                    } = state;
-                    context.response.extend(
-                        context.writes.drain(..).map(|x| {
-                            match x.4 {
-                                Ok(r) => r,
-                                Err(rf) => rf(x.2),
-                            }
-                        })
-                    );
+                    let ReqState { mut context, .. } = state;
+                    context
+                        .response
+                        .extend(context.writes.drain(..).map(|x| match x.4 {
+                            Ok(r) => r,
+                            Err(rf) => rf(x.2),
+                        }));
                     db.respond(&mut context);
                 }
             }
@@ -542,8 +579,9 @@ impl VNode {
         let mut result = Vec::with_capacity(msg.keys.len());
         for key in &msg.keys {
             let value = self.state
-            .storage_get(&key)
-            .map_err(|_| FabricError::StorageError).unwrap();
+                .storage_get(&key)
+                .map_err(|_| FabricError::StorageError)
+                .unwrap();
             result.push(value);
         }
         let _ = db.fabric.send_msg(
@@ -588,7 +626,9 @@ impl VNode {
         let result = self.state
             .storage_set_remote(db, writes)
             .map_err(|_| FabricError::StorageError);
-        if /*reply_result && */ reply {
+        if
+        /*reply_result && */
+        reply {
             let _ = db.fabric.send_msg(
                 from,
                 &MsgRemoteSetAck {
@@ -956,7 +996,7 @@ impl VNodeState {
         }
     }
 
-    pub fn storage_set_local<'a, I: Iterator<Item=(Version, &'a [u8], &'a Cube)>>(
+    pub fn storage_set_local<'a, I: Iterator<Item = (Version, &'a [u8], &'a Cube)>>(
         &mut self,
         db: &Database,
         writes: I,
@@ -967,15 +1007,16 @@ impl VNodeState {
             if cube.is_subsumed(&self.clocks) {
                 batch.del(key);
             } else {
-                let bytes = bincode::serialize(cube, bincode::Infinite).expect("Can't serialize Cube");
+                let bytes =
+                    bincode::serialize(cube, bincode::Infinite).expect("Can't serialize Cube");
                 batch.set(key, &bytes);
             }
 
             batch.log_set((db.dht.node(), version), key);
         }
         self.storage
-        .batch_write(batch)
-        .map_err(|_| CommandError::StorageError)?;
+            .batch_write(batch)
+            .map_err(|_| CommandError::StorageError)?;
 
         Ok(())
     }
@@ -1020,11 +1061,7 @@ impl VNodeState {
                 }
             }
 
-            results.push(if reply_result {
-                Some(new)
-            } else {
-                None
-            });
+            results.push(if reply_result { Some(new) } else { None });
         }
         self.storage.batch_write(batch).map_err(|_| ())?;
         Ok(results)

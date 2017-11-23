@@ -9,7 +9,7 @@ use workers::*;
 use resp::RespValue;
 use storage::{Storage, StorageManager};
 use rand::{thread_rng, Rng};
-use utils::{assume_str, is_dir_empty_or_absent, IdHashMap, join_u64, split_u64, replace_default};
+use utils::{assume_str, is_dir_empty_or_absent, replace_default, IdHashMap, join_u64, split_u64};
 use cubes::*;
 pub use types::*;
 use version_vector::Version;
@@ -36,16 +36,24 @@ struct Stats {
 // D: <- MULTI, SET a, SET b, EXEC
 // D: -> Ok, Queued, Queued, [SET a res, SET b res]
 // S: <- Ok, Queued, Queued, [SET a res, SET b res]
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Context {
     vnode: Option<VNodeId>, // if vnode changes mid way a batch we need to error ;)
     pub token: Token,
     pub is_multi: bool,
     pub is_exec: bool,
     pub response: Vec<RespValue>, // response
-    pub cmds: Vec<RespValue>, // multi commands get added here
+    pub cmds: Vec<RespValue>,     // multi commands get added here
     pub reads: Vec<(Cube, ResponseFn)>,
-    pub writes: Vec<(Version, Bytes, Cube, bool, Result<RespValue, ResponseFn>)>, // multi command writes go here
+    pub writes: Vec<
+        (
+            Result<Version, MutatorFn>,
+            Bytes,
+            Cube,
+            bool,
+            Result<RespValue, ResponseFn>,
+        ),
+    >, // multi command writes go here
 }
 
 impl Context {
@@ -464,11 +472,7 @@ impl Database {
     }
 
     // CLIENT CRUD
-    pub fn flush(
-        &self,
-        context: &mut Context,
-        consistency: ConsistencyLevel,
-    ) {
+    pub fn flush(&self, context: &mut Context, consistency: ConsistencyLevel) {
         if let Some(vnode) = context.vnode {
             vnode!(self, vnode, |mut vn| {
                 vn.do_flush(self, context, consistency)
@@ -496,15 +500,7 @@ impl Database {
         // }
 
         vnode!(self, vnode, |mut vn| {
-            vn.do_set(
-                self,
-                context,
-                key,
-                mutator_fn,
-                consistency,
-                reply_result,
-                response_fn,
-            );
+            vn.do_set(self, context, key, mutator_fn, reply_result, response_fn);
             if !context.is_multi {
                 vn.do_flush(self, context, consistency);
             }
@@ -588,7 +584,10 @@ mod tests {
                 &config,
                 Box::new(move |mut ctx| {
                     info!("response for {}", ctx.token);
-                    let r = responses1.lock().unwrap().insert(ctx.token, ctx.take_response());
+                    let r = responses1
+                        .lock()
+                        .unwrap()
+                        .insert(ctx.token, ctx.take_response());
                     assert!(r.is_none(), "replaced a result");
                 }),
             );

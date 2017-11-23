@@ -102,7 +102,7 @@ impl Database {
 
         let ret = if context.is_multi {
             match arg0.as_ref() {
-                b"EXEC"| b"exec" => self.cmd_exec(context, args),
+                b"EXEC" | b"exec" => self.cmd_exec(context, args),
                 _ => {
                     context.cmds.push(cmd.clone());
                     self.respond_resp(context, RespValue::Status("QUEUED".into()));
@@ -196,7 +196,10 @@ impl Database {
     }
 
     fn cmd_config(&self, context: &mut Context, _args: &[&Bytes]) -> Result<(), CommandError> {
-        Ok(self.respond_resp(context, RespValue::Array(Default::default())))
+        Ok(self.respond_resp(
+            context,
+            RespValue::Array(Default::default()),
+        ))
     }
 
     fn cmd_hgetall(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
@@ -204,12 +207,7 @@ impl Database {
         check_arg_count(args.len(), 1, 2)?;
         check_key_len(args[0].len())?;
         let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
-        Ok(self.get(
-            context,
-            &args[0],
-            consistency,
-            cubes::render_map,
-        ))
+        Ok(self.get(context, args[0], consistency, cubes::render_map))
     }
 
     fn cmd_hset(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
@@ -218,15 +216,17 @@ impl Database {
         check_key_len(args[0].len())?;
         check_key_len(args[1].len())?;
         check_value_len(args[2].len())?;
+        let hash_key = args[1].clone();
+        let hash_value = args[2].clone();
         let consistency = self.parse_consistency(args.len() > 3, args, 3)?;
         self.set(
             context,
             args[0],
-            &mut |i, v, c| {
+            Box::new(move |i, v, c: Cube| {
                 let mut map = c.into_map().ok_or(CommandError::TypeError)?;
-                let result = map.insert(i, v, args[1].clone(), args[2].clone()) as i64;
+                let result = map.insert(i, v, hash_key, hash_value) as i64;
                 Ok((Cube::Map(map), Some(RespValue::Int(result))))
-            },
+            }),
             consistency,
             false,
             cubes::render_dummy,
@@ -238,15 +238,16 @@ impl Database {
         check_arg_count(args.len(), 2, 3)?;
         check_key_len(args[0].len())?;
         check_key_len(args[1].len())?;
+        let hash_key = args[1].clone();
         let consistency = self.parse_consistency(args.len() > 2, args, 2)?;
         self.set(
             context,
             args[0],
-            &mut |i, v, c| {
+            Box::new(move |i, v, c: Cube| {
                 let mut map = c.into_map().ok_or(CommandError::TypeError)?;
-                let result = map.remove(i, v, &args[1]) as i64;
+                let result = map.remove(i, v, &hash_key) as i64;
                 Ok((Cube::Map(map), Some(RespValue::Int(result))))
-            },
+            }),
             consistency,
             false,
             cubes::render_dummy,
@@ -259,12 +260,7 @@ impl Database {
         check_arg_count(args.len(), 1, 2)?;
         check_key_len(args[0].len())?;
         let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
-        Ok(self.get(
-            context,
-            &args[0],
-            consistency,
-            cubes::render_set,
-        ))
+        Ok(self.get(context, args[0], consistency, cubes::render_set))
     }
 
     fn cmd_sadd(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
@@ -272,15 +268,16 @@ impl Database {
         check_arg_count(args.len(), 2, 3)?;
         check_key_len(args[0].len())?;
         check_value_len(args[1].len())?;
+        let set_value = args[1].clone();
         let consistency = self.parse_consistency(args.len() > 2, args, 2)?;
         self.set(
             context,
-            &args[0],
-            &mut |i, v, c| {
+            args[0],
+            Box::new(move |i, v, c: Cube| {
                 let mut set = c.into_set().ok_or(CommandError::TypeError)?;
-                let result = set.insert(i, v, args[1].clone()) as i64;
+                let result = set.insert(i, v, set_value) as i64;
                 Ok((Cube::Set(set), Some(RespValue::Int(result))))
-            },
+            }),
             consistency,
             false,
             cubes::render_dummy,
@@ -291,16 +288,17 @@ impl Database {
         metrics::REQUEST_DEL.mark(1);
         check_arg_count(args.len(), 2, 3)?;
         check_key_len(args[0].len())?;
-        check_key_len(args[1].len())?;
+        check_value_len(args[1].len())?;
+        let set_value = args[1].clone();
         let consistency = self.parse_consistency(args.len() > 2, args, 2)?;
         self.set(
             context,
-            &args[0],
-            &mut |i, v, c| {
+            args[0],
+            Box::new(move |i, v, c: Cube| {
                 let mut set = c.into_set().ok_or(CommandError::TypeError)?;
-                let result = set.remove(i, v, &args[1]) as i64;
+                let result = set.remove(i, v, &set_value) as i64;
                 Ok((Cube::Set(set), Some(RespValue::Int(result))))
-            },
+            }),
             consistency,
             false,
             cubes::render_dummy,
@@ -315,14 +313,14 @@ impl Database {
         self.set(
             context,
             args[0],
-            &mut |i, v, c| {
+            Box::new(|i, v, c: Cube| {
                 let mut set = c.into_set().ok_or(CommandError::TypeError)?;
                 let result = set.pop(i, v);
                 let resp = result
                     .map(|x| RespValue::Data(x))
                     .unwrap_or_else(|| RespValue::Nil);
                 Ok((Cube::Set(set), Some(resp)))
-            },
+            }),
             consistency,
             false,
             cubes::render_dummy,
@@ -336,7 +334,7 @@ impl Database {
         let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
         Ok(self.get(
             context,
-            &args[0],
+            args[0],
             consistency,
             cubes::render_value_or_counter,
         ))
@@ -352,21 +350,22 @@ impl Database {
         check_arg_count(args.len(), 2, 4)?;
         check_key_len(args[0].len())?;
         check_value_len(args[1].len())?;
+        let value = args[1].clone();
         let vv = self.parse_vv(args.len() > 2 && !args[2].is_empty(), args, 2)?;
         let consistency = self.parse_consistency(args.len() > 3, args, 3)?;
         self.set(
             context,
             args[0],
-            &mut |i, v, c| {
-                let mut value = c.into_value().ok_or(CommandError::TypeError)?;
-                value.set(i, v, Some(args[1].clone()), &vv);
+            Box::new(move |i, v, c: Cube| {
+                let mut cube_value = c.into_value().ok_or(CommandError::TypeError)?;
+                cube_value.set(i, v, Some(value), &vv);
                 let resp = if reply_result {
                     None
                 } else {
                     Some(RespValue::Status("OK".into()))
                 };
-                Ok((Cube::Value(value), resp))
-            },
+                Ok((Cube::Value(cube_value), resp))
+            }),
             consistency,
             reply_result,
             if reply_result {
@@ -386,10 +385,10 @@ impl Database {
         self.set(
             context,
             args[0],
-            &mut |i, v, mut c| {
+            Box::new(move |i, v, mut c: Cube| {
                 let result = c.del(i, v, &vv) as i64;
                 Ok((c, Some(RespValue::Int(result))))
-            },
+            }),
             consistency,
             false,
             cubes::render_dummy,
@@ -399,12 +398,7 @@ impl Database {
     fn cmd_type(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
         check_arg_count(args.len(), 1, 2)?;
         let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
-        Ok(self.get(
-            context,
-            &args[0],
-            consistency,
-            cubes::render_type,
-        ))
+        Ok(self.get(context, args[0], consistency, cubes::render_type))
     }
 
     fn cmd_cluster(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
@@ -438,13 +432,14 @@ impl Database {
         (&self.response_fn)(replace_default(context));
     }
 
-    pub fn respond_int(&self, context: &mut Context, int: i64) {
-        self.respond_resp(context, RespValue::Int(int));
-    }
-
     pub fn respond_resp(&self, context: &mut Context, resp: RespValue) {
+        context.clear();
         context.response.push(resp);
         self.respond(context);
+    }
+
+    pub fn respond_int(&self, context: &mut Context, int: i64) {
+        self.respond_resp(context, RespValue::Int(int));
     }
 
     pub fn respond_ok(&self, context: &mut Context) {
@@ -453,6 +448,20 @@ impl Database {
 
     pub fn respond_error(&self, context: &mut Context, error: CommandError) {
         self.respond_resp(context, error.into());
+    }
+
+    pub fn respond_moved(&self, context: &mut Context, vnode: VNodeId, addr: net::SocketAddr) {
+        self.respond_resp(
+            context,
+            RespValue::Error(format!("MOVED {} {}", vnode, addr).into()),
+        );
+    }
+
+    pub fn respond_ask(&self, context: &mut Context, vnode: VNodeId, addr: net::SocketAddr) {
+        self.respond_resp(
+            context,
+            RespValue::Error(format!("ASK {} {}", vnode, addr).into()),
+        );
     }
 }
 
@@ -467,17 +476,5 @@ impl Context {
 
     pub fn respond_error(&mut self, error: CommandError) {
         self.respond(error.into());
-    }
-
-    pub fn respond_moved(&mut self, vnode: VNodeId, addr: net::SocketAddr) {
-        self.respond(
-            RespValue::Error(format!("MOVED {} {}", vnode, addr).into()),
-        );
-    }
-
-    pub fn respond_ask(&mut self, vnode: VNodeId, addr: net::SocketAddr) {
-        self.respond(
-            RespValue::Error(format!("ASK {} {}", vnode, addr).into()),
-        );
     }
 }

@@ -1,4 +1,5 @@
 use std::time;
+use std::boxed::FnBox;
 use bytes::Bytes;
 use rand::{thread_rng, Rng};
 use version_vector::*;
@@ -7,8 +8,9 @@ use command::CommandError;
 use resp::RespValue;
 use bincode;
 
-pub type MutatorFn<'a> = &'a mut FnMut(Id, Version, Cube)
-    -> Result<(Cube, Option<RespValue>), CommandError>;
+pub type MutatorFn = Box<
+    FnBox(Id, Version, Cube) -> Result<(Cube, Option<RespValue>), CommandError> + Send,
+>;
 // TODO: this will eventually become a Box<Fn...>
 pub type ResponseFn = fn(Cube) -> RespValue;
 

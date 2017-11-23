@@ -54,14 +54,14 @@ pub enum FabricMsgRef<'a> {
 impl FabricMsg {
     pub fn get_type(&self) -> FabricMsgType {
         match *self {
-            FabricMsg::RemoteGet(..) |
-            FabricMsg::RemoteGetAck(..) |
-            FabricMsg::RemoteSet(..) |
-            FabricMsg::RemoteSetAck(..) => FabricMsgType::Crud,
-            FabricMsg::SyncStart(..) |
-            FabricMsg::SyncSend(..) |
-            FabricMsg::SyncAck(..) |
-            FabricMsg::SyncFin(..) => FabricMsgType::Synch,
+            FabricMsg::RemoteGet(..)
+            | FabricMsg::RemoteGetAck(..)
+            | FabricMsg::RemoteSet(..)
+            | FabricMsg::RemoteSetAck(..) => FabricMsgType::Crud,
+            FabricMsg::SyncStart(..)
+            | FabricMsg::SyncSend(..)
+            | FabricMsg::SyncAck(..)
+            | FabricMsg::SyncFin(..) => FabricMsgType::Synch,
             FabricMsg::DHTSync(..) | FabricMsg::DHTAE(..) => FabricMsgType::DHT,
             _ => unreachable!(),
         }
@@ -71,14 +71,14 @@ impl FabricMsg {
 impl<'a> FabricMsgRef<'a> {
     pub fn get_type(&self) -> FabricMsgType {
         match *self {
-            FabricMsgRef::RemoteGet(..) |
-            FabricMsgRef::RemoteGetAck(..) |
-            FabricMsgRef::RemoteSet(..) |
-            FabricMsgRef::RemoteSetAck(..) => FabricMsgType::Crud,
-            FabricMsgRef::SyncStart(..) |
-            FabricMsgRef::SyncSend(..) |
-            FabricMsgRef::SyncAck(..) |
-            FabricMsgRef::SyncFin(..) => FabricMsgType::Synch,
+            FabricMsgRef::RemoteGet(..)
+            | FabricMsgRef::RemoteGetAck(..)
+            | FabricMsgRef::RemoteSet(..)
+            | FabricMsgRef::RemoteSetAck(..) => FabricMsgType::Crud,
+            FabricMsgRef::SyncStart(..)
+            | FabricMsgRef::SyncSend(..)
+            | FabricMsgRef::SyncAck(..)
+            | FabricMsgRef::SyncFin(..) => FabricMsgType::Synch,
             FabricMsgRef::DHTSync(..) | FabricMsgRef::DHTAE(..) => FabricMsgType::DHT,
             _ => unreachable!(),
         }
