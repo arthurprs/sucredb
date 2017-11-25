@@ -54,7 +54,7 @@ struct Context {
     context: Rc<SharedContext>,
     token: Token,
     requests: VecDeque<RespValue>,
-    inflight: bool,
+    db_context: Option<DbContext>,
 }
 
 struct SharedContext {
@@ -78,35 +78,34 @@ impl Context {
         Context {
             context: context,
             token: token,
-            inflight: false,
+            db_context: Some(DbContext::new(token)),
             requests: VecDeque::new(),
         }
     }
 
     fn dispatch(&mut self, req: RespValue) {
-        if self.inflight {
-            debug!("Enqueued request ({}) {:?}", self.token, req);
-            self.requests.push_back(req);
-        } else {
+        if let Some(db_context) = self.db_context.take() {
             debug!("Dispatched request ({}) {:?}", self.token, req);
             self.context
                 .db_sender
                 .borrow_mut()
-                .send(WorkerMsg::Command(DbContext::new(self.token), req));
-            self.inflight = true;
+                .send(WorkerMsg::Command(db_context, req));
+        } else {
+            debug!("Enqueued request ({}) {:?}", self.token, req);
+            self.requests.push_back(req);
         }
     }
 
-    fn dispatch_next(&mut self, context: DbContext) {
-        assert!(self.inflight, "can't cycle if there's nothing inflight");
+    fn dispatch_next(&mut self, db_context: DbContext) {
+        assert!(self.db_context.is_none(), "can't cycle if there's nothing inflight");
         if let Some(req) = self.requests.pop_front() {
             debug!("Dispatched request ({}) {:?}", self.token, req);
             self.context
                 .db_sender
                 .borrow_mut()
-                .send(WorkerMsg::Command(context, req));
+                .send(WorkerMsg::Command(db_context, req));
         } else {
-            self.inflight = false;
+            self.db_context = Some(db_context);
         }
     }
 }

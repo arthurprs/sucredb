@@ -71,7 +71,9 @@ impl Context {
     }
 
     pub fn take_response(&mut self) -> RespValue {
-        if self.is_multi {
+        if self.is_exec {
+            self.is_multi = false;
+            self.is_exec = false;
             RespValue::Array(replace_default(&mut self.response))
         } else {
             self.response.pop().unwrap()
@@ -478,7 +480,7 @@ impl Database {
                 vn.do_flush(self, context, consistency)
             });
         } else {
-            // TODO:
+            self.respond(context);
         }
     }
 
@@ -492,12 +494,14 @@ impl Database {
         response_fn: ResponseFn,
     ) -> Result<(), CommandError> {
         let vnode = self.dht.key_vnode(key);
-        // if context.vnode.is_none() {
-        //     context.vnode = Some(vnode);
-        // } else if context.vnode != Some(vnode) {
-        //     context.respond_error(CommandError::InvalidCommand);
-        //     return Ok(());
-        // }
+
+        if context.is_multi {
+            if context.vnode.is_none() {
+                context.vnode = Some(vnode);
+            } else if context.vnode != Some(vnode) {
+                return Err(CommandError::InvalidCommand);
+            }
+        }
 
         vnode!(self, vnode, |mut vn| {
             vn.do_set(self, context, key, mutator_fn, reply_result, response_fn);

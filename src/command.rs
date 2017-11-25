@@ -74,7 +74,13 @@ fn check_value_len(value_len: usize) -> Result<(), CommandError> {
 
 impl Database {
     pub fn handler_cmd(&self, mut context: Context, cmd: RespValue) {
-        let context = &mut context;
+        if let Err(e) = self.handle_cmd(&mut context, cmd) {
+            context.clear();
+            self.respond_error(&mut context, e);
+        }
+    }
+
+    fn handle_cmd(&self, context: &mut Context, cmd: RespValue) -> Result<(), CommandError> {
         debug!("Processing ({:?}) {:?}", context.token, cmd);
         let dummy = Bytes::new();
         let mut argc = 0;
@@ -93,14 +99,28 @@ impl Database {
         }
 
         if argc == 0 {
-            self.respond_error(context, CommandError::ProtocolError);
-            return;
+            return Err(CommandError::ProtocolError);
         }
 
         let arg0 = args[0];
         let args = &args[1..argc];
 
-        let ret = if context.is_multi {
+        if context.is_exec {
+            match arg0.as_ref() {
+                b"SET" | b"set" => self.cmd_set(context, args, false),
+                b"HSET" | b"hset" => self.cmd_hset(context, args),
+                b"HDEL" | b"hdel" => self.cmd_hdel(context, args),
+                b"SADD" | b"sadd" => self.cmd_sadd(context, args),
+                b"SREM" | b"srem" => self.cmd_srem(context, args),
+                b"SPOP" | b"spop" => self.cmd_spop(context, args),
+                b"GETSET" | b"getset" => self.cmd_set(context, args, true),
+                b"DEL" | b"del" => self.cmd_del(context, args),
+                _ => {
+                    debug!("Unknown command for multi {:?}", cmd);
+                    Err(CommandError::InvalidCommand)
+                }
+            }
+        } else if context.is_multi {
             match arg0.as_ref() {
                 b"EXEC" | b"exec" => self.cmd_exec(context, args),
                 _ => {
@@ -142,10 +162,6 @@ impl Database {
                     Err(CommandError::UnknownCommand)
                 }
             }
-        };
-
-        if let Err(err) = ret {
-            self.respond_error(context, err);
         }
     }
 
@@ -176,23 +192,27 @@ impl Database {
     }
 
     fn cmd_multi(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
+        assert!(!context.is_multi);
         check_arg_count(args.len(), 0, 0)?;
-        if context.is_multi {
-            Err(CommandError::InvalidCommand)
-        } else {
-            context.is_multi = true;
-            Ok(())
-        }
+        context.is_multi = true;
+        Ok(self.respond_ok(context))
     }
 
     fn cmd_exec(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
+        if !context.is_multi {
+            return Err(CommandError::InvalidCommand);
+        }
         check_arg_count(args.len(), 0, 1)?;
         let consistency = self.parse_consistency(args.len() > 0, args, 0)?;
-        if context.is_multi {
-            Ok(self.flush(context, consistency))
-        } else {
-            Err(CommandError::InvalidCommand)
+        assert!(!context.is_exec);
+        context.is_exec = true;
+        let mut cmds = replace_default(&mut context.cmds);
+        for cmd in cmds.drain(..) {
+            debug!("token:{} exec: {:?}", context.token, cmd);
+            self.handle_cmd(context, cmd)?;
         }
+        context.cmds = cmds;
+        Ok(self.flush(context, consistency))
     }
 
     fn cmd_config(&self, context: &mut Context, _args: &[&Bytes]) -> Result<(), CommandError> {
@@ -433,7 +453,6 @@ impl Database {
     }
 
     pub fn respond_resp(&self, context: &mut Context, resp: RespValue) {
-        context.clear();
         context.response.push(resp);
         self.respond(context);
     }
@@ -446,11 +465,13 @@ impl Database {
         self.respond_resp(context, RespValue::Status("OK".into()));
     }
 
-    pub fn respond_error(&self, context: &mut Context, error: CommandError) {
+    pub fn respond_error(&self, context: &mut Context, error: CommandError) {context.clear();
+        context.clear();
         self.respond_resp(context, error.into());
     }
 
     pub fn respond_moved(&self, context: &mut Context, vnode: VNodeId, addr: net::SocketAddr) {
+        context.clear();
         self.respond_resp(
             context,
             RespValue::Error(format!("MOVED {} {}", vnode, addr).into()),
@@ -458,6 +479,7 @@ impl Database {
     }
 
     pub fn respond_ask(&self, context: &mut Context, vnode: VNodeId, addr: net::SocketAddr) {
+        context.clear();
         self.respond_resp(
             context,
             RespValue::Error(format!("ASK {} {}", vnode, addr).into()),
