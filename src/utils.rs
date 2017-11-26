@@ -1,6 +1,6 @@
 use std::hash::{BuildHasherDefault, Hasher};
 use std::collections::{HashMap, HashSet};
-use std::{fs, io, path};
+use std::{fmt, fs, io, path};
 use std::error::Error;
 
 pub type GenericError = Box<Error + Send + Sync + 'static>;
@@ -100,7 +100,7 @@ pub trait LoggerExt {
     fn log_warn(&self, msg: &str);
 }
 
-impl<T, U: ::std::fmt::Debug> LoggerExt for Result<T, U> {
+impl<T, U: fmt::Debug> LoggerExt for Result<T, U> {
     fn log_error(&self, msg: &str) {
         if let &Err(ref e) = self {
             error!("{}: {:?}", msg, e);

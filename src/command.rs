@@ -26,7 +26,9 @@ pub enum CommandError {
     InvalidValue,
     InvalidConsistencyValue,
     InvalidIntValue,
-    InvalidCommand,
+    InvalidExec,
+    InvalidMultiCommand,
+    MultiplePartitions,
     Unavailable,
 }
 
@@ -117,15 +119,16 @@ impl Database {
                 b"DEL" | b"del" => self.cmd_del(context, args),
                 _ => {
                     debug!("Unknown command for multi {:?}", cmd);
-                    Err(CommandError::InvalidCommand)
+                    Err(CommandError::InvalidMultiCommand)
                 }
             }
         } else if context.is_multi {
             match arg0.as_ref() {
                 b"EXEC" | b"exec" => self.cmd_exec(context, args),
                 _ => {
-                    context.cmds.push(cmd.clone());
-                    self.respond_resp(context, RespValue::Status("QUEUED".into()));
+                    context.multi_cmds.push(cmd.clone());
+                    context.response.push(RespValue::Status("QUEUED".into()));
+                    self.respond(context);
                     Ok(())
                 }
             }
@@ -200,18 +203,18 @@ impl Database {
 
     fn cmd_exec(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
         if !context.is_multi {
-            return Err(CommandError::InvalidCommand);
+            return Err(CommandError::InvalidExec);
         }
         check_arg_count(args.len(), 0, 1)?;
         let consistency = self.parse_consistency(args.len() > 0, args, 0)?;
         assert!(!context.is_exec);
         context.is_exec = true;
-        let mut cmds = replace_default(&mut context.cmds);
+        let mut cmds = replace_default(&mut context.multi_cmds);
         for cmd in cmds.drain(..) {
             debug!("token:{} exec: {:?}", context.token, cmd);
             self.handle_cmd(context, cmd)?;
         }
-        context.cmds = cmds;
+        context.multi_cmds = cmds;
         Ok(self.flush(context, consistency))
     }
 
@@ -452,7 +455,9 @@ impl Database {
         (&self.response_fn)(replace_default(context));
     }
 
+    // short hand functions that clear the context before responding
     pub fn respond_resp(&self, context: &mut Context, resp: RespValue) {
+        context.clear();
         context.response.push(resp);
         self.respond(context);
     }
@@ -465,13 +470,11 @@ impl Database {
         self.respond_resp(context, RespValue::Status("OK".into()));
     }
 
-    pub fn respond_error(&self, context: &mut Context, error: CommandError) {context.clear();
-        context.clear();
+    pub fn respond_error(&self, context: &mut Context, error: CommandError) {
         self.respond_resp(context, error.into());
     }
 
     pub fn respond_moved(&self, context: &mut Context, vnode: VNodeId, addr: net::SocketAddr) {
-        context.clear();
         self.respond_resp(
             context,
             RespValue::Error(format!("MOVED {} {}", vnode, addr).into()),
@@ -479,24 +482,9 @@ impl Database {
     }
 
     pub fn respond_ask(&self, context: &mut Context, vnode: VNodeId, addr: net::SocketAddr) {
-        context.clear();
         self.respond_resp(
             context,
             RespValue::Error(format!("ASK {} {}", vnode, addr).into()),
         );
-    }
-}
-
-impl Context {
-    pub fn respond_int(&mut self, int: i64) {
-        self.respond(RespValue::Int(int));
-    }
-
-    pub fn respond_ok(&mut self) {
-        self.respond(RespValue::Status("OK".into()));
-    }
-
-    pub fn respond_error(&mut self, error: CommandError) {
-        self.respond(error.into());
     }
 }

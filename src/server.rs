@@ -97,7 +97,10 @@ impl Context {
     }
 
     fn dispatch_next(&mut self, db_context: DbContext) {
-        assert!(self.db_context.is_none(), "can't cycle if there's nothing inflight");
+        assert!(
+            self.db_context.is_none(),
+            "can't cycle if there's nothing inflight"
+        );
         if let Some(req) = self.requests.pop_front() {
             debug!("Dispatched request ({}) {:?}", self.token, req);
             self.context

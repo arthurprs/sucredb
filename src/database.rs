@@ -27,33 +27,29 @@ struct Stats {
     outgoing_syncs: u16,
 }
 
-// S: -> Get
-// D: <- Get
-// D: -> Get res
-// S: <- Get res
-//--
-// S: -> MULTI, SET a, SET b, EXEC
-// D: <- MULTI, SET a, SET b, EXEC
-// D: -> Ok, Queued, Queued, [SET a res, SET b res]
-// S: <- Ok, Queued, Queued, [SET a res, SET b res]
+pub struct ContextRead {
+    pub cube: Cube,
+    pub response: ResponseFn,
+}
+
+pub struct ContextWrite {
+    pub mutation: Result<Version, MutatorFn>,
+    pub key: Bytes,
+    pub cube: Cube,
+    pub reply_result: bool,
+    pub response: Result<RespValue, ResponseFn>,
+}
+
 #[derive(Default)]
 pub struct Context {
     vnode: Option<VNodeId>, // if vnode changes mid way a batch we need to error ;)
     pub token: Token,
     pub is_multi: bool,
     pub is_exec: bool,
-    pub response: Vec<RespValue>, // response
-    pub cmds: Vec<RespValue>,     // multi commands get added here
-    pub reads: Vec<(Cube, ResponseFn)>,
-    pub writes: Vec<
-        (
-            Result<Version, MutatorFn>,
-            Bytes,
-            Cube,
-            bool,
-            Result<RespValue, ResponseFn>,
-        ),
-    >, // multi command writes go here
+    pub response: Vec<RespValue>,
+    pub multi_cmds: Vec<RespValue>,
+    pub reads: Vec<ContextRead>,
+    pub writes: Vec<ContextWrite>,
 }
 
 impl Context {
@@ -64,7 +60,7 @@ impl Context {
             is_exec: false,
             vnode: None,
             response: Default::default(),
-            cmds: Default::default(),
+            multi_cmds: Default::default(),
             writes: Default::default(),
             reads: Default::default(),
         }
@@ -86,7 +82,7 @@ impl Context {
 
     pub fn clear(&mut self) {
         self.response.clear();
-        self.cmds.clear();
+        self.multi_cmds.clear();
         self.writes.clear();
         self.is_multi = false;
         self.is_exec = false;
@@ -499,7 +495,7 @@ impl Database {
             if context.vnode.is_none() {
                 context.vnode = Some(vnode);
             } else if context.vnode != Some(vnode) {
-                return Err(CommandError::InvalidCommand);
+                return Err(CommandError::MultiplePartitions);
             }
         }
 

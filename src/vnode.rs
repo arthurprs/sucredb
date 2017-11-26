@@ -313,15 +313,18 @@ impl VNode {
             } else {
                 Default::default()
             };
-            context.reads.push((value, response_fn));
+            context.reads.push(ContextRead {
+                cube: value,
+                response: response_fn,
+            });
         }
 
         let req = ReqState::new(replace_default(context), nodes.len(), consistency);
-        assert!(self.requests.insert(cookie, req, expire).is_none());
+        self.requests.insert(cookie, req, expire);
 
         if participate {
             // register the results added above
-            if self.process_get(db, cookie, Ok(Vec::new())) {
+            if self.process_get::<Option<_>>(db, cookie, Ok(None)) {
                 return;
             }
         }
@@ -334,7 +337,7 @@ impl VNode {
         for node in nodes {
             if node != db.dht.node() {
                 if let Err(err) = db.fabric.send_msg(node, &msg) {
-                    if self.process_get(db, cookie, Err(err)) {
+                    if self.process_get::<Option<_>>(db, cookie, Err(err)) {
                         return;
                     }
                 }
@@ -348,7 +351,7 @@ impl VNode {
         context: &mut Context,
         status: VNodeStatus,
     ) {
-        let hash_slot = hash_slot(&context.writes[0].1);
+        let hash_slot = hash_slot(&context.writes[0].key);
         context.writes.clear();
 
         let mut nodes = db.dht.nodes_for_vnode_ex(self.state.num(), true, false);
@@ -379,13 +382,13 @@ impl VNode {
         reply_result: bool,
         response_fn: ResponseFn,
     ) {
-        context.writes.push((
-            Err(mutator),
-            key.clone(),
-            Default::default(),
-            reply_result,
-            Err(response_fn),
-        ));
+        context.writes.push(ContextWrite {
+            mutation: Err(mutator),
+            key: key.clone(),
+            cube: Default::default(),
+            reply_result: reply_result,
+            response: Err(response_fn),
+        });
     }
 
     pub fn do_flush(
@@ -402,7 +405,7 @@ impl VNode {
         let mut error = None;
         for write in &mut context.writes {
             let old_cube = match self.state
-                .storage_get(&write.1)
+                .storage_get(&write.key)
                 .map_err(|_| CommandError::StorageError)
             {
                 Ok(old_cube) => old_cube,
@@ -413,12 +416,12 @@ impl VNode {
             };
 
             let version = self.state.clocks.event(db.dht.node());
-            let mutator = ::std::mem::replace(&mut write.0, Ok(version)).unwrap_err();
+            let mutator = ::std::mem::replace(&mut write.mutation, Ok(version)).unwrap_err();
             match mutator(db.dht.node(), version, old_cube) {
                 Ok((cube, opt_resp)) => {
-                    write.2 = cube;
+                    write.cube = cube;
                     if let Some(resp) = opt_resp {
-                        write.4 = Ok(resp);
+                        write.response = Ok(resp);
                     }
                 }
                 Err(e) => {
@@ -438,48 +441,55 @@ impl VNode {
 
         match self.state.storage_set_local(
             db,
-            context
-                .writes
-                .iter()
-                .map(|x| (*x.0.as_ref().ok().unwrap(), &x.1[..], &x.2)),
+            context.writes.iter().map(|x| {
+                (*x.mutation.as_ref().ok().unwrap(), &x.key[..], &x.cube)
+            }),
         ) {
             Ok(()) => (),
             Err(e) => return db.respond_error(context, e),
         };
 
-        // FIXME: writes cube is being cloned bellow
+        // The code bellow is carefully ordered to move Cubes around without cloning
+
+        // 1. move the cubes to the msg
         let msg = MsgRemoteSet {
             cookie: cookie,
             vnode: self.state.num,
             writes: context
                 .writes
-                .iter()
-                .map(|x| (x.1.clone(), x.2.clone(), x.3.clone()))
+                .iter_mut()
+                .map(|w| {
+                    (w.key.clone(), replace_default(&mut w.cube), w.reply_result)
+                })
                 .collect(),
             reply: consistency != ConsistencyLevel::One,
         };
 
+        // 2. create reqstate, note that writes have have nil cubes at this point
         let req = ReqState::new(replace_default(context), nodes.len(), consistency);
-        assert!(self.requests.insert(cookie, req, expire).is_none());
-        self.process_set(db, cookie, Ok(Vec::new()));
+        self.requests.insert(cookie, req, expire);
 
+        // 3. send the msgs
         for &node in &nodes {
             if node != db.dht.node() {
                 if let Err(err) = db.fabric.send_msg(node, &msg) {
-                    if self.process_set(db, cookie, Err(err)) {
+                    if self.process_set::<Option<_>>(db, cookie, Err(err)) {
                         return;
                     }
                 }
             }
         }
+
+        // 4. get back the cubes from msg and process_set
+        self.process_set(db, cookie, Ok(msg.writes.into_iter().map(|w| Some(w.1))));
     }
 
     // OTHER
-    fn process_get(
+    fn process_get<I: IntoIterator<Item = Cube>>(
         &mut self,
         db: &Database,
         cookie: Cookie,
-        response: Result<Vec<Cube>, FabricError>,
+        response: Result<I, FabricError>,
     ) -> bool {
         if let HMEntry::Occupied(mut o) = self.requests.entry(cookie) {
             debug!("process_get {:?}", cookie);
@@ -489,8 +499,8 @@ impl VNode {
                 if let Ok(response) = response {
                     state.succesfull += 1;
                     for (response, read) in response.into_iter().zip(&mut state.context.reads) {
-                        let cube = replace_default(&mut read.0);
-                        read.0 = cube.merge(response);
+                        let cube = replace_default(&mut read.cube);
+                        read.cube = cube.merge(response);
                     }
                 }
                 state.done()
@@ -504,7 +514,7 @@ impl VNode {
                     let ReqState { mut context, .. } = state;
                     context
                         .response
-                        .extend(context.reads.drain(..).map(|(c, rf)| rf(c)));
+                        .extend(context.reads.drain(..).map(|r| (r.response)(r.cube)));
                     db.respond(&mut context);
                 }
             }
@@ -515,11 +525,11 @@ impl VNode {
         }
     }
 
-    fn process_set(
+    fn process_set<I: IntoIterator<Item = Option<Cube>>>(
         &mut self,
         db: &Database,
         cookie: Cookie,
-        response: Result<Vec<Option<Cube>>, FabricError>,
+        response: Result<I, FabricError>,
     ) -> bool {
         if let HMEntry::Occupied(mut o) = self.requests.entry(cookie) {
             debug!("process_set {:?}", cookie);
@@ -530,8 +540,8 @@ impl VNode {
                     state.succesfull += 1;
                     for (response, write) in response.into_iter().zip(&mut state.context.writes) {
                         if let Some(response) = response {
-                            let cube = replace_default(&mut write.2);
-                            write.2 = cube.merge(response);
+                            let cube = replace_default(&mut write.cube);
+                            write.cube = cube.merge(response);
                         }
                     }
                 }
@@ -546,9 +556,9 @@ impl VNode {
                     let ReqState { mut context, .. } = state;
                     context
                         .response
-                        .extend(context.writes.drain(..).map(|x| match x.4 {
+                        .extend(context.writes.drain(..).map(|x| match x.response {
                             Ok(r) => r,
-                            Err(rf) => rf(x.2),
+                            Err(rf) => rf(x.cube),
                         }));
                     db.respond(&mut context);
                 }
