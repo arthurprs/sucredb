@@ -85,28 +85,28 @@ impl Database {
 
     fn handle_cmd(&self, context: &mut Context, cmd: RespValue) -> Result<(), CommandError> {
         debug!("Processing ({:?}) {:?}", context.token, cmd);
-        let dummy = Bytes::new();
-        let mut argc = 0;
-        let mut args = [&dummy; 8];
+        let mut args = Vec::new();
         match cmd {
-            RespValue::Array(ref a) if a.len() < args.len() => for v in a.iter() {
-                if let &RespValue::Data(ref b) = v {
-                    args[argc] = b;
-                    argc += 1;
-                } else {
-                    argc = 0;
-                    break;
+            RespValue::Array(ref a) => {
+                args.reserve_exact(a.len());
+                for v in a.iter() {
+                    if let &RespValue::Data(ref b) = v {
+                        args.push(b);
+                    } else {
+                        args.clear();
+                        break;
+                    }
                 }
             },
             _ => (),
         }
 
-        if argc == 0 {
+        if args.is_empty() {
             return Err(CommandError::ProtocolError);
         }
 
         let arg0 = args[0];
-        let args = &args[1..argc];
+        let args = &args[1..];
 
         if context.is_exec {
             match arg0.as_ref() {
