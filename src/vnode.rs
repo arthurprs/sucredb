@@ -373,25 +373,6 @@ impl VNode {
         db.respond_error(context, CommandError::Unavailable);
     }
 
-    pub fn do_set(
-        &mut self,
-        _db: &Database,
-        context: &mut Context,
-        key: &Bytes,
-        mutator: MutatorFn,
-        reply_result: bool,
-        response_fn: ResponseFn,
-    ) -> Result<(), CommandError> {
-        context.writes.push(ContextWrite {
-            mutation: Err(mutator),
-            key: key.clone(),
-            cube: Default::default(),
-            reply_result: reply_result,
-            response: Err(response_fn),
-        });
-        Ok(())
-    }
-
     pub fn do_flush(
         &mut self,
         db: &Database,
@@ -401,20 +382,6 @@ impl VNode {
         match self.status() {
             VNodeStatus::Ready => (),
             status => return Ok(self.respond_cant_coordinate(db, context, status)),
-        }
-
-        if context.writes.len() > 1 {
-            use std::ptr::eq as same;
-            let not_unique = context.writes.iter().any(|x| {
-                context
-                    .writes
-                    .iter()
-                    .find(|&y| !same(x, y) && y.key == x.key)
-                    .is_none()
-            });
-            if not_unique {
-                return Err(CommandError::MultipleKeyMutations);
-            }
         }
 
         let mut error = None;

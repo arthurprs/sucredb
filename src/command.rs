@@ -210,7 +210,7 @@ impl Database {
             self.handle_cmd(context, cmd)?;
         }
         context.multi_cmds = cmds;
-        self.flush(context, consistency)
+        self.set_flush(context, consistency)
     }
 
     fn cmd_config(&self, context: &mut Context, _args: &[&Bytes]) -> Result<(), CommandError> {

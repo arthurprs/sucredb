@@ -42,7 +42,6 @@ pub struct ContextWrite {
 
 #[derive(Default)]
 pub struct Context {
-    vnode: Option<VNodeId>, // if vnode changes mid way a batch we need to error ;)
     pub token: Token,
     pub is_multi: bool,
     pub is_exec: bool,
@@ -58,7 +57,6 @@ impl Context {
             token,
             is_multi: false,
             is_exec: false,
-            vnode: None,
             response: Default::default(),
             multi_cmds: Default::default(),
             writes: Default::default(),
@@ -463,19 +461,43 @@ impl Database {
     }
 
     // CLIENT CRUD
-    pub fn flush(
+    pub fn set_flush(
         &self,
         context: &mut Context,
         consistency: ConsistencyLevel,
     ) -> Result<(), CommandError> {
-        if let Some(vnode) = context.vnode {
+        debug_assert!(context.is_multi && context.is_exec);
+        let mut multi_vnode = None;
+        for (wi, w) in context.writes.iter().enumerate() {
+            // vnode can't changes mid way a batch we need to error
+            let write_vnode = self.dht.key_vnode(&w.key);
+            if multi_vnode.is_none() {
+                multi_vnode = Some(write_vnode);
+            } else if multi_vnode != Some(write_vnode) {
+                return Err(CommandError::MultiplePartitions);
+            }
+
+            // make sure key doesn't appear in the rest of the commands
+            let not_unique = context.writes[wi + 1..].iter().any(|x| {
+                context
+                    .writes
+                    .iter()
+                    .find(|&y| y.key == x.key)
+                    .is_none()
+            });
+            if not_unique {
+                return Err(CommandError::MultipleKeyMutations);
+            }
+        }
+
+        if let Some(vnode) = multi_vnode {
             vnode!(
                 self,
                 vnode,
                 |vn| vn.do_flush(self, context, consistency)
             )
         } else {
-            Ok(self.respond(context))
+            Ok(self.respond_resp(context, RespValue::Array(Default::default())))
         }
     }
 
@@ -488,24 +510,24 @@ impl Database {
         reply_result: bool,
         response_fn: ResponseFn,
     ) -> Result<(), CommandError> {
-        let vnode = self.dht.key_vnode(key);
+        debug_assert!(!context.is_exec);
+        context.writes.push(ContextWrite {
+            mutation: Err(mutator_fn),
+            key: key.clone(),
+            cube: Default::default(),
+            reply_result: reply_result,
+            response: Err(response_fn),
+        });
 
         if context.is_multi {
-            if context.vnode.is_none() {
-                context.vnode = Some(vnode);
-            } else if context.vnode != Some(vnode) {
-                return Err(CommandError::MultiplePartitions);
-            }
-        }
-
-        vnode!(self, vnode, |vn| {
-            vn.do_set(self, context, key, mutator_fn, reply_result, response_fn)?;
-            if context.is_multi {
-                Ok(())
-            } else {
+            Ok(())
+        } else {
+            debug_assert_eq!(context.writes.len(), 1);
+            let vnode = self.dht.key_vnode(key);
+            vnode!(self, vnode, |vn| {
                 vn.do_flush(self, context, consistency)
-            }
-        })
+            })
+        }
     }
 
     pub fn get(
@@ -515,6 +537,7 @@ impl Database {
         consistency: ConsistencyLevel,
         response_fn: ResponseFn,
     ) -> Result<(), CommandError> {
+        debug_assert!(!context.is_multi && !context.is_exec);
         let vnode = self.dht.key_vnode(key);
         vnode!(self, vnode, |vn| {
             vn.do_get(self, context, &[key], consistency, response_fn)
