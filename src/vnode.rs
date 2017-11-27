@@ -268,6 +268,7 @@ impl VNode {
                 cookie,
                 req.context.token
             );
+            req.context.clear();
             db.respond_error(&mut req.context, CommandError::Timeout);
         }
 
@@ -291,7 +292,7 @@ impl VNode {
         keys: &[&Bytes],
         consistency: ConsistencyLevel,
         response_fn: ResponseFn,
-    ) {
+    ) -> Result<(), CommandError> {
         debug!(
             "vnode:{:?} do_get ({:?}) {:?}",
             self.state.num(),
@@ -301,7 +302,7 @@ impl VNode {
         let nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
         if nodes.is_empty() {
             debug!("vnode:{:?} no nodes", self.state.num());
-            return db.respond_error(context, CommandError::Unavailable);
+            return Err(CommandError::Unavailable);
         }
         let participate = nodes.contains(&db.dht.node());
         let cookie = self.gen_cookie();
@@ -325,7 +326,7 @@ impl VNode {
         if participate {
             // register the results added above
             if self.process_get::<Option<_>>(db, cookie, Ok(None)) {
-                return;
+                return Ok(());
             }
         }
 
@@ -338,11 +339,12 @@ impl VNode {
             if node != db.dht.node() {
                 if let Err(err) = db.fabric.send_msg(node, &msg) {
                     if self.process_get::<Option<_>>(db, cookie, Err(err)) {
-                        return;
+                        return Ok(());
                     }
                 }
             }
         }
+        Ok(())
     }
 
     fn respond_cant_coordinate(
@@ -352,8 +354,6 @@ impl VNode {
         status: VNodeStatus,
     ) {
         let hash_slot = hash_slot(&context.writes[0].key);
-        context.writes.clear();
-
         let mut nodes = db.dht.nodes_for_vnode_ex(self.state.num(), true, false);
         thread_rng().shuffle(&mut nodes);
         for (node, (_, addr)) in nodes {
@@ -381,7 +381,7 @@ impl VNode {
         mutator: MutatorFn,
         reply_result: bool,
         response_fn: ResponseFn,
-    ) {
+    ) -> Result<(), CommandError> {
         context.writes.push(ContextWrite {
             mutation: Err(mutator),
             key: key.clone(),
@@ -389,6 +389,7 @@ impl VNode {
             reply_result: reply_result,
             response: Err(response_fn),
         });
+        Ok(())
     }
 
     pub fn do_flush(
@@ -396,10 +397,24 @@ impl VNode {
         db: &Database,
         context: &mut Context,
         consistency: ConsistencyLevel,
-    ) {
+    ) -> Result<(), CommandError> {
         match self.status() {
             VNodeStatus::Ready => (),
-            status => return self.respond_cant_coordinate(db, context, status),
+            status => return Ok(self.respond_cant_coordinate(db, context, status)),
+        }
+
+        if context.writes.len() > 1 {
+            use std::ptr::eq as same;
+            let not_unique = context.writes.iter().any(|x| {
+                context
+                    .writes
+                    .iter()
+                    .find(|&y| !same(x, y) && y.key == x.key)
+                    .is_none()
+            });
+            if not_unique {
+                return Err(CommandError::MultipleKeyMutations);
+            }
         }
 
         let mut error = None;
@@ -432,7 +447,7 @@ impl VNode {
         }
 
         if let Some(e) = error {
-            return db.respond_error(context, e);
+            return Err(e);
         }
 
         let cookie = self.gen_cookie();
@@ -446,7 +461,7 @@ impl VNode {
             }),
         ) {
             Ok(()) => (),
-            Err(e) => return db.respond_error(context, e),
+            Err(e) => return Err(e),
         };
 
         // The code bellow is carefully ordered to move Cubes around without cloning
@@ -474,7 +489,7 @@ impl VNode {
             if node != db.dht.node() {
                 if let Err(err) = db.fabric.send_msg(node, &msg) {
                     if self.process_set::<Option<_>>(db, cookie, Err(err)) {
-                        return;
+                        return Ok(());
                     }
                 }
             }
@@ -482,6 +497,8 @@ impl VNode {
 
         // 4. get back the cubes from msg and process_set
         self.process_set(db, cookie, Ok(msg.writes.into_iter().map(|w| Some(w.1))));
+
+        Ok(())
     }
 
     // OTHER
@@ -509,6 +526,7 @@ impl VNode {
                 let mut state = o.remove();
                 if !state.satisfied() {
                     debug!("get {:?} done but not satisfied", cookie);
+                    state.context.clear();
                     db.respond_error(&mut state.context, CommandError::Unavailable);
                 } else {
                     let ReqState { mut context, .. } = state;
@@ -551,6 +569,7 @@ impl VNode {
                 let mut state = o.remove();
                 if !state.satisfied() {
                     debug!("set {:?} done but not satisfied", cookie);
+                    state.context.clear();
                     db.respond_error(&mut state.context, CommandError::Unavailable);
                 } else {
                     let ReqState { mut context, .. } = state;

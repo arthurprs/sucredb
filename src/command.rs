@@ -29,6 +29,7 @@ pub enum CommandError {
     InvalidExec,
     InvalidMultiCommand,
     MultiplePartitions,
+    MultipleKeyMutations,
     Unavailable,
 }
 
@@ -126,9 +127,7 @@ impl Database {
                 b"EXEC" | b"exec" => self.cmd_exec(context, args),
                 _ => {
                     context.multi_cmds.push(cmd.clone());
-                    context.response.push(RespValue::Status("QUEUED".into()));
-                    self.respond(context);
-                    Ok(())
+                    Ok(self.respond_resp(context, RespValue::Status("QUEUED".into())))
                 }
             }
         } else {
@@ -148,13 +147,11 @@ impl Database {
                 b"MULTI" | b"multi" => self.cmd_multi(context, args),
                 b"EXEC" | b"exec" => self.cmd_exec(context, args),
                 b"ECHO" | b"echo" => {
-                    self.respond_resp(context, cmd.clone());
-                    Ok(())
+                    Ok(self.respond_resp(context, cmd.clone()))
                 }
                 b"ASKING" | b"asking" | b"READONLY" | b"readonly" | b"READWRITE" | b"readwrite" => {
                     check_arg_count(args.len(), 0, 0).and_then(|_| {
-                        self.respond_ok(context);
-                        Ok(())
+                        Ok(self.respond_ok(context))
                     })
                 }
                 b"CONFIG" | b"config" => self.cmd_config(context, args),
@@ -213,7 +210,7 @@ impl Database {
             self.handle_cmd(context, cmd)?;
         }
         context.multi_cmds = cmds;
-        Ok(self.flush(context, consistency))
+        self.flush(context, consistency)
     }
 
     fn cmd_config(&self, context: &mut Context, _args: &[&Bytes]) -> Result<(), CommandError> {
@@ -228,7 +225,7 @@ impl Database {
         check_arg_count(args.len(), 1, 2)?;
         check_key_len(args[0].len())?;
         let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
-        Ok(self.get(context, args[0], consistency, cubes::render_map))
+        self.get(context, args[0], consistency, cubes::render_map)
     }
 
     fn cmd_hset(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
@@ -281,7 +278,7 @@ impl Database {
         check_arg_count(args.len(), 1, 2)?;
         check_key_len(args[0].len())?;
         let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
-        Ok(self.get(context, args[0], consistency, cubes::render_set))
+        self.get(context, args[0], consistency, cubes::render_set)
     }
 
     fn cmd_sadd(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
@@ -331,12 +328,12 @@ impl Database {
         check_arg_count(args.len(), 1, 2)?;
         check_key_len(args[0].len())?;
         let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
-        Ok(self.get(
+        self.get(
             context,
             args[0],
             consistency,
             cubes::render_value_or_counter,
-        ))
+        )
     }
 
     fn cmd_set(
@@ -397,7 +394,7 @@ impl Database {
     fn cmd_type(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
         check_arg_count(args.len(), 1, 2)?;
         let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
-        Ok(self.get(context, args[0], consistency, cubes::render_type))
+        self.get(context, args[0], consistency, cubes::render_type)
     }
 
     fn cmd_cluster(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
@@ -431,9 +428,7 @@ impl Database {
         (&self.response_fn)(replace_default(context));
     }
 
-    // short hand functions that clear the context before responding
     pub fn respond_resp(&self, context: &mut Context, resp: RespValue) {
-        context.clear();
         context.response.push(resp);
         self.respond(context);
     }

@@ -128,7 +128,8 @@ macro_rules! fabric_send_error{
 macro_rules! vnode {
     ($s: expr, $k: expr, $ok: expr) => ({
         let vnodes = $s.vnodes.read().unwrap();
-        vnodes.get(&$k).map(|vn| vn.lock().unwrap()).map($ok);
+        let mut locked_vnode = vnodes[&$k].lock().unwrap();
+        Some(&mut *locked_vnode).map($ok).unwrap()
     });
 }
 
@@ -381,36 +382,28 @@ impl Database {
     fn handler_fabric_msg(&self, from: NodeId, msg: FabricMsg) {
         match msg {
             FabricMsg::RemoteGet(m) => {
-                vnode!(self, m.vnode, |mut vn| vn.handler_get_remote(self, from, m));
+                vnode!(self, m.vnode, |vn| vn.handler_get_remote(self, from, m));
             }
             FabricMsg::RemoteGetAck(m) => {
-                vnode!(
-                    self,
-                    m.vnode,
-                    |mut vn| vn.handler_get_remote_ack(self, from, m)
-                );
+                vnode!(self, m.vnode, |vn| vn.handler_get_remote_ack(self, from, m));
             }
             FabricMsg::RemoteSet(m) => {
-                vnode!(self, m.vnode, |mut vn| vn.handler_set_remote(self, from, m));
+                vnode!(self, m.vnode, |vn| vn.handler_set_remote(self, from, m));
             }
             FabricMsg::RemoteSetAck(m) => {
-                vnode!(
-                    self,
-                    m.vnode,
-                    |mut vn| vn.handler_set_remote_ack(self, from, m)
-                );
+                vnode!(self, m.vnode, |vn| vn.handler_set_remote_ack(self, from, m));
             }
             FabricMsg::SyncStart(m) => {
-                vnode!(self, m.vnode, |mut vn| vn.handler_sync_start(self, from, m));
+                vnode!(self, m.vnode, |vn| vn.handler_sync_start(self, from, m));
             }
             FabricMsg::SyncSend(m) => {
-                vnode!(self, m.vnode, |mut vn| vn.handler_sync_send(self, from, m));
+                vnode!(self, m.vnode, |vn| vn.handler_sync_send(self, from, m));
             }
             FabricMsg::SyncAck(m) => {
-                vnode!(self, m.vnode, |mut vn| vn.handler_sync_ack(self, from, m));
+                vnode!(self, m.vnode, |vn| vn.handler_sync_ack(self, from, m));
             }
             FabricMsg::SyncFin(m) => {
-                vnode!(self, m.vnode, |mut vn| vn.handler_sync_fin(self, from, m));
+                vnode!(self, m.vnode, |vn| vn.handler_sync_fin(self, from, m));
             }
             msg => unreachable!("Can't handle {:?}", msg),
         }
@@ -470,13 +463,19 @@ impl Database {
     }
 
     // CLIENT CRUD
-    pub fn flush(&self, context: &mut Context, consistency: ConsistencyLevel) {
+    pub fn flush(
+        &self,
+        context: &mut Context,
+        consistency: ConsistencyLevel,
+    ) -> Result<(), CommandError> {
         if let Some(vnode) = context.vnode {
-            vnode!(self, vnode, |mut vn| {
-                vn.do_flush(self, context, consistency)
-            });
+            vnode!(
+                self,
+                vnode,
+                |vn| vn.do_flush(self, context, consistency)
+            )
         } else {
-            self.respond(context);
+            Ok(self.respond(context))
         }
     }
 
@@ -499,14 +498,14 @@ impl Database {
             }
         }
 
-        vnode!(self, vnode, |mut vn| {
-            vn.do_set(self, context, key, mutator_fn, reply_result, response_fn);
-            if !context.is_multi {
-                vn.do_flush(self, context, consistency);
+        vnode!(self, vnode, |vn| {
+            vn.do_set(self, context, key, mutator_fn, reply_result, response_fn)?;
+            if context.is_multi {
+                Ok(())
+            } else {
+                vn.do_flush(self, context, consistency)
             }
-        });
-
-        Ok(())
+        })
     }
 
     pub fn get(
@@ -515,11 +514,11 @@ impl Database {
         key: &Bytes,
         consistency: ConsistencyLevel,
         response_fn: ResponseFn,
-    ) {
+    ) -> Result<(), CommandError> {
         let vnode = self.dht.key_vnode(key);
-        vnode!(self, vnode, |mut vn| {
-            vn.do_get(self, context, &[key], consistency, response_fn);
-        });
+        vnode!(self, vnode, |vn| {
+            vn.do_get(self, context, &[key], consistency, response_fn)
+        })
     }
 }
 
