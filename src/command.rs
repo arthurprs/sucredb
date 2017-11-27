@@ -114,7 +114,6 @@ impl Database {
                 b"HDEL" | b"hdel" => self.cmd_hdel(context, args),
                 b"SADD" | b"sadd" => self.cmd_sadd(context, args),
                 b"SREM" | b"srem" => self.cmd_srem(context, args),
-                b"SPOP" | b"spop" => self.cmd_spop(context, args),
                 b"GETSET" | b"getset" => self.cmd_set(context, args, true),
                 b"DEL" | b"del" => self.cmd_del(context, args),
                 _ => {
@@ -142,7 +141,6 @@ impl Database {
                 b"SMEMBERS" | b"smembers" => self.cmd_smembers(context, args),
                 b"SADD" | b"sadd" => self.cmd_sadd(context, args),
                 b"SREM" | b"srem" => self.cmd_srem(context, args),
-                b"SPOP" | b"spop" => self.cmd_spop(context, args),
                 b"GETSET" | b"getset" => self.cmd_set(context, args, true),
                 b"DEL" | b"del" => self.cmd_del(context, args),
                 b"CLUSTER" | b"cluster" => self.cmd_cluster(context, args),
@@ -321,28 +319,6 @@ impl Database {
                 let mut set = c.into_set().ok_or(CommandError::TypeError)?;
                 let result = set.remove(i, v, &set_value) as i64;
                 Ok((Cube::Set(set), Some(RespValue::Int(result))))
-            }),
-            consistency,
-            false,
-            cubes::render_dummy,
-        )
-    }
-
-    fn cmd_spop(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
-        metrics::REQUEST_DEL.mark(1);
-        check_arg_count(args.len(), 1, 2)?;
-        check_key_len(args[0].len())?;
-        let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
-        self.set(
-            context,
-            args[0],
-            Box::new(|i, v, c: Cube| {
-                let mut set = c.into_set().ok_or(CommandError::TypeError)?;
-                let result = set.pop(i, v);
-                let resp = result
-                    .map(|x| RespValue::Data(x))
-                    .unwrap_or_else(|| RespValue::Nil);
-                Ok((Cube::Set(set), Some(resp)))
             }),
             consistency,
             false,

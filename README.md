@@ -114,14 +114,6 @@ Removes a value from the set.
 
 `< 1 OR 0 (if value didn't exist) `
 
-#### SPOP
-
-Pops a random value from the set.
-
-`> SPOP key value {consistency}`
-
-`< Value OR Nil`
-
 ### Other parameters
 
 #### `context` parameter
