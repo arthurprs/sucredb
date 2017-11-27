@@ -478,15 +478,10 @@ impl Database {
             }
 
             // make sure key doesn't appear in the rest of the commands
-            let not_unique = context.writes[wi + 1..].iter().any(|x| {
-                context
-                    .writes
-                    .iter()
-                    .find(|&y| y.key == x.key)
-                    .is_none()
-            });
-            if not_unique {
-                return Err(CommandError::MultipleKeyMutations);
+            for w2 in &context.writes[wi + 1..] {
+                if w.key == w2.key {
+                    return Err(CommandError::MultipleKeyMutations);
+                }
             }
         }
 

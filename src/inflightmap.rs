@@ -93,12 +93,6 @@ impl<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher> Deref for InFlightMa
     }
 }
 
-// impl<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher> DerefMut for InFlightMap<K, V, T, H> {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         &mut self.map
-//     }
-// }
-
 // Like a 2-tuple but comparison is only done for the first item
 #[derive(Debug)]
 struct Pair<T, V>(T, V);
