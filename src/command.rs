@@ -169,7 +169,7 @@ impl Database {
         args: &[&Bytes],
         i: usize,
     ) -> Result<VersionVector, CommandError> {
-        if try {
+        if try && !args[i].is_empty() {
             bincode::deserialize(args[i]).map_err(|_| CommandError::InvalidContext)
         } else {
             Ok(Default::default())
@@ -347,7 +347,7 @@ impl Database {
         check_key_len(args[0].len())?;
         check_value_len(args[1].len())?;
         let value = args[1].clone();
-        let vv = self.parse_vv(args.len() > 2 && !args[2].is_empty(), args, 2)?;
+        let vv = self.parse_vv(args.len() > 2, args, 2)?;
         let consistency = self.parse_consistency(args.len() > 3, args, 3)?;
         self.set(
             context,
@@ -376,7 +376,7 @@ impl Database {
         metrics::REQUEST_DEL.mark(1);
         check_arg_count(args.len(), 1, 3)?;
         check_key_len(args[0].len())?;
-        let vv = self.parse_vv(args.len() > 1 && !args[1].is_empty(), args, 1)?;
+        let vv = self.parse_vv(args.len() > 1, args, 1)?;
         let consistency = self.parse_consistency(args.len() > 2, args, 2)?;
         self.set(
             context,
