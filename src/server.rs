@@ -84,29 +84,31 @@ impl Context {
     }
 
     fn dispatch(&mut self, req: RespValue) {
-        if let Some(db_context) = self.db_context.take() {
+        if let Some(mut db_context) = self.db_context.take() {
             debug!("Dispatched request ({}) {:?}", self.token, req);
+            db_context.commands.push(req);
             self.context
                 .db_sender
                 .borrow_mut()
-                .send(WorkerMsg::Command(db_context, req));
+                .send(WorkerMsg::Command(db_context));
         } else {
             debug!("Enqueued request ({}) {:?}", self.token, req);
             self.requests.push_back(req);
         }
     }
 
-    fn dispatch_next(&mut self, db_context: DbContext) {
+    fn dispatch_next(&mut self, mut db_context: DbContext) {
         assert!(
             self.db_context.is_none(),
             "can't cycle if there's nothing inflight"
         );
         if let Some(req) = self.requests.pop_front() {
             debug!("Dispatched request ({}) {:?}", self.token, req);
+            db_context.commands.push(req);
             self.context
                 .db_sender
                 .borrow_mut()
-                .send(WorkerMsg::Command(db_context, req));
+                .send(WorkerMsg::Command(db_context));
         } else {
             self.db_context = Some(db_context);
         }

@@ -3,11 +3,10 @@ use std::sync::mpsc;
 use fabric::FabricMsg;
 use database::{Context, NodeId};
 use rand::{thread_rng, Rng};
-use resp::RespValue;
 
 pub enum WorkerMsg {
     Fabric(NodeId, FabricMsg),
-    Command(Context, RespValue),
+    Command(Context),
     Tick(time::Instant),
     DHTFabric(NodeId, FabricMsg),
     DHTChange,

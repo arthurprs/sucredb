@@ -45,8 +45,14 @@ pub struct Context {
     pub token: Token,
     pub is_multi: bool,
     pub is_exec: bool,
+    // response queue
+    // if not multi the first element is threated as a standalone response
+    // if multi it contains an array response
     pub response: Vec<RespValue>,
-    pub multi_cmds: Vec<RespValue>,
+    // commands queue
+    // if multi it may contain pending commands
+    // the latest command is always at the back
+    pub commands: Vec<RespValue>,
     pub reads: Vec<ContextRead>,
     pub writes: Vec<ContextWrite>,
 }
@@ -58,7 +64,7 @@ impl Context {
             is_multi: false,
             is_exec: false,
             response: Default::default(),
-            multi_cmds: Default::default(),
+            commands: Default::default(),
             writes: Default::default(),
             reads: Default::default(),
         }
@@ -80,7 +86,7 @@ impl Context {
 
     pub fn clear(&mut self) {
         self.response.clear();
-        self.multi_cmds.clear();
+        self.commands.clear();
         self.writes.clear();
         self.is_multi = false;
         self.is_exec = false;
@@ -255,7 +261,7 @@ impl Database {
                     };
                     match wm {
                         WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
-                        WorkerMsg::Command(context, cmd) => db.handler_cmd(context, cmd),
+                        WorkerMsg::Command(context) => db.handler_cmd(context),
                         WorkerMsg::Tick(time) => db.handler_tick(time),
                         WorkerMsg::DHTFabric(from, m) => db.dht.handler_fabric_msg(from, m),
                         WorkerMsg::DHTChange => db.handler_dht_change(),
@@ -486,13 +492,12 @@ impl Database {
         }
 
         if let Some(vnode) = multi_vnode {
-            vnode!(
-                self,
-                vnode,
-                |vn| vn.do_flush(self, context, consistency)
-            )
+            vnode!(self, vnode, |vn| vn.do_flush(self, context, consistency))
         } else {
-            Ok(self.respond_resp(context, RespValue::Array(Default::default())))
+            Ok(self.respond_resp(
+                context,
+                RespValue::Array(Default::default()),
+            ))
         }
     }
 
@@ -519,9 +524,11 @@ impl Database {
         } else {
             debug_assert_eq!(context.writes.len(), 1);
             let vnode = self.dht.key_vnode(key);
-            vnode!(self, vnode, |vn| {
-                vn.do_flush(self, context, consistency)
-            })
+            vnode!(
+                self,
+                vnode,
+                |vn| { vn.do_flush(self, context, consistency) }
+            )
         }
     }
 
@@ -647,10 +654,11 @@ mod tests {
         }
 
         fn do_cmd(&self, token: Token, args: &[&[u8]]) {
-            self.handler_cmd(
-                Context::new(token),
-                RespValue::Array(args.iter().map(|&x| RespValue::Data(x.into())).collect()),
-            )
+            let mut context = Context::new(token);
+            context.commands.push(RespValue::Array(
+                args.iter().map(|&x| RespValue::Data(x.into())).collect(),
+            ));
+            self.handler_cmd(context)
         }
     }
 

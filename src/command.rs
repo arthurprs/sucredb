@@ -76,7 +76,8 @@ fn check_value_len(value_len: usize) -> Result<(), CommandError> {
 }
 
 impl Database {
-    pub fn handler_cmd(&self, mut context: Context, cmd: RespValue) {
+    pub fn handler_cmd(&self, mut context: Context) {
+        let cmd = context.commands.pop().unwrap();
         if let Err(e) = self.handle_cmd(&mut context, cmd) {
             context.clear();
             self.respond_error(&mut context, e);
@@ -97,7 +98,7 @@ impl Database {
                         break;
                     }
                 }
-            },
+            }
             _ => (),
         }
 
@@ -126,8 +127,11 @@ impl Database {
             match arg0.as_ref() {
                 b"EXEC" | b"exec" => self.cmd_exec(context, args),
                 _ => {
-                    context.multi_cmds.push(cmd.clone());
-                    Ok(self.respond_resp(context, RespValue::Status("QUEUED".into())))
+                    context.commands.push(cmd.clone());
+                    Ok(self.respond_resp(
+                        context,
+                        RespValue::Status("QUEUED".into()),
+                    ))
                 }
             }
         } else {
@@ -146,13 +150,9 @@ impl Database {
                 b"TYPE" | b"type" => self.cmd_type(context, args),
                 b"MULTI" | b"multi" => self.cmd_multi(context, args),
                 b"EXEC" | b"exec" => self.cmd_exec(context, args),
-                b"ECHO" | b"echo" => {
-                    Ok(self.respond_resp(context, cmd.clone()))
-                }
+                b"ECHO" | b"echo" => Ok(self.respond_resp(context, cmd.clone())),
                 b"ASKING" | b"asking" | b"READONLY" | b"readonly" | b"READWRITE" | b"readwrite" => {
-                    check_arg_count(args.len(), 0, 0).and_then(|_| {
-                        Ok(self.respond_ok(context))
-                    })
+                    check_arg_count(args.len(), 0, 0).and_then(|_| Ok(self.respond_ok(context)))
                 }
                 b"CONFIG" | b"config" => self.cmd_config(context, args),
                 _ => {
@@ -204,12 +204,12 @@ impl Database {
         let consistency = self.parse_consistency(args.len() > 0, args, 0)?;
         assert!(!context.is_exec);
         context.is_exec = true;
-        let mut cmds = replace_default(&mut context.multi_cmds);
+        let mut cmds = replace_default(&mut context.commands);
         for cmd in cmds.drain(..) {
             debug!("token:{} exec: {:?}", context.token, cmd);
             self.handle_cmd(context, cmd)?;
         }
-        context.multi_cmds = cmds;
+        context.commands = cmds;
         self.set_flush(context, consistency)
     }
 
