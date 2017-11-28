@@ -29,15 +29,18 @@ struct Stats {
 
 pub struct ContextRead {
     pub cube: Cube,
-    pub response: ResponseFn,
+    // first key contains the render_fn for all keys
+    pub response: Option<ResponseFn>,
 }
 
 pub struct ContextWrite {
-    pub mutation: Result<Version, MutatorFn>,
+    pub version: Version,
+    pub mutator_fn: Option<MutatorFn>,
     pub key: Bytes,
     pub cube: Cube,
     pub reply_result: bool,
-    pub response: Result<RespValue, ResponseFn>,
+    pub response: Option<RespValue>,
+    pub response_fn: Option<ResponseFn>,
 }
 
 #[derive(Default)]
@@ -508,15 +511,17 @@ impl Database {
         mutator_fn: MutatorFn,
         consistency: ConsistencyLevel,
         reply_result: bool,
-        response_fn: ResponseFn,
+        response_fn: Option<ResponseFn>,
     ) -> Result<(), CommandError> {
         debug_assert!(!context.is_exec);
         context.writes.push(ContextWrite {
-            mutation: Err(mutator_fn),
+            version: 0,
+            mutator_fn: Some(mutator_fn),
             key: key.clone(),
             cube: Default::default(),
             reply_result: reply_result,
-            response: Err(response_fn),
+            response: None,
+            response_fn: response_fn,
         });
 
         if context.is_multi {

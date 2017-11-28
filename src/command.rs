@@ -225,7 +225,7 @@ impl Database {
         check_arg_count(args.len(), 1, 2)?;
         check_key_len(args[0].len())?;
         let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
-        self.get(context, args[0], consistency, cubes::render_map)
+        self.get(context, args[0], consistency, Box::new(cubes::render_map))
     }
 
     fn cmd_hset(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
@@ -247,7 +247,7 @@ impl Database {
             }),
             consistency,
             false,
-            cubes::render_dummy,
+            None,
         )
     }
 
@@ -268,7 +268,7 @@ impl Database {
             }),
             consistency,
             false,
-            cubes::render_dummy,
+            None,
         )
     }
 
@@ -278,7 +278,7 @@ impl Database {
         check_arg_count(args.len(), 1, 2)?;
         check_key_len(args[0].len())?;
         let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
-        self.get(context, args[0], consistency, cubes::render_set)
+        self.get(context, args[0], consistency, Box::new(cubes::render_set))
     }
 
     fn cmd_sadd(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
@@ -298,7 +298,7 @@ impl Database {
             }),
             consistency,
             false,
-            cubes::render_dummy,
+            None,
         )
     }
 
@@ -319,7 +319,7 @@ impl Database {
             }),
             consistency,
             false,
-            cubes::render_dummy,
+            None,
         )
     }
 
@@ -332,7 +332,7 @@ impl Database {
             context,
             args[0],
             consistency,
-            cubes::render_value_or_counter,
+            Box::new(cubes::render_value_or_counter),
         )
     }
 
@@ -365,9 +365,9 @@ impl Database {
             consistency,
             reply_result,
             if reply_result {
-                cubes::render_value_or_counter
+                Some(Box::new(cubes::render_value_or_counter))
             } else {
-                cubes::render_dummy
+                None
             },
         )
     }
@@ -387,14 +387,14 @@ impl Database {
             }),
             consistency,
             false,
-            cubes::render_dummy,
+            None,
         )
     }
 
     fn cmd_type(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
         check_arg_count(args.len(), 1, 2)?;
         let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
-        self.get(context, args[0], consistency, cubes::render_type)
+        self.get(context, args[0], consistency, Box::new(cubes::render_type))
     }
 
     fn cmd_cluster(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {

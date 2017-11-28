@@ -308,6 +308,7 @@ impl VNode {
         let cookie = self.gen_cookie();
         let expire = Instant::now() + Duration::from_millis(db.config.request_timeout as _);
 
+        let mut response_fn = Some(response_fn);
         for key in keys {
             let value = if participate {
                 self.state.storage_get(key).unwrap()
@@ -316,7 +317,7 @@ impl VNode {
             };
             context.reads.push(ContextRead {
                 cube: value,
-                response: response_fn,
+                response: response_fn.take(),
             });
         }
 
@@ -397,14 +398,12 @@ impl VNode {
                 }
             };
 
-            let version = self.state.clocks.event(db.dht.node());
-            let mutator = ::std::mem::replace(&mut write.mutation, Ok(version)).unwrap_err();
-            match mutator(db.dht.node(), version, old_cube) {
+            write.version = self.state.clocks.event(db.dht.node());
+            let mutator = write.mutator_fn.take().expect("No MutatorFn");
+            match mutator(db.dht.node(), write.version, old_cube) {
                 Ok((cube, opt_resp)) => {
                     write.cube = cube;
-                    if let Some(resp) = opt_resp {
-                        write.response = Ok(resp);
-                    }
+                    write.response = opt_resp;
                 }
                 Err(e) => {
                     error = Some(e);
@@ -423,8 +422,8 @@ impl VNode {
 
         match self.state.storage_set_local(
             db,
-            context.writes.iter().map(|x| {
-                (*x.mutation.as_ref().ok().unwrap(), &x.key[..], &x.cube)
+            context.writes.iter().map(|w| {
+                (w.version, &w.key[..], &w.cube)
             }),
         ) {
             Ok(()) => (),
@@ -497,9 +496,13 @@ impl VNode {
                     db.respond_error(&mut state.context, CommandError::Unavailable);
                 } else {
                     let ReqState { mut context, .. } = state;
-                    context
-                        .response
-                        .extend(context.reads.drain(..).map(|r| (r.response)(r.cube)));
+                    let mut render_fn = None;
+                    context.response.extend(context.reads.drain(..).map(|r| {
+                        if render_fn.is_none() {
+                            render_fn = r.response;
+                        }
+                        render_fn.as_ref().expect("No ResponseFn")(r.cube)
+                    }));
                     db.respond(&mut context);
                 }
             }
@@ -542,10 +545,12 @@ impl VNode {
                     let ReqState { mut context, .. } = state;
                     context
                         .response
-                        .extend(context.writes.drain(..).map(|x| match x.response {
-                            Ok(r) => r,
-                            Err(rf) => rf(x.cube),
-                        }));
+                        .extend(context.writes.drain(..).map(|w| {
+                            let ContextWrite { response, response_fn, cube, ..} = w;
+                            response.unwrap_or_else(|| {
+                                response_fn.expect("No ResponseFn")(cube)
+                            })
+                    }));
                     db.respond(&mut context);
                 }
             }

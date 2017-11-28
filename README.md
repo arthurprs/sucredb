@@ -14,7 +14,7 @@ Status: Alpha quality with missing pieces.
 
 Theoretically you can use Sucredb with any Redis Cluster clients.
 
-It implements a small subset of Redis commands. Only basic Key-Value/Sets/Hashes operations are supported at this point.
+It implements a tiny subset of Redis commands. Only basic Key-Value/Sets/Hashes operations are supported at this point.
 
 ### Key Value
 
@@ -53,7 +53,7 @@ Following Redis api *del* works for keys with any datastructure, in these cases 
 
 ### Data structures
 
-Sucredb also supports a small subset of commands for Hash and Set datatypes. These types are [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) and don't require a context to be sent along the operation. Mutations depend on the coordinator version of the value and conflicts are handled as follow:
+Sucredb also supports a tiny subset of commands for Hash and Set datatypes. These types are [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) and don't require a context to be sent along the operation. Mutations depend on the coordinator version of the value and conflicts are handled as follow:
 
 * Hash: On values conflict the latest write wins.
 * Set: On values conflict add wins.
@@ -210,8 +210,6 @@ Almost every single new thing claims to be fast or blazing fast. Sucredb makes n
 The data structure operations move the entire collection around the cluster so it's *not* suitable for large values/collections.
 
 # Ideas worth exploring
-
-* Take advantage of UDFs (user defined functions) to prevent extra round-trips and conflicts.
 
 * Improve the data model with a range/clustering key.
 

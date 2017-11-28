@@ -10,8 +10,7 @@ use bincode;
 pub type MutatorFn = Box<
     FnBox(Id, Version, Cube) -> Result<(Cube, Option<RespValue>), CommandError> + Send,
 >;
-// TODO: this will eventually become a Box<Fn...>
-pub type ResponseFn = fn(Cube) -> RespValue;
+pub type ResponseFn = Box<Fn(Cube) -> RespValue + Send>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Cube {
