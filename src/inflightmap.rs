@@ -2,7 +2,8 @@ use std::collections::{BinaryHeap, HashMap};
 use std::collections::hash_map::{Entry, RandomState};
 use std::hash::{BuildHasher, Hash};
 use std::cmp::Ordering;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
+use std::fmt;
 
 // TODO: need a more efficient implementation and possibly more flexibility
 
@@ -12,7 +13,8 @@ pub struct InFlightMap<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher = R
     heap: BinaryHeap<Pair<T, K>>,
 }
 
-impl<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher + Default> InFlightMap<K, V, T, H> {
+impl<K: Hash + Eq + Copy + fmt::Debug, V, T: Ord + Copy, H: BuildHasher + Default>
+    InFlightMap<K, V, T, H> {
     pub fn new() -> Self {
         InFlightMap {
             map: Default::default(),
@@ -20,14 +22,38 @@ impl<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher + Default> InFlightMa
         }
     }
 
-    pub fn insert(&mut self, key: K, value: V, expire: T) -> Option<V> {
-        self.heap.push(Pair(expire, key));
-        self.map.insert(key, value)
+    pub fn clear(&mut self) {
+        self.map.clear();
+        self.heap.clear();
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        self.map.remove(key)
     }
 
     pub fn entry_with_timeout(&mut self, key: K, expire: T) -> Entry<K, V> {
         self.heap.push(Pair(expire, key));
         self.map.entry(key)
+    }
+
+    pub fn entry(&mut self, key: K) -> Entry<K, V> {
+        self.map.entry(key)
+    }
+
+    pub fn insert(&mut self, key: K, value: V, expire: T) -> &mut V {
+        self.heap.push(Pair(expire, key));
+
+        let mut inserted = false;
+        let result = self.map.entry(key).or_insert_with(|| {
+            inserted = true;
+            value
+        });
+
+        if !inserted {
+            panic!("{:?} is already present in the map", key);
+        }
+
+        result
     }
 
     pub fn pop_expired(&mut self, now: T) -> Option<(K, V)> {
@@ -64,12 +90,6 @@ impl<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher> Deref for InFlightMa
 
     fn deref(&self) -> &Self::Target {
         &self.map
-    }
-}
-
-impl<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher> DerefMut for InFlightMap<K, V, T, H> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.map
     }
 }
 

@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
 
-use database::{Database, Token};
+use database::{Context as DbContext, Database, Token};
 use workers::{WorkerMsg, WorkerSender};
 use futures::{Future, Sink, Stream};
 use futures::sync::mpsc as fmpsc;
@@ -54,13 +54,13 @@ struct Context {
     context: Rc<SharedContext>,
     token: Token,
     requests: VecDeque<RespValue>,
-    inflight: bool,
+    db_context: Option<DbContext>,
 }
 
 struct SharedContext {
     database: Arc<Database>,
     db_sender: RefCell<WorkerSender>,
-    token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<RespValue>>>>,
+    token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<DbContext>>>>,
 }
 
 pub struct Server {
@@ -71,42 +71,44 @@ impl Context {
     fn new(
         context: Rc<SharedContext>,
         token: Token,
-        chan_tx: fmpsc::UnboundedSender<RespValue>,
+        chan_tx: fmpsc::UnboundedSender<DbContext>,
     ) -> Self {
         metrics::CLIENT_CONNECTION.inc();
         context.token_chans.lock().unwrap().insert(token, chan_tx);
         Context {
             context: context,
             token: token,
-            inflight: false,
+            db_context: Some(DbContext::new(token)),
             requests: VecDeque::new(),
         }
     }
 
     fn dispatch(&mut self, req: RespValue) {
-        if self.inflight {
-            debug!("Enqueued request ({}) {:?}", self.token, req);
-            self.requests.push_back(req);
-        } else {
+        if let Some(db_context) = self.db_context.take() {
             debug!("Dispatched request ({}) {:?}", self.token, req);
             self.context
                 .db_sender
                 .borrow_mut()
-                .send(WorkerMsg::Command(self.token, req));
-            self.inflight = true;
+                .send(WorkerMsg::Command(db_context, req));
+        } else {
+            debug!("Enqueued request ({}) {:?}", self.token, req);
+            self.requests.push_back(req);
         }
     }
 
-    fn dispatch_next(&mut self) {
-        assert!(self.inflight, "can't cycle if there's nothing inflight");
+    fn dispatch_next(&mut self, db_context: DbContext) {
+        assert!(
+            self.db_context.is_none(),
+            "can't cycle if there's nothing inflight"
+        );
         if let Some(req) = self.requests.pop_front() {
             debug!("Dispatched request ({}) {:?}", self.token, req);
             self.context
                 .db_sender
                 .borrow_mut()
-                .send(WorkerMsg::Command(self.token, req));
+                .send(WorkerMsg::Command(db_context, req));
         } else {
-            self.inflight = false;
+            self.db_context = Some(db_context);
         }
     }
 }
@@ -144,8 +146,9 @@ impl Server {
         let fut_tx = sock_tx
             .send_all(
                 chan_rx
-                    .map(move |response| {
-                        ctx_tx.borrow_mut().dispatch_next();
+                    .map(move |mut context| {
+                        let response = context.take_response();
+                        ctx_tx.borrow_mut().dispatch_next(context);
                         response
                     })
                     .map_err(|_| io::Error::from(io::ErrorKind::Other)),
@@ -161,9 +164,10 @@ impl Server {
         let token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<_>>>> =
             Default::default();
         let token_chans_cloned = token_chans.clone();
-        let response_fn = Box::new(move |token, resp| {
+        let response_fn = Box::new(move |context: DbContext| {
+            let token = context.token;
             if let Some(chan) = token_chans_cloned.lock().unwrap().get_mut(&token) {
-                if let Err(e) = chan.unbounded_send(resp) {
+                if let Err(e) = chan.unbounded_send(context) {
                     warn!("Can't send to token {} chan: {:?}", token, e);
                 }
             } else {

@@ -471,7 +471,11 @@ impl Fabric {
     }
 
     // TODO: take msgs as references and buffer serialized bytes instead
-    pub fn send_msg<'a, T: Into<FabricMsgRef<'a>>>(&'a self, node: NodeId, msg: T) -> Result<(), FabricError> {
+    pub fn send_msg<'a, T: Into<FabricMsgRef<'a>>>(
+        &'a self,
+        node: NodeId,
+        msg: T,
+    ) -> Result<(), FabricError> {
         let msg = msg.into();
         debug!("send_msg node:{} {:?}", node, msg);
         if node == self.context.node {
@@ -565,7 +569,7 @@ mod tests {
                     &MsgRemoteSetAck {
                         cookie: Default::default(),
                         vnode: Default::default(),
-                        result: Ok(None),
+                        result: Ok(Vec::new()),
                     },
                 )
                 .unwrap();

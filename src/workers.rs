@@ -1,14 +1,13 @@
 use std::{thread, time};
 use std::sync::mpsc;
 use fabric::FabricMsg;
-use database::{NodeId, Token};
+use database::{Context, NodeId};
 use rand::{thread_rng, Rng};
 use resp::RespValue;
 
-#[derive(Debug)]
 pub enum WorkerMsg {
     Fabric(NodeId, FabricMsg),
-    Command(Token, RespValue),
+    Command(Context, RespValue),
     Tick(time::Instant),
     DHTFabric(NodeId, FabricMsg),
     DHTChange,
@@ -49,8 +48,7 @@ impl WorkerManager {
 
     pub fn start<F>(&mut self, mut worker_fn_gen: F)
     where
-        F: FnMut()
-            -> Box<FnMut(mpsc::Receiver<WorkerMsg>) + Send>,
+        F: FnMut() -> Box<FnMut(mpsc::Receiver<WorkerMsg>) + Send>,
     {
         assert!(self.channels.is_empty());
         for i in 0..self.thread_count {
@@ -105,7 +103,6 @@ impl WorkerSender {
         let _ = self.try_send(msg);
     }
     pub fn try_send(&mut self, msg: WorkerMsg) -> Result<(), mpsc::SendError<WorkerMsg>> {
-        debug!("try_send {:?}", msg);
         self.cursor = self.cursor.wrapping_add(1);
         self.channels[self.cursor % self.channels.len()].send(msg)
     }

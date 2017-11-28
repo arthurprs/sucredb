@@ -320,20 +320,20 @@ impl Synchronization {
                 cookie,
                 ref mut last_send,
                 ..
-            } |
-            BootstrapReceiver {
+            }
+            | BootstrapReceiver {
                 peer,
                 cookie,
                 ref mut last_send,
                 ..
-            } |
-            SyncSender {
+            }
+            | SyncSender {
                 peer,
                 cookie,
                 ref mut last_send,
                 ..
-            } |
-            BootstrapSender {
+            }
+            | BootstrapSender {
                 peer,
                 cookie,
                 ref mut last_send,
@@ -363,8 +363,8 @@ impl Synchronization {
                 ref clocks_snapshot,
                 ref mut last_send,
                 ..
-            } |
-            BootstrapSender {
+            }
+            | BootstrapSender {
                 peer,
                 cookie,
                 ref clocks_snapshot,
@@ -401,8 +401,8 @@ impl Synchronization {
                 ref mut inflight,
                 ref mut last_send,
                 ..
-            } |
-            BootstrapSender {
+            }
+            | BootstrapSender {
                 peer,
                 cookie,
                 ref mut iterator,
@@ -486,8 +486,8 @@ impl Synchronization {
         match *self {
             SyncSender {
                 last_recv, cookie, ..
-            } |
-            BootstrapSender {
+            }
+            | BootstrapSender {
                 last_recv, cookie, ..
             } => if last_recv.elapsed() > Duration::from_millis(db.config.sync_timeout as _) {
                 warn!("sync/boostrap sender timed out {:?}", cookie);
@@ -501,8 +501,8 @@ impl Synchronization {
                 last_send,
                 cookie,
                 ..
-            } |
-            BootstrapReceiver {
+            }
+            | BootstrapReceiver {
                 last_recv,
                 recv_count,
                 last_send,
@@ -564,8 +564,8 @@ impl Synchronization {
                 ref mut last_recv,
                 ref mut last_send,
                 ..
-            } |
-            BootstrapReceiver {
+            }
+            | BootstrapReceiver {
                 peer,
                 ref mut recv_count,
                 ref mut last_recv,
@@ -574,7 +574,7 @@ impl Synchronization {
             } => {
                 // TODO: what to do with errors here?
                 state
-                    .storage_set_remote(db, &msg.key, msg.value, false)
+                    .storage_set_remote(db, vec![(msg.key, msg.value, false)])
                     .unwrap();
 
                 let _ = db.fabric.send_msg(
@@ -602,8 +602,8 @@ impl Synchronization {
                 ref mut inflight,
                 ref mut last_recv,
                 ..
-            } |
-            BootstrapSender {
+            }
+            | BootstrapSender {
                 ref mut inflight,
                 ref mut last_recv,
                 ..

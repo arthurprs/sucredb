@@ -6,7 +6,7 @@ pub const HASH_SLOTS: u16 = 16384;
 pub fn hash_slot(mut key: &[u8]) -> u16 {
     if let Some(open) = key.iter().position(|&x| x == b'{') {
         // note that close will be relative to open due to the skip()
-        if let Some(close) = key.iter().skip(open + 1).position(|&x| x == b'}') {
+        if let Some(close) = key[open + 1..].iter().position(|&x| x == b'}') {
             if close > 0 {
                 // found  { and } with something in between
                 key = &key[open + 1..open + 1 + close];

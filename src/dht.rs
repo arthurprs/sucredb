@@ -817,9 +817,7 @@ impl<T: Metadata> DHT<T> {
             if node_id == inner.node || node.status != NodeStatus::Valid {
                 continue;
             }
-            let _ = inner
-                .fabric
-                .send_msg(node_id, &msg);
+            let _ = inner.fabric.send_msg(node_id, &msg);
         }
     }
 
@@ -854,7 +852,7 @@ impl<T: Metadata> DHT<T> {
     pub fn handler_tick(&self, time: Instant) {
         let r_inner = self.inner.read().unwrap();
         if r_inner.sync_aae && time >= r_inner.next_req_broadcast {
-            debug!("Triggered AAE");
+            trace!("Triggered AAE");
             Self::broadcast_req(&*r_inner);
             drop(r_inner);
             self.inner.write().unwrap().next_req_broadcast +=

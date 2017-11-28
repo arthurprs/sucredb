@@ -1,14 +1,15 @@
 use std::time;
+use std::boxed::FnBox;
 use bytes::Bytes;
-use rand::{thread_rng, Rng};
 use version_vector::*;
 use linear_map::{Entry as LMEntry, LinearMap};
 use command::CommandError;
 use resp::RespValue;
 use bincode;
 
-pub type MutatorFn<'a> = &'a mut FnMut(Id, Version, Cube, &VersionVector)
-    -> Result<(Cube, Option<RespValue>), CommandError>;
+pub type MutatorFn = Box<
+    FnBox(Id, Version, Cube) -> Result<(Cube, Option<RespValue>), CommandError> + Send,
+>;
 // TODO: this will eventually become a Box<Fn...>
 pub type ResponseFn = fn(Cube) -> RespValue;
 
@@ -31,6 +32,12 @@ macro_rules! impl_into{
                 _ => None,
             }
         }
+    }
+}
+
+impl Default for Cube {
+    fn default() -> Self {
+        Cube::Void(Default::default())
     }
 }
 
@@ -211,20 +218,6 @@ impl Set {
 
     pub fn remove(&mut self, node: Id, version: Version, item: &[u8]) -> bool {
         let result = self.values.remove(item).is_some();
-        self.vv.add(node, version);
-        self.dots.add(node, version);
-        result
-    }
-
-    pub fn pop(&mut self, node: Id, version: Version) -> Option<Bytes> {
-        let result = if self.values.is_empty() {
-            None
-        } else {
-            let i = thread_rng().gen::<usize>() % self.values.len();
-            let k = self.values.keys().skip(i).next().unwrap().clone();
-            self.values.remove(&k).unwrap();
-            Some(k)
-        };
         self.vv.add(node, version);
         self.dots.add(node, version);
         result
