@@ -501,7 +501,7 @@ impl VNode {
                         if render_fn.is_none() {
                             render_fn = r.response;
                         }
-                        render_fn.as_ref().expect("No ResponseFn")(r.cube)
+                        render_fn.as_mut().expect("No ResponseFn")(r.cube)
                     }));
                     db.respond(&mut context);
                 }
