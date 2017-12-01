@@ -88,11 +88,11 @@ impl Context {
     }
 
     pub fn clear(&mut self) {
+        self.is_multi = false;
+        self.is_exec = false;
         self.response.clear();
         self.commands.clear();
         self.writes.clear();
-        self.is_multi = false;
-        self.is_exec = false;
     }
 }
 
@@ -549,6 +549,35 @@ impl Database {
         vnode!(self, vnode, |vn| {
             vn.do_get(self, context, &[key], consistency, response_fn)
         })
+    }
+
+    pub fn mget(
+        &self,
+        context: &mut Context,
+        keys: &[&Bytes],
+        consistency: ConsistencyLevel,
+        response_fn: ResponseFn,
+    ) -> Result<(), CommandError> {
+        debug_assert!(context.is_multi && context.is_exec);
+        let mut multi_vnode = None;
+        for key in keys {
+            let write_vnode = self.dht.key_vnode(key);
+            if multi_vnode.is_none() {
+                multi_vnode = Some(write_vnode);
+            } else if multi_vnode != Some(write_vnode) {
+                return Err(CommandError::MultiplePartitions);
+            }
+        }
+        if let Some(vnode) = multi_vnode {
+            vnode!(self, vnode, |vn| {
+                vn.do_get(self, context, keys, consistency, response_fn)
+            })
+        } else {
+            Ok(self.respond_resp(
+                context,
+                RespValue::Array(Default::default()),
+            ))
+        }
     }
 }
 

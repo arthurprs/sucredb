@@ -44,7 +44,7 @@ impl Cube {
     pub fn is_subsumed(&self, bvv: &BitmappedVersionVector) -> bool {
         use self::Cube::*;
         match *self {
-            Counter(_) => false, // TODO
+            Counter(ref a) => a.values.is_empty() && a.vv.contained(bvv),
             Value(ref a) => a.values.is_empty() && a.vv.contained(bvv),
             Map(ref a) => a.values.is_empty() && a.vv.contained(bvv),
             Set(ref a) => a.values.is_empty() && a.vv.contained(bvv),
@@ -81,7 +81,7 @@ impl Cube {
     pub fn del(&mut self, id: Id, version: Version, vv: &VersionVector) -> bool {
         use self::Cube::*;
         match *self {
-            Counter(_) => unimplemented!(),
+            Counter(ref mut a) => a.clear(id, version),
             Value(ref mut a) => a.set(id, version, None, vv),
             Map(ref mut a) => a.clear(id, version),
             Set(ref mut a) => a.clear(id, version),
@@ -98,7 +98,7 @@ impl Cube {
             (Map(a), Map(b)) => Map(a.merge(b)),
             (Set(a), Set(b)) => Set(a.merge(b)),
             (Void(vv), a) | (a, Void(vv)) => match a {
-                Counter(a) => Counter(a),
+                Counter(a) => Counter(a.merge(self::Counter::with(vv))),
                 Value(a) => Value(a.merge(self::Value::with(vv))),
                 Map(a) => Map(a.merge(self::Map::with(vv))),
                 Set(a) => Set(a.merge(self::Set::with(vv))),
@@ -122,22 +122,36 @@ impl Cube {
     }
 }
 
-// Causal LexCounter
+// RWCounter
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Counter {
-    // I -> (V, C)
     values: LinearMap<Id, (Version, i64)>,
+    vv: VersionVector,
 }
 
 impl Counter {
-    fn with(_vv: VersionVector) -> Self {
+    fn with(vv: VersionVector) -> Self {
         Counter {
             values: Default::default(),
+            vv,
         }
     }
 
-    fn get(&self) -> i64 {
+    pub fn get(&self) -> i64 {
         self.values.values().map(|&(_, c)| c).sum()
+    }
+
+    pub fn inc(&mut self, node: Id, version: Version, by: i64) -> i64 {
+        self.vv.add(node, version);
+        let version_counter = self.values.entry(node).or_insert((0, 0));
+        version_counter.0 = version;
+        version_counter.1 += by;
+        version_counter.1
+    }
+
+    pub fn clear(&mut self, node: Id, version: Version) {
+        self.values.clear();
+        self.vv.add(node, version);
     }
 
     fn merge(mut self, other: Self) -> Self {
@@ -318,10 +332,6 @@ impl CausalValue for MapValue {
     fn is_empty(&self) -> bool {
         self.dots.is_empty()
     }
-}
-
-pub fn render_dummy(_: Cube) -> RespValue {
-    unreachable!()
 }
 
 pub fn render_value_or_counter(cube: Cube) -> RespValue {

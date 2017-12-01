@@ -653,9 +653,9 @@ impl DotSet {
 
 impl CausalValue for DotSet {
     fn merge<VV: AbsVersionVector>(&mut self, other: &mut Self, s_vv: &VV, o_vv: &VV) {
-        // retain in self what's not outdated or also exists in other
+        // retain in self what's also exists in other or is not outdated
         self.0.retain(|&(id, version)| {
-            !o_vv.contains(id, version) || other.0.remove(&(id, version))
+            other.0.remove(&(id, version)) || !o_vv.contains(id, version)
         });
 
         // drain other into self filtering outdated versions
@@ -705,9 +705,9 @@ impl<T> Default for DotMap<T> {
 
 impl<T> CausalValue for DotMap<T> {
     fn merge<VV: AbsVersionVector>(&mut self, other: &mut Self, s_vv: &VV, o_vv: &VV) {
-        // retain in self what's not outdated or also exists in other
+        // retain in self what's also exists in other or is not outdated
         self.0.retain(|&(id, version), _| {
-            !o_vv.contains(id, version) || other.0.remove(&(id, version)).is_some()
+            other.0.remove(&(id, version)).is_some() || !o_vv.contains(id, version)
         });
 
         // drain other into self filtering outdated versions

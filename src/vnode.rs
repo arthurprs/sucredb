@@ -422,9 +422,10 @@ impl VNode {
 
         match self.state.storage_set_local(
             db,
-            context.writes.iter().map(|w| {
-                (w.version, &w.key[..], &w.cube)
-            }),
+            context
+                .writes
+                .iter()
+                .map(|w| (w.version, &w.key[..], &w.cube)),
         ) {
             Ok(()) => (),
             Err(e) => return Err(e),
@@ -543,13 +544,14 @@ impl VNode {
                     db.respond_error(&mut state.context, CommandError::Unavailable);
                 } else {
                     let ReqState { mut context, .. } = state;
-                    context
-                        .response
-                        .extend(context.writes.drain(..).map(|w| {
-                            let ContextWrite { response, response_fn, cube, ..} = w;
-                            response.unwrap_or_else(|| {
-                                response_fn.expect("No ResponseFn")(cube)
-                            })
+                    context.response.extend(context.writes.drain(..).map(|w| {
+                        let ContextWrite {
+                            response,
+                            response_fn,
+                            cube,
+                            ..
+                        } = w;
+                        response.unwrap_or_else(|| response_fn.expect("No ResponseFn")(cube))
                     }));
                     db.respond(&mut context);
                 }

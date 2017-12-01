@@ -26,6 +26,15 @@ It implements a tiny subset of Redis commands. Only basic Key-Value/Sets/Hashes 
 
 `< [{value1}, {value2}, .., context]`
 
+#### MGET
+
+*MGET* takes the # of keys (N) followed by N keys. Results are returned as an array.
+
+
+`> MGET key_count {key1} {key2} {..} {consistency}`
+
+`< [[{value1_1}, {value1_2}, .., context], [{value2_1}, {value2_2}, .., context]]`
+
 #### SET
 
 *SET*, in addition to the key and value, also takes the causal context. If you're sure it don't exist you can actually omit the context, if you're wrong it'll create a conflicting version.
@@ -57,6 +66,23 @@ Sucredb also supports a tiny subset of commands for Hash and Set datatypes. Thes
 
 * Hash: On values conflict the latest write wins.
 * Set: On values conflict add wins.
+* Counter: Deletes may erase non observed increments.
+
+#### CSET
+
+Sets the value for a counter.
+
+`> SET key int_value {consistency}`
+
+`< OK`
+
+### INCRBY
+
+Increments the value for a counter, the delta can be either positive or negative.
+
+`> INCRBY key delta_value {consistency}`
+
+`< resulting_int_value`
 
 #### HGETALL
 
@@ -65,14 +91,6 @@ Gets all key value pairs from a hash.
 `> HGETALL key {consistency}`
 
 `< [{KA, VA}, {KB, VB}, ...]`
-
-#### HGET
-
-Gets a specific key from a hash.
-
-`> HGET key hash_key {consistency}`
-
-`< Value OR Nil`
 
 #### HSET
 
@@ -113,6 +131,10 @@ Removes a value from the set.
 `> SREM key value {consistency}`
 
 `< 1 OR 0 (if value didn't exist) `
+
+### MULTI/EXEC Batches
+
+todo
 
 ### Other parameters
 

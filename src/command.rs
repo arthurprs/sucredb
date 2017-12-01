@@ -1,4 +1,3 @@
-use std::num::ParseIntError;
 use std::net;
 use std::convert::TryInto;
 use bytes::Bytes;
@@ -6,7 +5,7 @@ use bincode;
 use resp::RespValue;
 use database::{Context, Database};
 use types::*;
-use utils::replace_default;
+use utils::{assume_str, replace_default};
 use config;
 use version_vector::*;
 use cubes::{self, Cube};
@@ -27,27 +26,30 @@ pub enum CommandError {
     InvalidConsistencyValue,
     InvalidIntValue,
     InvalidExec,
+    InvalidCommand,
     InvalidMultiCommand,
     MultiplePartitions,
     MultipleKeyMutations,
     Unavailable,
 }
 
-impl From<ConsistencyLevelParseError> for CommandError {
-    fn from(_: ConsistencyLevelParseError) -> Self {
-        CommandError::InvalidConsistencyValue
-    }
-}
-
-impl From<ParseIntError> for CommandError {
-    fn from(_: ParseIntError) -> Self {
-        CommandError::InvalidIntValue
-    }
-}
-
 impl Into<RespValue> for CommandError {
     fn into(self) -> RespValue {
         RespValue::Error(format!("{:?}", self).into())
+    }
+}
+
+fn parse_int<T: ::std::str::FromStr + Default>(
+    try: bool,
+    args: &[&Bytes],
+    i: usize,
+) -> Result<T, CommandError> {
+    if try {
+        assume_str(&args[i])
+            .parse()
+            .map_err(|_| CommandError::InvalidIntValue)
+    } else {
+        Ok(Default::default())
     }
 }
 
@@ -111,6 +113,8 @@ impl Database {
 
         if context.is_exec {
             match arg0.as_ref() {
+                b"CSET" | b"cset" => self.cmd_cset(context, args),
+                b"INCRBY" | b"incrby" => self.cmd_incrby(context, args),
                 b"SET" | b"set" => self.cmd_set(context, args, false),
                 b"HSET" | b"hset" => self.cmd_hset(context, args),
                 b"HDEL" | b"hdel" => self.cmd_hdel(context, args),
@@ -136,7 +140,10 @@ impl Database {
             }
         } else {
             match arg0.as_ref() {
+                b"CSET" | b"cset" => self.cmd_cset(context, args),
+                b"INCRBY" | b"incrby" => self.cmd_incrby(context, args),
                 b"GET" | b"get" => self.cmd_get(context, args),
+                b"MGET" | b"mget" => self.cmd_mget(context, args),
                 b"SET" | b"set" => self.cmd_set(context, args, false),
                 b"HGETALL" | b"hgetall" => self.cmd_hgetall(context, args),
                 b"HSET" | b"hset" => self.cmd_hset(context, args),
@@ -183,7 +190,10 @@ impl Database {
         i: usize,
     ) -> Result<ConsistencyLevel, CommandError> {
         Ok(if try {
-            args[i].as_ref().try_into()?
+            args[i]
+                .as_ref()
+                .try_into()
+                .map_err(|_| CommandError::InvalidConsistencyValue)?
         } else {
             self.config.consistency_read
         })
@@ -191,8 +201,8 @@ impl Database {
 
     fn cmd_multi(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
         assert!(!context.is_multi);
-        check_arg_count(args.len(), 0, 0)?;
         context.is_multi = true;
+        check_arg_count(args.len(), 0, 0)?;
         Ok(self.respond_ok(context))
     }
 
@@ -336,6 +346,29 @@ impl Database {
         )
     }
 
+    fn cmd_mget(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
+        assert!(!context.is_multi && !context.is_exec);
+        context.is_multi = true;
+        context.is_exec = true;
+        metrics::REQUEST_GET.mark(1);
+        check_arg_count(args.len(), 1, 100)?;
+        let key_count: usize = parse_int(args.len() > 0, args, 0)?;
+        if key_count >= args.len() {
+            return Err(CommandError::InvalidCommand);
+        }
+        let keys = &args[1..1 + key_count];
+        let consistency = self.parse_consistency(args.len() > 1 + key_count, args, 1 + key_count)?;
+        for key in keys {
+            check_key_len(key.len())?;
+        }
+        self.mget(
+            context,
+            keys,
+            consistency,
+            Box::new(cubes::render_value_or_counter),
+        )
+    }
+
     fn cmd_set(
         &self,
         context: &mut Context,
@@ -384,6 +417,53 @@ impl Database {
             Box::new(move |i, v, mut c: Cube| {
                 let result = c.del(i, v, &vv) as i64;
                 Ok((c, Some(RespValue::Int(result))))
+            }),
+            consistency,
+            false,
+            None,
+        )
+    }
+
+    fn cmd_cset(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
+        metrics::REQUEST_SET.mark(1);
+        check_arg_count(args.len(), 2, 3)?;
+        check_key_len(args[0].len())?;
+        let value: i64 = parse_int(args.len() > 1, args, 1)?;
+        let consistency = self.parse_consistency(args.len() > 2, args, 2)?;
+        self.set(
+            context,
+            args[0],
+            Box::new(move |i, v, c: Cube| {
+                let mut counter = c.into_counter().ok_or(CommandError::TypeError)?;
+                counter.clear(i, v);
+                counter.inc(i, v, value);
+                Ok((
+                    Cube::Counter(counter),
+                    Some(RespValue::Status("OK".into())),
+                ))
+            }),
+            consistency,
+            false,
+            None,
+        )
+    }
+
+    fn cmd_incrby(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
+        metrics::REQUEST_SET.mark(1);
+        check_arg_count(args.len(), 2, 3)?;
+        check_key_len(args[0].len())?;
+        let inc: i64 = parse_int(args.len() > 1, args, 1)?;
+        let consistency = self.parse_consistency(args.len() > 2, args, 2)?;
+        self.set(
+            context,
+            args[0],
+            Box::new(move |i, v, c: Cube| {
+                let mut counter = c.into_counter().ok_or(CommandError::TypeError)?;
+                counter.inc(i, v, inc);
+                Ok((
+                    Cube::Counter(counter),
+                    Some(RespValue::Status("OK".into())),
+                ))
             }),
             consistency,
             false,
