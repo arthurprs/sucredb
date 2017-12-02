@@ -140,11 +140,12 @@ impl Database {
             }
         } else {
             match arg0.as_ref() {
-                b"CSET" | b"cset" => self.cmd_cset(context, args),
-                b"INCRBY" | b"incrby" => self.cmd_incrby(context, args),
                 b"GET" | b"get" => self.cmd_get(context, args),
                 b"MGET" | b"mget" => self.cmd_mget(context, args),
                 b"SET" | b"set" => self.cmd_set(context, args, false),
+                b"CGET" | b"cget" => self.cmd_cget(context, args),
+                b"CSET" | b"cset" => self.cmd_cset(context, args),
+                b"INCRBY" | b"incrby" => self.cmd_incrby(context, args),
                 b"HGETALL" | b"hgetall" => self.cmd_hgetall(context, args),
                 b"HSET" | b"hset" => self.cmd_hset(context, args),
                 b"HDEL" | b"hdel" => self.cmd_hdel(context, args),
@@ -342,7 +343,7 @@ impl Database {
             context,
             args[0],
             consistency,
-            Box::new(cubes::render_value_or_counter),
+            Box::new(cubes::render_value),
         )
     }
 
@@ -365,7 +366,7 @@ impl Database {
             context,
             keys,
             consistency,
-            Box::new(cubes::render_value_or_counter),
+            Box::new(cubes::render_value),
         )
     }
 
@@ -398,7 +399,7 @@ impl Database {
             consistency,
             reply_result,
             if reply_result {
-                Some(Box::new(cubes::render_value_or_counter))
+                Some(Box::new(cubes::render_value))
             } else {
                 None
             },
@@ -445,6 +446,19 @@ impl Database {
             consistency,
             false,
             None,
+        )
+    }
+
+    fn cmd_cget(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
+        metrics::REQUEST_GET.mark(1);
+        check_arg_count(args.len(), 1, 2)?;
+        check_key_len(args[0].len())?;
+        let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
+        self.get(
+            context,
+            args[0],
+            consistency,
+            Box::new(cubes::render_counter),
         )
     }
 

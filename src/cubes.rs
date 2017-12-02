@@ -334,7 +334,7 @@ impl CausalValue for MapValue {
     }
 }
 
-pub fn render_value_or_counter(cube: Cube) -> RespValue {
+pub fn render_value(cube: Cube) -> RespValue {
     match cube {
         Cube::Value(v) => {
             let serialized_vv = bincode::serialize(&v.vv, bincode::Infinite).unwrap();
@@ -345,11 +345,18 @@ pub fn render_value_or_counter(cube: Cube) -> RespValue {
             values.push(RespValue::Data(serialized_vv.into()));
             RespValue::Array(values)
         }
-        Cube::Counter(c) => RespValue::Int(c.get()),
         Cube::Void(vv) => {
             let serialized_vv = bincode::serialize(&vv, bincode::Infinite).unwrap();
             RespValue::Array(vec![RespValue::Data(serialized_vv.into())])
         }
+        _ => CommandError::TypeError.into(),
+    }
+}
+
+pub fn render_counter(cube: Cube) -> RespValue {
+    match cube {
+        Cube::Counter(c) => RespValue::Int(c.get()),
+        Cube::Void(_vv) => RespValue::Nil,
         _ => CommandError::TypeError.into(),
     }
 }

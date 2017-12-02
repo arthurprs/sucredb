@@ -62,13 +62,21 @@ Following Redis api *del* works for keys with any datastructure, in these cases 
 
 ### Data structures
 
-Sucredb also supports a tiny subset of commands for Hash and Set datatypes. These types are [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) and don't require a context to be sent along the operation. Mutations depend on the coordinator version of the value and conflicts are handled as follow:
+Sucredb also supports a tiny subset of commands for Hash and Set datatypes in addition to a dedicated Counter type. These types are [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) and don't require a context to be sent along the operation. Mutations depend on the coordinator version of the value and conflicts are handled as follow:
 
 * Hash: On values conflict the latest write wins.
 * Set: On values conflict add wins.
 * Counter: Deletes may erase non observed increments.
 
-#### CSET
+### CGET
+
+Returns the value for a counter or Nil if none is found.
+
+`> GET key {consistency}`
+
+`< 1011`
+
+### CSET
 
 Sets the value for a counter.
 
