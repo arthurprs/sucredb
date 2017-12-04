@@ -92,6 +92,7 @@ impl Context {
         self.is_exec = false;
         self.response.clear();
         self.commands.clear();
+        self.reads.clear();
         self.writes.clear();
     }
 }
