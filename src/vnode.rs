@@ -786,6 +786,8 @@ impl VNode {
         self.state.pending_bootstrap = false;
         let cookie = self.gen_cookie();
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
+        let connected_nodes = db.fabric.connections();
+        nodes.retain(|x| connected_nodes.contains(x));
         if nodes.is_empty() || nodes == &[db.dht.node()] {
             // nothing to boostrap from
             self.handle_bootstrap_result(db, SyncResult::Done);
@@ -831,6 +833,8 @@ impl VNode {
     fn do_start_sync(&mut self, db: &Database) -> bool {
         trace!("do_start_sync vn:{}", self.state.num);
         let mut nodes = db.dht.nodes_for_vnode(self.state.num, false, true);
+        let connected_nodes = db.fabric.connections();
+        nodes.retain(|x| connected_nodes.contains(x));
         thread_rng().shuffle(&mut nodes);
         for node in nodes {
             if node == db.dht.node() {

@@ -980,14 +980,18 @@ mod tests {
         let _ = env_logger::init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
+        let mut db3 = TestDatabase::new("127.0.0.1:9002".parse().unwrap(), "t/db3", false);
 
-        db2.dht.rebalance().unwrap();
+        db1.dht.rebalance().unwrap();
         db1.wait_syncs();
         db2.wait_syncs();
+        db3.wait_syncs();
 
         // sim partition
         warn!("droping db2");
         drop(db2);
+        warn!("droping db3");
+        drop(db3);
 
         for i in 0..TEST_JOIN_SIZE {
             db1.do_cmd(i, &[b"GETSET", i.to_string().as_bytes(), b"", b"", One]);
@@ -1044,6 +1048,30 @@ mod tests {
         warn!("will check after sync");
         for i in 0..TEST_JOIN_SIZE {
             for &db in &[&db2] {
+                db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
+                assert_eq!(
+                    db.response_values(i).0,
+                    [i.to_string().as_bytes(), i.to_string().as_bytes()]
+                );
+            }
+        }
+
+        // nuke db1 so db3 is forced to sync with db2
+        warn!("droping db1");
+        drop(db1);
+        // sim partition heal
+        warn!("bringing back db3");
+        db3 = TestDatabase::new("127.0.0.1:9002".parse().unwrap(), "t/db3", false);
+        sleep_ms(200); // wait for fabric to reconnect
+
+        // force some syncs
+        warn!("starting syncs");
+        db3.force_syncs();
+        db3.wait_syncs();
+
+        warn!("will check after sync");
+        for i in 0..TEST_JOIN_SIZE {
+            for &db in &[&db3] {
                 db.do_cmd(i, &[b"GET", i.to_string().as_bytes(), One]);
                 assert_eq!(
                     db.response_values(i).0,

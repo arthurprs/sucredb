@@ -794,6 +794,7 @@ impl<T: Metadata> DHT<T> {
                 let mut ring = inner.ring.clone();
                 match Ring::deserialize(&bytes).and_then(|new| ring.merge(new)) {
                     Ok(true) => {
+                        debug!("New Ring {:?}", ring);
                         inner.ring = ring;
                         Self::call_callback(inner);
                     }
@@ -916,6 +917,9 @@ impl<T: Metadata> DHT<T> {
             }
             result.push(node);
         }
+        trace!(
+            "nodes_for_vnode {} {:?} {:?} -> {:?}",
+            vn_no, include_pending, include_retiring, result);
         result
     }
 
