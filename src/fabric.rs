@@ -233,7 +233,7 @@ impl Fabric {
                 debug!("Accepting connection from {:?}", addr);
                 let context_cloned = context.clone();
                 handle.spawn(
-                    Self::handshake(socket, None, context_cloned)
+                    Self::handshake(socket, context_cloned)
                         .and_then(move |(s, peer_id, context)| {
                             Self::steady_connection(s, peer_id, context)
                         })
@@ -268,7 +268,7 @@ impl Fabric {
                 Ok(Either::B(_)) => Err(io::ErrorKind::TimedOut.into()),
                 Err(either) => Err(either.split().0),
             })
-            .and_then(move |s| Self::handshake(s, expected_node, context))
+            .and_then(move |s| Self::handshake(s, context))
             .and_then(move |(s, peer_id, context)| {
                 Self::steady_connection(s, peer_id, context)
             })
@@ -300,13 +300,11 @@ impl Fabric {
 
     fn handshake(
         socket: tokio::net::TcpStream,
-        expected_node: Option<NodeId>,
         context: Arc<SharedContext>,
     ) -> Box<Future<Item = (tokio::net::TcpStream, NodeId, Arc<SharedContext>), Error = io::Error>>
     {
         debug!(
-            "Stablished connection with {:?}: {:?}",
-            expected_node,
+            "Stablished connection with {:?}",
             socket.peer_addr()
         );
         let _ = socket.set_nodelay(true);
@@ -320,11 +318,7 @@ impl Fabric {
             .and_then(move |(s, b)| {
                 let peer_id = (&b[..]).read_u64::<LittleEndian>().unwrap();
                 debug!("Identified connection to node {}", peer_id);
-                if expected_node.unwrap_or(peer_id) == peer_id {
-                    Ok((s, peer_id, context))
-                } else {
-                    Err(io::Error::new(io::ErrorKind::Other, "Unexpected NodeId"))
-                }
+                Ok((s, peer_id, context))
             });
 
         Box::new(fut)
