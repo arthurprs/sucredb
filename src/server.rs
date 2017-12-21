@@ -201,12 +201,12 @@ impl Server {
             }
             info!("Token {} accepting connection from {:?}", next_token, addr);
             let conn_ctx = context.clone();
-            handle.spawn(Self::connection(conn_ctx, next_token, socket).then(
-                move |r| {
+            handle.spawn(
+                Self::connection(conn_ctx, next_token, socket).then(move |r| {
                     info!("Token {} disconnected {:?}", next_token, r);
                     Ok(())
-                },
-            ));
+                }),
+            );
             next_token = next_token.wrapping_add(1);
             Ok(())
         });

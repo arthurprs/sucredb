@@ -73,15 +73,13 @@ impl WorkerManager {
         self.ticker_thread = Some(
             thread::Builder::new()
                 .name(format!("WorkerTicker:{}", self.node))
-                .spawn(move || {
-                    loop {
-                        thread::sleep(ticker_interval);
-                        match ticker_rx.try_recv() {
-                            Err(mpsc::TryRecvError::Empty) => (),
-                            _ => break,
-                        }
-                        let _ = sender.try_send(WorkerMsg::Tick(time::Instant::now()));
+                .spawn(move || loop {
+                    thread::sleep(ticker_interval);
+                    match ticker_rx.try_recv() {
+                        Err(mpsc::TryRecvError::Empty) => (),
+                        _ => break,
                     }
+                    let _ = sender.try_send(WorkerMsg::Tick(time::Instant::now()));
                 })
                 .unwrap(),
         );

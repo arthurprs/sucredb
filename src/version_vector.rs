@@ -406,9 +406,7 @@ impl DeltaVersionVector {
     }
 
     pub fn from_vv(vv: VersionVector) -> Self {
-        DeltaVersionVector(unsafe {
-            ::std::mem::transmute::<LinearMap<_, _>, Vec<_>>(vv.0)
-        })
+        DeltaVersionVector(unsafe { ::std::mem::transmute::<LinearMap<_, _>, Vec<_>>(vv.0) })
     }
 
     fn contains(&self, id: Id, version: Version) -> bool {
@@ -654,9 +652,8 @@ impl DotSet {
 impl CausalValue for DotSet {
     fn merge<VV: AbsVersionVector>(&mut self, other: &mut Self, s_vv: &VV, o_vv: &VV) {
         // retain in self what's also exists in other or is not outdated
-        self.0.retain(|&(id, version)| {
-            other.0.remove(&(id, version)) || !o_vv.contains(id, version)
-        });
+        self.0
+            .retain(|&(id, version)| other.0.remove(&(id, version)) || !o_vv.contains(id, version));
 
         // drain other into self filtering outdated versions
         for &(id, version) in &other.0 {
@@ -867,7 +864,17 @@ mod test_bvv {
         bvv1.0.insert(5, BitmappedVersion::new(2, 0));
         let delta_dots: Vec<_> = bvv1.delta(&bvv2).collect();
         assert_eq!(
-            vec![(1, 3), (1, 4), (1, 7), (2, 3), (2, 4), (2, 6), (2, 7), (5, 1), (5, 2)],
+            vec![
+                (1, 3),
+                (1, 4),
+                (1, 7),
+                (2, 3),
+                (2, 4),
+                (2, 6),
+                (2, 7),
+                (5, 1),
+                (5, 2),
+            ],
             delta_dots
         );
         let min_versions: Vec<_> = bvv1.delta(&bvv2).min_versions().to_owned();
@@ -967,9 +974,13 @@ mod test_dvv {
         dvv.merge(&dvv_);
         assert_eq!(dvv, dvv);
 
-        dvv.merge(&DeltaVersionVector(
-            vec![(1, 0), (1, 2), (2, 1), (3, 0), (3, 3)],
-        ));
+        dvv.merge(&DeltaVersionVector(vec![
+            (1, 0),
+            (1, 2),
+            (2, 1),
+            (3, 0),
+            (3, 3),
+        ]));
         assert_eq!(
             dvv,
             DeltaVersionVector(vec![(1, 4), (2, 2), (3, 0), (3, 3)])

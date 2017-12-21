@@ -132,10 +132,7 @@ impl Database {
                 b"EXEC" | b"exec" => self.cmd_exec(context, args),
                 _ => {
                     context.commands.push(cmd.clone());
-                    Ok(self.respond_resp(
-                        context,
-                        RespValue::Status("QUEUED".into()),
-                    ))
+                    Ok(self.respond_resp(context, RespValue::Status("QUEUED".into())))
                 }
             }
         } else {
@@ -225,10 +222,7 @@ impl Database {
     }
 
     fn cmd_config(&self, context: &mut Context, _args: &[&Bytes]) -> Result<(), CommandError> {
-        Ok(self.respond_resp(
-            context,
-            RespValue::Array(Default::default()),
-        ))
+        Ok(self.respond_resp(context, RespValue::Array(Default::default())))
     }
 
     fn cmd_hgetall(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
@@ -282,7 +276,6 @@ impl Database {
             None,
         )
     }
-
 
     fn cmd_smembers(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
         metrics::REQUEST_GET.mark(1);
@@ -339,12 +332,7 @@ impl Database {
         check_arg_count(args.len(), 1, 2)?;
         check_key_len(args[0].len())?;
         let consistency = self.parse_consistency(args.len() > 1, args, 1)?;
-        self.get(
-            context,
-            args[0],
-            consistency,
-            Box::new(cubes::render_value),
-        )
+        self.get(context, args[0], consistency, Box::new(cubes::render_value))
     }
 
     fn cmd_mget(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
@@ -362,12 +350,7 @@ impl Database {
         for key in keys {
             check_key_len(key.len())?;
         }
-        self.mget(
-            context,
-            keys,
-            consistency,
-            Box::new(cubes::render_value),
-        )
+        self.mget(context, keys, consistency, Box::new(cubes::render_value))
     }
 
     fn cmd_set(
@@ -438,10 +421,7 @@ impl Database {
                 let mut counter = c.into_counter().ok_or(CommandError::TypeError)?;
                 counter.clear(i, v);
                 counter.inc(i, v, value);
-                Ok((
-                    Cube::Counter(counter),
-                    Some(RespValue::Status("OK".into())),
-                ))
+                Ok((Cube::Counter(counter), Some(RespValue::Status("OK".into()))))
             }),
             consistency,
             false,
@@ -474,10 +454,7 @@ impl Database {
             Box::new(move |i, v, c: Cube| {
                 let mut counter = c.into_counter().ok_or(CommandError::TypeError)?;
                 counter.inc(i, v, inc);
-                Ok((
-                    Cube::Counter(counter),
-                    Some(RespValue::Status("OK".into())),
-                ))
+                Ok((Cube::Counter(counter), Some(RespValue::Status("OK".into()))))
             }),
             consistency,
             false,

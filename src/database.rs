@@ -498,10 +498,7 @@ impl Database {
         if let Some(vnode) = multi_vnode {
             vnode!(self, vnode, |vn| vn.do_flush(self, context, consistency))
         } else {
-            Ok(self.respond_resp(
-                context,
-                RespValue::Array(Default::default()),
-            ))
+            Ok(self.respond_resp(context, RespValue::Array(Default::default())))
         }
     }
 
@@ -530,11 +527,7 @@ impl Database {
         } else {
             debug_assert_eq!(context.writes.len(), 1);
             let vnode = self.dht.key_vnode(key);
-            vnode!(
-                self,
-                vnode,
-                |vn| { vn.do_flush(self, context, consistency) }
-            )
+            vnode!(self, vnode, |vn| vn.do_flush(self, context, consistency))
         }
     }
 
@@ -547,9 +540,13 @@ impl Database {
     ) -> Result<(), CommandError> {
         debug_assert!(!context.is_multi && !context.is_exec);
         let vnode = self.dht.key_vnode(key);
-        vnode!(self, vnode, |vn| {
-            vn.do_get(self, context, &[key], consistency, response_fn)
-        })
+        vnode!(self, vnode, |vn| vn.do_get(
+            self,
+            context,
+            &[key],
+            consistency,
+            response_fn
+        ))
     }
 
     pub fn mget(
@@ -570,14 +567,15 @@ impl Database {
             }
         }
         if let Some(vnode) = multi_vnode {
-            vnode!(self, vnode, |vn| {
-                vn.do_get(self, context, keys, consistency, response_fn)
-            })
-        } else {
-            Ok(self.respond_resp(
+            vnode!(self, vnode, |vn| vn.do_get(
+                self,
                 context,
-                RespValue::Array(Default::default()),
+                keys,
+                consistency,
+                response_fn
             ))
+        } else {
+            Ok(self.respond_resp(context, RespValue::Array(Default::default())))
         }
     }
 }
@@ -849,7 +847,13 @@ mod tests {
         for i in 0..TEST_JOIN_SIZE {
             db1.do_cmd(
                 i,
-                &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), b"", One],
+                &[
+                    b"GETSET",
+                    i.to_string().as_bytes(),
+                    i.to_string().as_bytes(),
+                    b"",
+                    One,
+                ],
             );
             db1.response_values(i);
         }
@@ -1165,7 +1169,13 @@ mod tests {
             for i in 0..TEST_JOIN_SIZE {
                 db.do_cmd(
                     0,
-                    &[b"GETSET", i.to_string().as_bytes(), i.to_string().as_bytes(), b"", One],
+                    &[
+                        b"GETSET",
+                        i.to_string().as_bytes(),
+                        i.to_string().as_bytes(),
+                        b"",
+                        One,
+                    ],
                 );
                 let vv = db.response_values(0).1;
                 if i > TEST_JOIN_SIZE / 2 {

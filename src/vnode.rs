@@ -265,8 +265,7 @@ impl VNode {
         while let Some((cookie, mut req)) = self.requests.pop_expired(now) {
             debug!(
                 "Request cookie:{:?} token:{} timed out",
-                cookie,
-                req.context.token
+                cookie, req.context.token
             );
             req.context.clear();
             db.respond_error(&mut req.context, CommandError::Timeout);
@@ -440,9 +439,7 @@ impl VNode {
             writes: context
                 .writes
                 .iter_mut()
-                .map(|w| {
-                    (w.key.clone(), replace_default(&mut w.cube), w.reply_result)
-                })
+                .map(|w| (w.key.clone(), replace_default(&mut w.cube), w.reply_result))
                 .collect(),
             reply: consistency != ConsistencyLevel::One,
         };
@@ -778,8 +775,7 @@ impl VNode {
     fn start_bootstrap(&mut self, db: &Database) {
         debug!(
             "start_bootstrap vn:{} p:{:?}",
-            self.state.num,
-            self.state.pending_bootstrap
+            self.state.num, self.state.pending_bootstrap
         );
         assert_eq!(self.state.status, VNodeStatus::Bootstrap);
         assert_eq!(self.syncs.len(), 0);
@@ -890,9 +886,7 @@ impl VNodeState {
         }
         info!(
             "VNode {} status change {:?} -> {:?}",
-            self.num,
-            self.status,
-            new
+            self.num, self.status, new
         );
         match new {
             VNodeStatus::Bootstrap => {

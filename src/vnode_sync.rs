@@ -231,9 +231,7 @@ impl Synchronization {
 
         debug!(
             "Creating SyncSender {:?} from {:?} to {:?}",
-            cookie,
-            state.clocks,
-            clocks_in_peer
+            cookie, state.clocks, clocks_in_peer
         );
 
         let dots_delta = state.clocks.delta(&clocks_in_peer);

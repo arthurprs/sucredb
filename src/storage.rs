@@ -23,7 +23,6 @@ pub struct StorageManager {
     db: Arc<rocksdb::DB>,
 }
 
-
 #[inline]
 fn build_key<'a>(buffer: &'a mut [u8], num: u16, key: &[u8]) -> &'a [u8] {
     (&mut buffer[..2]).write_u16::<BigEndian>(num).unwrap();
@@ -131,7 +130,10 @@ impl StorageManager {
         let db = rocksdb::DB::open_cf(
             opts.clone(),
             path.as_ref().to_str().unwrap(),
-            vec![("default", def_cf_opts.clone()), ("log", log_cf_opts.clone())],
+            vec![
+                ("default", def_cf_opts.clone()),
+                ("log", log_cf_opts.clone()),
+            ],
         ).or_else(|_| -> Result<_, String> {
             let mut db = rocksdb::DB::open_cf(
                 opts,
@@ -351,7 +353,6 @@ impl<'a> Iterator for StorageIter<'a> {
         }
     }
 }
-
 
 impl LogStorageIterator {
     pub fn iter<'a>(&'a mut self) -> LogStorageIter<'a> {

@@ -16,7 +16,6 @@ pub fn hash_slot(mut key: &[u8]) -> u16 {
     crc16::State::<crc16::XMODEM>::calculate(key) % HASH_SLOTS
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

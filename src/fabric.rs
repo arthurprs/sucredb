@@ -141,8 +141,7 @@ impl SharedContext {
         let connection_id = self.connection_gen.fetch_add(1, Ordering::Relaxed);
         debug!(
             "register_connection peer: {}, id: {:?}",
-            peer,
-            connection_id
+            peer, connection_id
         );
         let is_new = {
             let mut locked = self.connections.write().unwrap();
@@ -269,9 +268,7 @@ impl Fabric {
                 Err(either) => Err(either.split().0),
             })
             .and_then(move |s| Self::handshake(s, context))
-            .and_then(move |(s, peer_id, context)| {
-                Self::steady_connection(s, peer_id, context)
-            })
+            .and_then(move |(s, peer_id, context)| Self::steady_connection(s, peer_id, context))
             .then(move |_| {
                 tokio::reactor::Timeout::new(
                     Duration::from_millis(FABRIC_RECONNECT_INTERVAL_MS),
@@ -303,10 +300,7 @@ impl Fabric {
         context: Arc<SharedContext>,
     ) -> Box<Future<Item = (tokio::net::TcpStream, NodeId, Arc<SharedContext>), Error = io::Error>>
     {
-        debug!(
-            "Stablished connection with {:?}",
-            socket.peer_addr()
-        );
+        debug!("Stablished connection with {:?}", socket.peer_addr());
         let _ = socket.set_nodelay(true);
         let _ = socket.set_keepalive(Some(Duration::from_millis(FABRIC_KEEPALIVE_MS)));
         let mut buffer = [0u8; 8];
@@ -459,9 +453,9 @@ impl Fabric {
     fn start_connect(&self, expected_node: Option<NodeId>, addr: SocketAddr) {
         let context = self.context.clone();
         let context_cloned = context.clone();
-        context.loop_remote.spawn(move |h| {
-            Self::connect(expected_node, addr, context_cloned, h.clone())
-        });
+        context
+            .loop_remote
+            .spawn(move |h| Self::connect(expected_node, addr, context_cloned, h.clone()));
     }
 
     // TODO: take msgs as references and buffer serialized bytes instead

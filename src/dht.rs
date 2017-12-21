@@ -249,8 +249,7 @@ impl<T: Metadata> Ring<T> {
             } else {
                 debug!(
                     "Can't promote {}, it's already an owner of {}",
-                    promoted,
-                    vn_no
+                    promoted, vn_no
                 );
                 return Ok(());
             }
@@ -311,22 +310,17 @@ impl<T: Metadata> Ring<T> {
         debug!("Merging rings {:?} {:?}", self.version, other.version);
         // sanity checks
         if self.cluster != other.cluster {
-            return Err(
-                format!(
-                    "Cluster name differs {:?} != {:?}",
-                    self.cluster,
-                    other.cluster
-                ).into(),
-            );
+            return Err(format!(
+                "Cluster name differs {:?} != {:?}",
+                self.cluster, other.cluster
+            ).into());
         }
         if self.vnodes.len() != other.vnodes.len() && !self.vnodes.is_empty() {
-            return Err(
-                format!(
-                    "Incompatible partition count {:?} != {:?}",
-                    self.vnodes.len(),
-                    other.vnodes.len()
-                ).into(),
-            );
+            return Err(format!(
+                "Incompatible partition count {:?} != {:?}",
+                self.vnodes.len(),
+                other.vnodes.len()
+            ).into());
         }
         if other.vnodes.is_empty() {
             return Err("Other ring isn't valid".into());
@@ -339,8 +333,7 @@ impl<T: Metadata> Ring<T> {
         if other.version.descends(&self.version) {
             debug!(
                 "Accepting other ring {:?} {:?}",
-                self.version,
-                other.version
+                self.version, other.version
             );
             *self = other;
             return Ok(true);
@@ -348,8 +341,7 @@ impl<T: Metadata> Ring<T> {
 
         info!(
             "Merging diverging ring versions {:?} {:?}",
-            self.version,
-            other.version
+            self.version, other.version
         );
         self.version.merge(&other.version);
 
@@ -410,10 +402,7 @@ impl<T: Metadata> Ring<T> {
                             let status = o.get_mut();
                             debug!(
                                 "Conflicting vnode {} vnode {} status {:?} {:?}",
-                                n,
-                                vn_no,
-                                status,
-                                other_status
+                                n, vn_no, status, other_status
                             );
                             match (*status, other_status) {
                                 (Owner, _) | (_, Owner) => {
@@ -528,9 +517,7 @@ impl<T: Metadata> Ring<T> {
                 }
                 unreachable!(
                     "Can't find replica for vnode {} {:?} rf:{}",
-                    vn_no,
-                    vn.owners,
-                    self.replication_factor
+                    vn_no, vn.owners, self.replication_factor
                 );
             }
         }
@@ -539,9 +526,7 @@ impl<T: Metadata> Ring<T> {
         for (vn_no, vn) in self.vnodes.iter_mut().enumerate() {
             let doing_much: IdHashSet<_> = vn.owners
                 .iter()
-                .filter(|&(n, &s)| {
-                    s != Retiring && node_map.get(n).unwrap().len() > vnpn
-                })
+                .filter(|&(n, &s)| s != Retiring && node_map.get(n).unwrap().len() > vnpn)
                 .map(|(n, _)| *n)
                 .collect();
             let candidates: IdHashSet<_> = node_map
@@ -605,14 +590,10 @@ impl<T: Metadata> Ring<T> {
             //     .map(|(&n, _)| n)
             //     .collect();
             if owners.len() + pending.len() != desired_replicas {
-                return Err(
-                    format!(
-                        "vnode {} has only {:?}{:?} replicas",
-                        vn_no,
-                        owners,
-                        pending
-                    ).into(),
-                );
+                return Err(format!(
+                    "vnode {} has only {:?}{:?} replicas",
+                    vn_no, owners, pending
+                ).into());
             }
             for &node in owners.iter().chain(&pending) {
                 *node_map.entry(node).or_insert(0usize) += 1;
@@ -621,15 +602,13 @@ impl<T: Metadata> Ring<T> {
 
         for (&n, &count) in &node_map {
             if count > vnpn + vnpn_rest {
-                return Err(
-                    format!(
-                        "node {} is a replica for {} vnodes, expected {} max, {:?}",
-                        n,
-                        count,
-                        vnpn + vnpn_rest,
-                        node_map
-                    ).into(),
-                );
+                return Err(format!(
+                    "node {} is a replica for {} vnodes, expected {} max, {:?}",
+                    n,
+                    count,
+                    vnpn + vnpn_rest,
+                    node_map
+                ).into());
             }
         }
 
@@ -753,11 +732,15 @@ impl<T: Metadata> DHT<T> {
         // TODO: move this to Database
         let w_inner1 = Arc::downgrade(&inner);
         let w_inner2 = Arc::downgrade(&inner);
-        let msg_cb = move |from, msg| if let Some(inner) = w_inner1.upgrade() {
-            Self::on_message(&mut *inner.write().unwrap(), from, msg);
+        let msg_cb = move |from, msg| {
+            if let Some(inner) = w_inner1.upgrade() {
+                Self::on_message(&mut *inner.write().unwrap(), from, msg);
+            }
         };
-        let con_cb = move |peer| if let Some(inner) = w_inner2.upgrade() {
-            Self::on_connection(&*inner.read().unwrap(), peer);
+        let con_cb = move |peer| {
+            if let Some(inner) = w_inner2.upgrade() {
+                Self::on_connection(&*inner.read().unwrap(), peer);
+            }
         };
         fabric.register_msg_handler(FabricMsgType::DHT, Box::new(msg_cb));
         fabric.register_con_handler(Box::new(con_cb));
@@ -919,7 +902,11 @@ impl<T: Metadata> DHT<T> {
         }
         trace!(
             "nodes_for_vnode {} {:?} {:?} -> {:?}",
-            vn_no, include_pending, include_retiring, result);
+            vn_no,
+            include_pending,
+            include_retiring,
+            result
+        );
         result
     }
 
@@ -1151,8 +1138,10 @@ mod tests {
             assert_eq!(dht.nodes_for_vnode(0, true, false), &[join_u64(0, 0)]);
             assert_eq!(
                 dht.members(),
-                [(join_u64(0, 0), config1.fabric_addr), (join_u64(1, 0), config2.fabric_addr)]
-                    .iter()
+                [
+                    (join_u64(0, 0), config1.fabric_addr),
+                    (join_u64(1, 0), config2.fabric_addr)
+                ].iter()
                     .cloned()
                     .collect()
             );
@@ -1168,8 +1157,10 @@ mod tests {
             );
             assert_eq!(
                 dht.members(),
-                [(join_u64(0, 0), config1.fabric_addr), (join_u64(1, 0), config2.fabric_addr)]
-                    .iter()
+                [
+                    (join_u64(0, 0), config1.fabric_addr),
+                    (join_u64(1, 0), config2.fabric_addr)
+                ].iter()
                     .cloned()
                     .collect()
             );
@@ -1188,8 +1179,10 @@ mod tests {
             );
             assert_eq!(
                 dht.members(),
-                [(join_u64(0, 0), config1.fabric_addr), (join_u64(1, 0), config2.fabric_addr)]
-                    .iter()
+                [
+                    (join_u64(0, 0), config1.fabric_addr),
+                    (join_u64(1, 0), config2.fabric_addr)
+                ].iter()
                     .cloned()
                     .collect()
             );

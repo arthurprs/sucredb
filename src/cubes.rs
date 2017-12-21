@@ -201,7 +201,6 @@ impl Value {
     }
 }
 
-
 /// Actor Observed removal
 /// Add wins on conflict
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -387,7 +386,6 @@ pub fn render_map(cube: Cube) -> RespValue {
         _ => CommandError::TypeError.into(),
     }
 }
-
 
 pub fn render_set(cube: Cube) -> RespValue {
     match cube {
