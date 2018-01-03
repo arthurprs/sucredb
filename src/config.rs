@@ -240,9 +240,9 @@ pub fn setup_default_logging() {
         .logger(
             log4rs::config::Logger::builder()
                 .appender("console")
-                .build("sucredb", log::LogLevelFilter::Info),
+                .build("sucredb", log::LevelFilter::Info),
         )
-        .build(log4rs::config::Root::builder().build(log::LogLevelFilter::Off))
+        .build(log4rs::config::Root::builder().build(log::LevelFilter::Off))
         .expect("failed to setup default logging");
 
     log4rs::init_config(config).expect("failed to init logging");

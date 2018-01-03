@@ -4,10 +4,10 @@ version = "0.1.0"
 authors = ["arthurprs"]
 
 [dependencies]
-rand = "0.3"
+rand = "0.4"
 serde = "1.0"
 serde_derive = "1.0"
-log = "0.3"
+log = "0.4"
 byteorder="1.0"
 tokio-core = "0.1"
 tokio-io = "0.1"
@@ -22,7 +22,7 @@ num_cpus="1.0"
 roaring="0.5"
 
 [dependencies.log4rs]
-version = "0.7"
+version = "0.8"
 default-features = false
 features = ["all_components", "file", "yaml_format"]
 
@@ -40,13 +40,7 @@ version = "0.4"
 features = ["serde"]
 
 [dev-dependencies]
-env_logger = "0.4"
-
-[profile.dev]
-codegen-units=4
-
-[profile.test]
-codegen-units=4
+env_logger = "0.5.0-rc.1"
 
 # enable for profiling
 # [profile.release]
