@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn test() {
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let config1 = Config {
             fabric_addr: "127.0.0.1:6481".parse().unwrap(),
             ..Default::default()

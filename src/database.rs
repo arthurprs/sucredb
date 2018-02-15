@@ -732,7 +732,7 @@ mod tests {
 
     fn test_reload_stub(shutdown: bool) {
         let _ = fs::remove_dir_all("t/");
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let mut db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
         let prev_node = db.dht.node();
         db.do_cmd(1, &[b"GET", b"test", One]);
@@ -781,7 +781,7 @@ mod tests {
     #[test]
     fn test_one() {
         let _ = fs::remove_dir_all("t/");
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", true);
 
         db.do_cmd(1, &[b"GET", b"test", One]);
@@ -817,7 +817,7 @@ mod tests {
     #[test]
     fn test_two() {
         let _ = fs::remove_dir_all("t/");
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         db2.dht.rebalance().unwrap();
@@ -842,7 +842,7 @@ mod tests {
     #[test]
     fn test_bootstrap() {
         let _ = fs::remove_dir_all("t/");
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         for i in 0..TEST_JOIN_SIZE {
             db1.do_cmd(
@@ -909,7 +909,7 @@ mod tests {
     fn test_bootstrap_2() {
         // similar to the previous, but values in n1 are rewritten + sibling
         let _ = fs::remove_dir_all("t/");
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         for i in 0..TEST_JOIN_SIZE {
             db1.do_cmd(i, &[b"GETSET", i.to_string().as_bytes(), b"", b"", One]);
@@ -981,7 +981,7 @@ mod tests {
     #[test]
     fn test_sync() {
         let _ = fs::remove_dir_all("t/");
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let mut db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         let mut db3 = TestDatabase::new("127.0.0.1:9002".parse().unwrap(), "t/db3", false);
@@ -1088,7 +1088,7 @@ mod tests {
     #[test]
     fn test_consistency_level() {
         let _ = fs::remove_dir_all("t/");
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         let db3 = TestDatabase::new("127.0.0.1:9002".parse().unwrap(), "t/db3", false);
@@ -1142,7 +1142,7 @@ mod tests {
         use std::env;
         use std::ffi::OsString;
         let _ = fs::remove_dir_all("t/");
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let db1 = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db1", true);
         let db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
         let db3 = TestDatabase::new("127.0.0.1:9002".parse().unwrap(), "t/db3", false);

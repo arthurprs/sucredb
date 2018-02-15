@@ -727,7 +727,7 @@ mod tests {
     use std::{time, thread};
 
     fn test_converge(n: usize) -> Vec<Gossiper<()>> {
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let g: Vec<_> = (0..n)
             .map(|i| {
                 Gossiper::new(format!("0.0.0.0:{}", 9000 + i).parse().unwrap(), ()).unwrap()
@@ -772,7 +772,7 @@ mod tests {
     test_converge_n!(test_converge_50, 50);
 
     fn test_dead(n: usize) {
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let mut g = test_converge(n);
         g.pop();
         let start = Instant::now();

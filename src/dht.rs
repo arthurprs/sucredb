@@ -32,7 +32,8 @@ pub trait Metadata
 
 impl<
     T: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + fmt::Debug + 'static,
-> Metadata for T {
+> Metadata for T
+{
 }
 
 // *pseudo* interval used to calculate aae msg rate
@@ -1098,7 +1099,7 @@ mod tests {
 
     #[test]
     fn test_dht_init() {
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let config: Config = Default::default();
 
         let node = 0;
@@ -1116,7 +1117,7 @@ mod tests {
 
     #[test]
     fn test_dht_join() {
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let config1: Config = Config {
             fabric_addr: "127.0.0.1:3331".parse().unwrap(),
             ..Default::default()
@@ -1192,7 +1193,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_dht_join_wrong_cluster() {
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let config1: Config = Config {
             fabric_addr: "127.0.0.1:3331".parse().unwrap(),
             ..Default::default()
@@ -1214,7 +1215,7 @@ mod tests {
 
     #[test]
     fn test_dht_aae() {
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let config1: Config = Config {
             fabric_addr: "127.0.0.1:3331".parse().unwrap(),
             ..Default::default()
@@ -1257,7 +1258,7 @@ mod tests {
 
     #[test]
     fn test_rebalance_leaving_nodes() {
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let addr = "0.0.0.0:0".parse().unwrap();
         for _ in 0..1_000 {
             let partitions = 32;
@@ -1280,7 +1281,7 @@ mod tests {
 
     #[test]
     fn test_rebalance() {
-        let _ = env_logger::init();
+        let _ = env_logger::try_init();
         let addr = "0.0.0.0:0".parse().unwrap();
         for _ in 0..1_000 {
             let partitions = 32;

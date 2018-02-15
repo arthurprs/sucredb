@@ -14,7 +14,8 @@ pub struct InFlightMap<K: Hash + Eq + Copy, V, T: Ord + Copy, H: BuildHasher = R
 }
 
 impl<K: Hash + Eq + Copy + fmt::Debug, V, T: Ord + Copy, H: BuildHasher + Default>
-    InFlightMap<K, V, T, H> {
+    InFlightMap<K, V, T, H>
+{
     pub fn new() -> Self {
         InFlightMap {
             map: Default::default(),

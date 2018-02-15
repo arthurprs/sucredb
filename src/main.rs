@@ -20,9 +20,9 @@ extern crate futures;
 #[macro_use]
 extern crate lazy_static;
 extern crate linear_map;
-extern crate log4rs;
 #[macro_use]
 extern crate log;
+extern crate log4rs;
 extern crate metrics as rust_metrics;
 extern crate num_cpus;
 extern crate rand;

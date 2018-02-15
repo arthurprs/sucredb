@@ -73,6 +73,7 @@ pub struct StorageIterator {
     db: Arc<rocksdb::DB>,
     iterator: rocksdb::rocksdb::DBIterator<Arc<rocksdb::DB>>,
     first: bool,
+    num: u16,
 }
 
 pub struct LogStorageIterator {
@@ -183,6 +184,7 @@ impl Storage {
             db: self.db.clone(),
             iterator: iterator,
             first: true,
+            num: self.num,
         }
     }
 
@@ -274,7 +276,7 @@ impl Storage {
 
         for &cf in &[self.cf, self.log_cf] {
             self.db
-                .delete_file_in_range_cf(cf, &from[..], &to[..])
+                .delete_files_in_range_cf(cf, &from[..], &to[..], false)
                 .unwrap();
             let mut ro = rocksdb::ReadOptions::new();
             ro.set_total_order_seek(false);
@@ -338,6 +340,10 @@ impl<'a> Iterator for StorageIter<'a> {
         if self.it.first {
             self.it.first = false;
         } else {
+            // this iterator isn't fused so we need to check for valid here too
+            if !self.it.iterator.valid() {
+                return None;
+            }
             self.it.iterator.next();
         }
         if self.it.iterator.valid() {
@@ -370,6 +376,10 @@ impl<'a> Iterator for LogStorageIter<'a> {
         if self.it.first {
             self.it.first = false;
         } else {
+            // this iterator isn't fused so we need to check for valid here too
+            if !self.it.iterator.valid() {
+                return None;
+            }
             self.it.iterator.next();
         }
         if self.it.iterator.valid() {
