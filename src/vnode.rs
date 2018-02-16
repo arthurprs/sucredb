@@ -979,7 +979,7 @@ impl VNodeState {
             clean_shutdown: shutdown,
         };
         debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
-        let serialized_saved_state = bincode::serialize(&saved_state, bincode::Infinite)
+        let serialized_saved_state = bincode::serialize(&saved_state)
             .expect("Can't serialize vnode state");
         db.meta_storage
             .set(self.num.to_string().as_bytes(), &serialized_saved_state)
@@ -1009,7 +1009,7 @@ impl VNodeState {
                 batch.del(key);
             } else {
                 let bytes =
-                    bincode::serialize(cube, bincode::Infinite).expect("Can't serialize Cube");
+                    bincode::serialize(cube).expect("Can't serialize Cube");
                 batch.set(key, &bytes);
             }
 
@@ -1057,7 +1057,7 @@ impl VNodeState {
                     batch.del(&key);
                 } else {
                     let serialized =
-                        bincode::serialize(&new, bincode::Infinite).expect("Can't serialize Cube");
+                        bincode::serialize(&new).expect("Can't serialize Cube");
                     batch.set(&key, &serialized);
                 }
             }

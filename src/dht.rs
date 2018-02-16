@@ -132,7 +132,7 @@ impl RingDescription {
 
 impl<T: Metadata> Ring<T> {
     fn serialize(ring: &Ring<T>) -> Result<Vec<u8>, GenericError> {
-        bincode::serialize(ring, bincode::Infinite)
+        bincode::serialize(ring)
             .map_err(|e| format!("Can't serialize Ring: {:?}", e).into())
     }
 

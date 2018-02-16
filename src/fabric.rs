@@ -36,7 +36,7 @@ impl codec::Decoder for FramedBincodeCodec {
             let mut bytes: &[u8] = &*src;
             if let Ok(msg_len) = bytes.read_u32::<LittleEndian>() {
                 if bytes.len() >= msg_len as usize {
-                    match bincode::deserialize_from(&mut bytes, bincode::Infinite) {
+                    match bincode::deserialize_from(&mut bytes) {
                         Ok(v) => (4 + msg_len as usize, Ok(Some(v))),
                         Err(e) => (0, Err(into_io_error(e))),
                     }
@@ -54,10 +54,10 @@ impl codec::Decoder for FramedBincodeCodec {
 
 impl FramedBincodeCodec {
     fn serialize(item: FabricMsgRef) -> Bytes {
-        let item_size = bincode::serialized_size(&item);
+        let item_size = bincode::serialized_size(&item).unwrap();
         let mut dst = BytesMut::with_capacity(item_size as usize + 4);
         dst.put_u32::<LittleEndian>(item_size as u32);
-        bincode::serialize_into(&mut (&mut dst).writer(), &item, bincode::Infinite).unwrap();
+        bincode::serialize_into(&mut (&mut dst).writer(), &item).unwrap();
         dst.into()
     }
 }

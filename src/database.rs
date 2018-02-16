@@ -727,7 +727,7 @@ mod tests {
     }
 
     fn encode_vv(vv: &VersionVector) -> Vec<u8> {
-        bincode::serialize(vv, bincode::Infinite).unwrap()
+        bincode::serialize(vv).unwrap()
     }
 
     fn test_reload_stub(shutdown: bool) {

@@ -17,7 +17,7 @@ crc16="0.3"
 metrics="0.2"
 lazy_static = "1.0"
 serde_yaml = "0.7"
-bincode="0.9"
+bincode="1.0"
 num_cpus="1.0"
 roaring="0.5"
 

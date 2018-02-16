@@ -335,7 +335,7 @@ impl CausalValue for MapValue {
 pub fn render_value(cube: Cube) -> RespValue {
     match cube {
         Cube::Value(v) => {
-            let serialized_vv = bincode::serialize(&v.vv, bincode::Infinite).unwrap();
+            let serialized_vv = bincode::serialize(&v.vv).unwrap();
             let mut values: Vec<_> = v.values
                 .into_iter()
                 .filter_map(|(_, ov)| ov.map(RespValue::Data))
@@ -344,7 +344,7 @@ pub fn render_value(cube: Cube) -> RespValue {
             RespValue::Array(values)
         }
         Cube::Void(vv) => {
-            let serialized_vv = bincode::serialize(&vv, bincode::Infinite).unwrap();
+            let serialized_vv = bincode::serialize(&vv).unwrap();
             RespValue::Array(vec![RespValue::Data(serialized_vv.into())])
         }
         _ => CommandError::TypeError.into(),
