@@ -1,11 +1,11 @@
-use std::time;
-use std::boxed::FnBox;
-use bytes::Bytes;
-use version_vector::*;
-use linear_map::{Entry as LMEntry, LinearMap};
-use command::CommandError;
-use resp::RespValue;
 use bincode;
+use bytes::Bytes;
+use command::CommandError;
+use linear_map::{Entry as LMEntry, LinearMap};
+use resp::RespValue;
+use std::boxed::FnBox;
+use std::time;
+use version_vector::*;
 
 pub type MutatorFn =
     Box<FnBox(Id, Version, Cube) -> Result<(Cube, Option<RespValue>), CommandError> + Send>;

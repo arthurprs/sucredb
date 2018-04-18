@@ -1,28 +1,28 @@
-use std::{io, thread};
-use std::net::SocketAddr;
-use std::time::Duration;
-use std::sync::{mpsc, Arc, Mutex, RwLock};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::hash_map::Entry as HMEntry;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::time::Duration;
+use std::{io, thread};
 
+use bincode;
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use bytes::{BufMut, Bytes, BytesMut};
 use linear_map::LinearMap;
 use rand::{thread_rng, Rng};
-use bytes::{BufMut, Bytes, BytesMut};
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use bincode;
 
-use futures::{Future, Sink, Stream};
 use futures::future::Either;
 use futures::sync::mpsc as fmpsc;
 use futures::sync::oneshot as foneshot;
+use futures::{Future, Sink, Stream};
 use tokio_core as tokio;
-use tokio_io::{io as tokio_io, AsyncRead};
 use tokio_io::codec;
+use tokio_io::{io as tokio_io, AsyncRead};
 
-pub use fabric_msg::*;
 use config::Config;
-use utils::{into_io_error, GenericError, IdHashMap};
 use database::NodeId;
+pub use fabric_msg::*;
+use utils::{into_io_error, GenericError, IdHashMap};
 
 // u32(le) payload len + bincode payload
 struct FramedBincodeCodec;
@@ -93,12 +93,10 @@ const FABRIC_RECONNECT_INTERVAL_MS: u64 = 1000;
 /// the latency as much.
 pub struct Fabric {
     context: Arc<SharedContext>,
-    loop_thread: Option<
-        (
-            foneshot::Sender<()>,
-            thread::JoinHandle<Result<(), GenericError>>,
-        ),
-    >,
+    loop_thread: Option<(
+        foneshot::Sender<()>,
+        thread::JoinHandle<Result<(), GenericError>>,
+    )>,
 }
 
 struct ReaderContext {
@@ -520,10 +518,10 @@ impl Drop for Fabric {
 mod tests {
     use super::*;
     use config::Config;
-    use std::thread;
-    use std::time::Duration;
     use env_logger;
     use std::sync::{atomic, Arc};
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn test() {

@@ -1,15 +1,15 @@
-use std::time::{Duration, Instant};
-use std::collections::{hash_set, HashSet};
-use vnode::VNodeState;
-use fabric::*;
-use version_vector::*;
+use bincode;
+use bytes::Bytes;
 use cubes::Cube;
 use database::*;
+use fabric::*;
 use inflightmap::InFlightMap;
-use bincode;
-use utils::{IdHasherBuilder, split_u64};
 use metrics::{self, Meter};
-use bytes::Bytes;
+use std::collections::{hash_set, HashSet};
+use std::time::{Duration, Instant};
+use utils::{split_u64, IdHasherBuilder};
+use version_vector::*;
+use vnode::VNodeState;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[must_use]
@@ -30,7 +30,7 @@ impl<S, E> From<Result<S, E>> for SyncResult {
 }
 
 macro_rules! stry {
-    ($expr: expr) => {{
+    ($expr:expr) => {{
         let conv = $expr.into();
         if let SyncResult::Continue = conv {
             conv

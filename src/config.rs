@@ -1,9 +1,9 @@
-use std::io::Read;
+use std::cmp::max;
+use std::convert::TryInto;
 use std::fs::File;
+use std::io::Read;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::convert::TryInto;
-use std::cmp::max;
 use std::str::FromStr;
 
 use log;
@@ -11,8 +11,8 @@ use log4rs;
 use num_cpus;
 use serde_yaml as yaml;
 
-use utils::GenericError;
 use types::ConsistencyLevel;
+use utils::GenericError;
 
 // Remember to update defaults in sucredb.yaml!
 pub const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:6379";
@@ -121,26 +121,40 @@ pub fn parse_size(size_text: &str) -> Result<i64, GenericError> {
 }
 
 macro_rules! cfg {
-    ($yaml: ident, $target: ident, $string: ident, $method: ident) => (
+    ($yaml:ident, $target:ident, $string:ident, $method:ident) => {
         if let Some(v) = $yaml.get(stringify!($string)) {
-            let v = v.$method().expect(concat!("Can't access field with", stringify!($method)));
+            let v = v.$method()
+                .expect(concat!("Can't access field with", stringify!($method)));
             $target.$string = v.into();
         }
-    );
-    ($yaml: ident, $target: ident, $string: ident, $method: ident, try_into) => (
+    };
+    ($yaml:ident, $target:ident, $string:ident, $method:ident,try_into) => {
         if let Some(v) = $yaml.get(stringify!($string)) {
-            let v = v.$method().expect(concat!("Can't access field with", stringify!($method)));
-            $target.$string = v.try_into().expect(concat!("Can't convert ", stringify!($string)));
+            let v = v.$method()
+                .expect(concat!("Can't access field with", stringify!($method)));
+            $target.$string = v.try_into()
+                .expect(concat!("Can't convert ", stringify!($string)));
         }
-    );
-    ($yaml: ident, $target: ident, $string: ident, $method: ident, $convert: expr) => (
+    };
+    ($yaml:ident, $target:ident, $string:ident, $method:ident, $convert:expr) => {
         if let Some(v) = $yaml.get(stringify!($string)) {
-            let v = v.$method().expect(concat!("Can't access key ", stringify!($string), " with", stringify!($method)));
-            $target.$string =
-                $convert(v).expect(concat!("Can't convert ", stringify!($string), " with ", stringify!($convert)))
-                .try_into().expect(concat!("Can't convert ", stringify!($string)));
+            let v = v.$method().expect(concat!(
+                "Can't access key ",
+                stringify!($string),
+                " with",
+                stringify!($method)
+            ));
+            $target.$string = $convert(v)
+                .expect(concat!(
+                    "Can't convert ",
+                    stringify!($string),
+                    " with ",
+                    stringify!($convert)
+                ))
+                .try_into()
+                .expect(concat!("Can't convert ", stringify!($string)));
         }
-    );
+    };
 }
 
 pub fn read_config_file(path: &Path, config: &mut Config) {

@@ -1,20 +1,20 @@
-use std::io;
 use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::io;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::collections::VecDeque;
 
+use bytes::{BufMut, BytesMut};
 use database::{Context as DbContext, Database, Token};
-use workers::{WorkerMsg, WorkerSender};
-use futures::{Future, Sink, Stream};
 use futures::sync::mpsc as fmpsc;
+use futures::{Future, Sink, Stream};
 use tokio_core as tokio;
 use tokio_io::{codec, AsyncRead};
-use bytes::{BufMut, BytesMut};
+use workers::{WorkerMsg, WorkerSender};
 
-use resp::{self, RespValue};
 use config::Config;
 use metrics::{self, Gauge};
+use resp::{self, RespValue};
 use utils::IdHashMap;
 
 struct RespCodec;

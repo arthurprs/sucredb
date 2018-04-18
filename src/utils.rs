@@ -1,7 +1,7 @@
-use std::hash::{BuildHasherDefault, Hasher};
 use std::collections::{HashMap, HashSet};
-use std::{fmt, fs, io, path};
 use std::error::Error;
+use std::hash::{BuildHasherDefault, Hasher};
+use std::{fmt, fs, io, path};
 
 pub type GenericError = Box<Error + Send + Sync + 'static>;
 
@@ -83,16 +83,19 @@ pub fn sleep_ms(ms: u64) {
 
 #[cfg(test)]
 macro_rules! assert_eq_repr {
-    ($left:expr , $right:expr) => ({
+    ($left:expr, $right:expr) => {{
         match (format!("{:?}", &$left), format!("{:?}", &$right)) {
             (left_val, right_val) => {
                 if !(left_val == right_val) {
-                    panic!("repr assertion failed: `(debug(left) == debug(right))` \
-                           (left: `{:?}`, right: `{:?}`)", left_val, right_val)
+                    panic!(
+                        "repr assertion failed: `(debug(left) == debug(right))` \
+                         (left: `{:?}`, right: `{:?}`)",
+                        left_val, right_val
+                    )
                 }
             }
         }
-    })
+    }};
 }
 
 pub trait LoggerExt {

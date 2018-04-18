@@ -1,8 +1,8 @@
-use std::{thread, time};
-use std::sync::mpsc;
-use fabric::FabricMsg;
 use database::{Context, NodeId};
+use fabric::FabricMsg;
 use rand::{thread_rng, Rng};
+use std::sync::mpsc;
+use std::{thread, time};
 
 pub enum WorkerMsg {
     Fabric(NodeId, FabricMsg),

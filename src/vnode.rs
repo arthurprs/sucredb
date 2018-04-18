@@ -1,18 +1,18 @@
-use std::time::{Duration, Instant};
-use std::collections::hash_map::Entry as HMEntry;
-use version_vector::*;
-use cubes::*;
-use storage::*;
-use database::*;
-use command::CommandError;
-use inflightmap::InFlightMap;
-use fabric::*;
-use vnode_sync::*;
-use hash::hash_slot;
-use rand::{thread_rng, Rng};
-use utils::{replace_default, IdHashMap, IdHashSet, IdHasherBuilder};
 use bincode;
 use bytes::Bytes;
+use command::CommandError;
+use cubes::*;
+use database::*;
+use fabric::*;
+use hash::hash_slot;
+use inflightmap::InFlightMap;
+use rand::{thread_rng, Rng};
+use std::collections::hash_map::Entry as HMEntry;
+use std::time::{Duration, Instant};
+use storage::*;
+use utils::{replace_default, IdHashMap, IdHashSet, IdHasherBuilder};
+use version_vector::*;
+use vnode_sync::*;
 
 const ZOMBIE_TIMEOUT_MS: u64 = 60 * 1_000;
 
@@ -979,8 +979,8 @@ impl VNodeState {
             clean_shutdown: shutdown,
         };
         debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
-        let serialized_saved_state = bincode::serialize(&saved_state)
-            .expect("Can't serialize vnode state");
+        let serialized_saved_state =
+            bincode::serialize(&saved_state).expect("Can't serialize vnode state");
         db.meta_storage
             .set(self.num.to_string().as_bytes(), &serialized_saved_state)
             .expect("Can't save vnode state");
@@ -1008,8 +1008,7 @@ impl VNodeState {
             if cube.is_subsumed(&self.clocks) {
                 batch.del(key);
             } else {
-                let bytes =
-                    bincode::serialize(cube).expect("Can't serialize Cube");
+                let bytes = bincode::serialize(cube).expect("Can't serialize Cube");
                 batch.set(key, &bytes);
             }
 
@@ -1056,8 +1055,7 @@ impl VNodeState {
                 if new.is_subsumed(&self.clocks) {
                     batch.del(&key);
                 } else {
-                    let serialized =
-                        bincode::serialize(&new).expect("Can't serialize Cube");
+                    let serialized = bincode::serialize(&new).expect("Can't serialize Cube");
                     batch.set(&key, &serialized);
                 }
             }

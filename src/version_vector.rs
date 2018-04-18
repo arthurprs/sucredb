@@ -1,11 +1,11 @@
-use std::{cmp, str};
-use linear_map::{self, Entry as LMEntry, LinearMap};
-use linear_map::set::LinearSet;
-use roaring::{RoaringBitmap, RoaringTreemap};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use std::hash::Hash;
-use types::NodeId;
+use linear_map::set::LinearSet;
+use linear_map::{self, Entry as LMEntry, LinearMap};
+use roaring::{RoaringBitmap, RoaringTreemap};
 use serde;
+use std::hash::Hash;
+use std::{cmp, str};
+use types::NodeId;
 
 pub type Id = NodeId;
 pub type Version = u64;

@@ -1,9 +1,9 @@
-use std::{mem, str};
-use std::path::{Path, PathBuf};
-use std::io::Write;
-use std::sync::Arc;
-use rocksdb::{self, Writable};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use rocksdb::{self, Writable};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::{mem, str};
 use utils::*;
 
 struct U16BeSuffixTransform;

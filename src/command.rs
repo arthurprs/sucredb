@@ -1,15 +1,15 @@
-use std::net;
-use std::convert::TryInto;
-use bytes::Bytes;
 use bincode;
-use resp::RespValue;
+use bytes::Bytes;
+use config;
+use cubes::{self, Cube};
 use database::{Context, Database};
+use metrics::{self, Meter};
+use resp::RespValue;
+use std::convert::TryInto;
+use std::net;
 use types::*;
 use utils::{assume_str, replace_default};
-use config;
 use version_vector::*;
-use cubes::{self, Cube};
-use metrics::{self, Meter};
 
 #[derive(Debug)]
 pub enum CommandError {

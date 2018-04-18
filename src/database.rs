@@ -1,22 +1,22 @@
-use std::{net, time};
-use std::sync::{Arc, Mutex, RwLock};
 use bytes::Bytes;
-use dht::{RingDescription, DHT};
 use command::CommandError;
-use fabric::*;
-use vnode::*;
-use workers::*;
-use resp::RespValue;
-use storage::{Storage, StorageManager};
-use rand::{thread_rng, Rng};
-use utils::{assume_str, is_dir_empty_or_absent, replace_default, IdHashMap, join_u64, split_u64};
-use cubes::*;
-pub use types::*;
-use version_vector::Version;
-use utils::LoggerExt;
 use config::Config;
+use cubes::*;
+use dht::{RingDescription, DHT};
+use fabric::*;
 use metrics::{self, Gauge};
+use rand::{thread_rng, Rng};
+use resp::RespValue;
+use std::sync::{Arc, Mutex, RwLock};
+use std::{net, time};
+use storage::{Storage, StorageManager};
+pub use types::*;
+use utils::LoggerExt;
+use utils::{assume_str, is_dir_empty_or_absent, join_u64, replace_default, split_u64, IdHashMap};
+use version_vector::Version;
+use vnode::*;
 use vnode_sync::SyncDirection;
+use workers::*;
 
 // require sync as it can be called from any worker thread
 pub type DatabaseResponseFn = Box<Fn(Context) + Send + Sync>;
@@ -116,29 +116,35 @@ pub struct Database {
     workers: Mutex<WorkerManager>,
 }
 
-macro_rules! fabric_send_error{
-    ($db: expr, $to: expr, $msg: expr, $emsg: ident, $err: expr) => {
-        $db.fabric.send_msg($to, &$emsg {
-            vnode: $msg.vnode,
-            cookie: $msg.cookie,
-            result: Err($err),
-        })
+macro_rules! fabric_send_error {
+    ($db:expr, $to:expr, $msg:expr, $emsg:ident, $err:expr) => {
+        $db.fabric.send_msg(
+            $to,
+            &$emsg {
+                vnode: $msg.vnode,
+                cookie: $msg.cookie,
+                result: Err($err),
+            },
+        )
     };
-    ($db: expr, $to: expr, $vnode: expr, $cookie: expr, $emsg: ident, $err: expr) => {
-        $db.fabric.send_msg($to, *$emsg {
-            vnode: $vnode,
-            cookie: $cookie,
-            result: Err($err),
-        })
+    ($db:expr, $to:expr, $vnode:expr, $cookie:expr, $emsg:ident, $err:expr) => {
+        $db.fabric.send_msg(
+            $to,
+            *$emsg {
+                vnode: $vnode,
+                cookie: $cookie,
+                result: Err($err),
+            },
+        )
     };
 }
 
 macro_rules! vnode {
-    ($s: expr, $k: expr, $ok: expr) => ({
+    ($s:expr, $k:expr, $ok:expr) => {{
         let vnodes = $s.vnodes.read().unwrap();
         let mut locked_vnode = vnodes[&$k].lock().unwrap();
         Some(&mut *locked_vnode).map($ok).unwrap()
-    });
+    }};
 }
 
 impl Database {
@@ -590,16 +596,16 @@ impl Drop for Database {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, net, ops};
-    use std::sync::{Arc, Mutex};
-    use std::collections::HashMap;
     use super::*;
-    use version_vector::VersionVector;
-    use env_logger;
     use bincode;
-    use resp::RespValue;
     use config;
+    use env_logger;
+    use resp::RespValue;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use std::{fs, net, ops};
     use utils::sleep_ms;
+    use version_vector::VersionVector;
 
     #[allow(non_upper_case_globals)]
     const One: &[u8] = b"One";
@@ -1213,7 +1219,7 @@ mod tests {
                         [
                             i.to_string().as_bytes(),
                             i.to_string().as_bytes(),
-                            i.to_string().as_bytes()
+                            i.to_string().as_bytes(),
                         ]
                     );
                 }

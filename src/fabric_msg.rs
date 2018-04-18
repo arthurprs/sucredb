@@ -1,7 +1,7 @@
-use version_vector::*;
-use database::*;
 use bytes::Bytes;
 use cubes::Cube;
+use database::*;
+use version_vector::*;
 
 #[derive(Debug, Copy, Clone)]
 pub enum FabricMsgType {
@@ -164,7 +164,7 @@ impl<'a> Into<FabricMsgRef<'a>> for &'a FabricMsg {
 }
 
 macro_rules! impl_into {
-    ($w: ident, $msg: ident) => (
+    ($w:ident, $msg:ident) => {
         impl Into<FabricMsg> for $msg {
             fn into(self) -> FabricMsg {
                 FabricMsg::$w(self)
@@ -175,7 +175,7 @@ macro_rules! impl_into {
                 FabricMsgRef::$w(self)
             }
         }
-    );
+    };
 }
 
 impl_into!(RemoteGet, MsgRemoteGet);

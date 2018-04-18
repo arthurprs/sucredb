@@ -1,9 +1,9 @@
-use std::collections::{BinaryHeap, HashMap};
-use std::collections::hash_map::{Entry, RandomState};
-use std::hash::{BuildHasher, Hash};
 use std::cmp::Ordering;
-use std::ops::Deref;
+use std::collections::hash_map::{Entry, RandomState};
+use std::collections::{BinaryHeap, HashMap};
 use std::fmt;
+use std::hash::{BuildHasher, Hash};
+use std::ops::Deref;
 
 // TODO: need a more efficient implementation and possibly more flexibility
 

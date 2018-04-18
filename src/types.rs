@@ -1,6 +1,6 @@
 use std::convert::TryFrom;
-use std::str::FromStr;
 use std::fmt;
+use std::str::FromStr;
 
 /// Identifier for a Database instance
 /// node id should be a positive i64 to work nicelly with the RESP protocol

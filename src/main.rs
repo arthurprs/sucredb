@@ -1,4 +1,4 @@
-#![feature(fnbox, try_from, conservative_impl_trait)]
+#![feature(fnbox, try_from)]
 #![allow(dead_code)]
 #![cfg_attr(feature = "cargo-clippy", allow(cast_lossless))]
 
@@ -44,26 +44,26 @@ mod types;
 mod version_vector;
 // mod gossip;
 mod cubes;
-mod inflightmap;
 mod dht;
-mod fabric_msg;
 mod fabric;
-mod storage;
+mod fabric_msg;
 mod hash;
+mod inflightmap;
+mod storage;
 #[macro_use]
 mod database;
-mod vnode;
-mod vnode_sync;
-mod resp;
-mod server;
-mod workers;
 mod command;
 mod config;
 mod metrics;
+mod resp;
+mod server;
+mod vnode;
+mod vnode_sync;
+mod workers;
 
 fn configure() -> config::Config {
-    use config::*;
     use clap::{App, Arg, SubCommand};
+    use config::*;
     use std::path::Path;
 
     let matches = App::new("SucreDB")

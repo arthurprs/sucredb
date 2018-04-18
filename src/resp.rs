@@ -1,7 +1,7 @@
-use std::{fmt, str};
-use std::io::{self, Write};
-use std::error::Error;
 use bytes::Bytes;
+use std::error::Error;
+use std::io::{self, Write};
+use std::{fmt, str};
 use utils::assume_str;
 
 #[derive(Eq, PartialEq, Debug)]

@@ -1,38 +1,37 @@
-use std::{fmt, thread};
-use std::net::SocketAddr;
 use std::cmp::min;
-use std::time::{Duration, Instant};
-use std::sync::{Arc, RwLock};
-use std::collections::BTreeMap;
 use std::collections::hash_map::Entry as HMEntry;
+use std::collections::BTreeMap;
+use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
+use std::{fmt, thread};
 
-use rand::{thread_rng, Rng};
-use linear_map::{Entry as LMEntry, LinearMap};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use bincode;
 use bytes::Bytes;
+use linear_map::{Entry as LMEntry, LinearMap};
+use rand::{thread_rng, Rng};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use config::Config;
-use hash::{hash_slot, HASH_SLOTS};
 use database::{NodeId, VNodeId};
-use version_vector::VersionVector;
 use fabric::{Fabric, FabricMsg, FabricMsgRef, FabricMsgType};
+use hash::{hash_slot, HASH_SLOTS};
 use types::PhysicalNodeId;
-use utils::{GenericError, IdHashMap, IdHashSet, split_u64};
+use utils::{split_u64, GenericError, IdHashMap, IdHashSet};
+use version_vector::VersionVector;
 
 // can be called by the network thread or a worker doing a dht mutation
 pub type DHTChangeFn = Box<Fn() + Send + Sync>;
 
 // rwlock needs metadata to be sync, as it's read concurrently by multiple threads
-pub trait Metadata
-    : Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + fmt::Debug + 'static
-    {
+pub trait Metadata:
+    Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + fmt::Debug + 'static
+{
 }
 
-impl<
-    T: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + fmt::Debug + 'static,
-> Metadata for T
+impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + fmt::Debug + 'static>
+    Metadata for T
 {
 }
 
@@ -132,8 +131,7 @@ impl RingDescription {
 
 impl<T: Metadata> Ring<T> {
     fn serialize(ring: &Ring<T>) -> Result<Vec<u8>, GenericError> {
-        bincode::serialize(ring)
-            .map_err(|e| format!("Can't serialize Ring: {:?}", e).into())
+        bincode::serialize(ring).map_err(|e| format!("Can't serialize Ring: {:?}", e).into())
     }
 
     fn deserialize(bytes: &[u8]) -> Result<Ring<T>, GenericError> {
@@ -1053,12 +1051,12 @@ impl<T: Metadata> DHT<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use env_logger;
-    use rand::{thread_rng, Rng};
     use config::Config;
+    use env_logger;
     use fabric::Fabric;
-    use utils::sleep_ms;
+    use rand::{thread_rng, Rng};
     use utils::join_u64;
+    use utils::sleep_ms;
 
     #[test]
     fn test_ring_dup_join() {
@@ -1141,7 +1139,7 @@ mod tests {
                 dht.members(),
                 [
                     (join_u64(0, 0), config1.fabric_addr),
-                    (join_u64(1, 0), config2.fabric_addr)
+                    (join_u64(1, 0), config2.fabric_addr),
                 ].iter()
                     .cloned()
                     .collect()
@@ -1160,7 +1158,7 @@ mod tests {
                 dht.members(),
                 [
                     (join_u64(0, 0), config1.fabric_addr),
-                    (join_u64(1, 0), config2.fabric_addr)
+                    (join_u64(1, 0), config2.fabric_addr),
                 ].iter()
                     .cloned()
                     .collect()
@@ -1182,7 +1180,7 @@ mod tests {
                 dht.members(),
                 [
                     (join_u64(0, 0), config1.fabric_addr),
-                    (join_u64(1, 0), config2.fabric_addr)
+                    (join_u64(1, 0), config2.fabric_addr),
                 ].iter()
                     .cloned()
                     .collect()
