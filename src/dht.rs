@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use config::Config;
-use database::{NodeId, VNodeId};
+use database::{NodeId, VNodeNo};
 use fabric::{Fabric, FabricMsg, FabricMsgRef, FabricMsgType};
 use hash::{hash_slot, HASH_SLOTS};
 use types::PhysicalNodeId;
@@ -234,7 +234,7 @@ impl<T: Metadata> Ring<T> {
         &mut self,
         this: NodeId,
         promoted: NodeId,
-        vn_no: VNodeId,
+        vn_no: VNodeNo,
     ) -> Result<(), GenericError> {
         self.version.event(this);
         let vn = &mut self.vnodes[vn_no as usize];
@@ -860,19 +860,19 @@ impl<T: Metadata> DHT<T> {
         self.inner.read().unwrap().ring.replication_factor
     }
 
-    pub fn key_vnode(&self, key: &[u8]) -> VNodeId {
+    pub fn key_vnode(&self, key: &[u8]) -> VNodeNo {
         // use / instead of % to get continuous hash slots for each vnode
-        (hash_slot(key) / (HASH_SLOTS / self.partitions() as VNodeId)) as VNodeId
+        (hash_slot(key) / (HASH_SLOTS / self.partitions() as VNodeNo)) as VNodeNo
     }
 
-    pub fn vnodes_for_node(&self, node: NodeId) -> (Vec<VNodeId>, Vec<VNodeId>) {
+    pub fn vnodes_for_node(&self, node: NodeId) -> (Vec<VNodeNo>, Vec<VNodeNo>) {
         let mut result = (Vec::new(), Vec::new());
         let inner = self.inner.read().unwrap();
         for (vn_no, vn) in inner.ring.vnodes.iter().enumerate() {
             if let Some(&status) = vn.owners.get(&node) {
                 match status {
-                    Owner => result.0.push(vn_no as VNodeId),
-                    Pending => result.0.push(vn_no as VNodeId),
+                    Owner => result.0.push(vn_no as VNodeNo),
+                    Pending => result.0.push(vn_no as VNodeNo),
                     Retiring => (),
                 }
             }
@@ -883,7 +883,7 @@ impl<T: Metadata> DHT<T> {
     // TODO: split into read_ and write_
     pub fn nodes_for_vnode(
         &self,
-        vn_no: VNodeId,
+        vn_no: VNodeNo,
         include_pending: bool,
         include_retiring: bool,
     ) -> Vec<NodeId> {
@@ -911,7 +911,7 @@ impl<T: Metadata> DHT<T> {
 
     pub fn nodes_for_vnode_ex(
         &self,
-        vn_no: VNodeId,
+        vn_no: VNodeNo,
         include_pending: bool,
         include_retiring: bool,
     ) -> Vec<(NodeId, (SocketAddr, T))> {
@@ -1026,7 +1026,7 @@ impl<T: Metadata> DHT<T> {
         })
     }
 
-    pub fn promote_pending_node(&self, node: NodeId, vnode: VNodeId) -> Result<(), GenericError> {
+    pub fn promote_pending_node(&self, node: NodeId, vnode: VNodeNo) -> Result<(), GenericError> {
         info!("Promoting pending node {} vnode {}", node, vnode);
         self.propose(|mut ring| {
             ring.promote_pending_node(self.node, node, vnode)?;

@@ -112,7 +112,7 @@ pub struct Database {
     pub response_fn: DatabaseResponseFn,
     pub config: Config,
     stats: Mutex<Stats>,
-    vnodes: RwLock<IdHashMap<VNodeId, Mutex<VNode>>>,
+    vnodes: RwLock<IdHashMap<VNodeNo, Mutex<VNode>>>,
     workers: Mutex<WorkerManager>,
 }
 
@@ -313,7 +313,7 @@ impl Database {
             let mut vnodes = db.vnodes.write().unwrap();
             let (ready_vnodes, pending_vnodes) = db.dht.vnodes_for_node(db.dht.node());
             // TODO: this can be done in parallel
-            *vnodes = (0..db.dht.partitions() as VNodeId)
+            *vnodes = (0..db.dht.partitions() as VNodeNo)
                 .map(|i| {
                     let vn = if ready_vnodes.contains(&i) {
                         VNode::new(&db, i, VNodeStatus::Ready)
@@ -436,7 +436,7 @@ impl Database {
     }
 
     #[cfg(test)]
-    fn _start_sync(&self, vnode: VNodeId) -> bool {
+    fn _start_sync(&self, vnode: VNodeNo) -> bool {
         let vnodes = self.vnodes.read().unwrap();
         let mut vnode = vnodes.get(&vnode).unwrap().lock().unwrap();
         vnode._start_sync(self)

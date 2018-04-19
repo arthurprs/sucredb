@@ -10,7 +10,7 @@ pub type PhysicalNodeId = u32;
 /// Identifier for connection with client
 pub type Token = u64;
 /// Identifier for a vnode
-pub type VNodeId = u16;
+pub type VNodeNo = u16;
 
 /// Identifier for communication between nodes
 #[derive(PartialEq, Eq, Hash, Serialize, Deserialize, Default, Copy, Clone)]

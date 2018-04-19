@@ -516,14 +516,14 @@ impl Database {
         self.respond_resp(context, error.into());
     }
 
-    pub fn respond_moved(&self, context: &mut Context, vnode: VNodeId, addr: net::SocketAddr) {
+    pub fn respond_moved(&self, context: &mut Context, vnode: VNodeNo, addr: net::SocketAddr) {
         self.respond_resp(
             context,
             RespValue::Error(format!("MOVED {} {}", vnode, addr).into()),
         );
     }
 
-    pub fn respond_ask(&self, context: &mut Context, vnode: VNodeId, addr: net::SocketAddr) {
+    pub fn respond_ask(&self, context: &mut Context, vnode: VNodeNo, addr: net::SocketAddr) {
         self.respond_resp(
             context,
             RespValue::Error(format!("ASK {} {}", vnode, addr).into()),

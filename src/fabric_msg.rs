@@ -87,21 +87,21 @@ impl<'a> FabricMsgRef<'a> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgRemoteGet {
-    pub vnode: VNodeId,
+    pub vnode: VNodeNo,
     pub cookie: Cookie,
     pub keys: Vec<Bytes>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgRemoteGetAck {
-    pub vnode: VNodeId,
+    pub vnode: VNodeNo,
     pub cookie: Cookie,
     pub result: Result<Vec<Cube>, FabricError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgRemoteSet {
-    pub vnode: VNodeId,
+    pub vnode: VNodeNo,
     pub cookie: Cookie,
     pub writes: Vec<(Bytes, Cube, bool)>,
     pub reply: bool,
@@ -109,14 +109,14 @@ pub struct MsgRemoteSet {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgRemoteSetAck {
-    pub vnode: VNodeId,
+    pub vnode: VNodeNo,
     pub cookie: Cookie,
     pub result: Result<Vec<Option<Cube>>, FabricError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSyncStart {
-    pub vnode: VNodeId,
+    pub vnode: VNodeNo,
     pub cookie: Cookie,
     pub clocks_in_peer: BitmappedVersionVector,
     pub target: Option<NodeId>,
@@ -124,14 +124,14 @@ pub struct MsgSyncStart {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSyncFin {
-    pub vnode: VNodeId,
+    pub vnode: VNodeNo,
     pub cookie: Cookie,
     pub result: Result<BitmappedVersionVector, FabricError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSyncSend {
-    pub vnode: VNodeId,
+    pub vnode: VNodeNo,
     pub cookie: Cookie,
     pub seq: u64,
     pub key: Bytes,
@@ -140,7 +140,7 @@ pub struct MsgSyncSend {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MsgSyncAck {
-    pub vnode: VNodeId,
+    pub vnode: VNodeNo,
     pub cookie: Cookie,
     pub seq: u64,
 }
