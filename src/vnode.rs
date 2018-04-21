@@ -10,6 +10,7 @@ use rand::{thread_rng, Rng};
 use std::collections::hash_map::Entry as HMEntry;
 use std::time::{Duration, Instant};
 use storage::*;
+use utils::{join_u64, split_u64};
 use utils::{replace_default, IdHashMap, IdHashSet, IdHasherBuilder};
 use version_vector::*;
 use vnode_sync::*;
@@ -38,6 +39,7 @@ pub struct VNode {
 }
 
 pub struct VNodeState {
+    id: NodeId,
     num: u16,
     status: VNodeStatus,
     last_status_change: Instant,
@@ -50,6 +52,7 @@ pub struct VNodeState {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SavedVNodeState {
+    id: NodeId,
     clocks: BitmappedVersionVector,
     clean_shutdown: bool,
 }
@@ -156,8 +159,13 @@ impl VNode {
     }
 
     #[cfg(test)]
-    pub fn _log_len(&self, node: NodeId) -> usize {
-        self.state.storage.log_iterator(node, 0).iter().count()
+    pub fn _dump_log(&self) -> Vec<((u64, u64), Vec<u8>)> {
+        self.state
+            .storage
+            .log_iterator_all()
+            .iter()
+            .map(|(dot, k)| (dot, Vec::from(k)))
+            .collect()
     }
 
     pub fn syncs_inflight(&self) -> (usize, usize) {
@@ -397,9 +405,9 @@ impl VNode {
                 }
             };
 
-            write.version = self.state.clocks.event(db.dht.node());
+            write.version = self.state.clocks.event(self.state.id);
             let mutator = write.mutator_fn.take().expect("No MutatorFn");
-            match mutator(db.dht.node(), write.version, old_cube) {
+            match mutator(self.state.id, write.version, old_cube) {
                 Ok((cube, opt_resp)) => {
                     write.cube = cube;
                     write.response = opt_resp;
@@ -880,6 +888,10 @@ impl VNodeState {
         self.storage.clear();
     }
 
+    fn generate_id(base: NodeId) -> NodeId {
+        join_u64(split_u64(base).0, thread_rng().gen())
+    }
+
     pub fn set_status(&mut self, db: &Database, new: VNodeStatus) {
         if new == self.status {
             return;
@@ -893,6 +905,7 @@ impl VNodeState {
                 assert!(!self.pending_bootstrap);
                 assert_eq!(self.sync_nodes.len(), 0);
                 self.clear();
+                self.id = Self::generate_id(self.id);
             }
             VNodeStatus::Absent => {
                 assert_eq!(self.sync_nodes.len(), 0);
@@ -916,6 +929,7 @@ impl VNodeState {
         storage.clear();
 
         VNodeState {
+            id: Self::generate_id(db.dht.node()),
             num: num,
             status: status,
             last_status_change: Instant::now(),
@@ -941,13 +955,19 @@ impl VNodeState {
 
         assert_eq!(status, VNodeStatus::Ready);
         let SavedVNodeState {
+            mut id,
             clocks,
             clean_shutdown,
         } = saved_state_opt.unwrap();
 
         let storage = db.storage_manager.open(num).expect("Can't open storage");
 
+        if !clean_shutdown {
+            id = Self::generate_id(id);
+        }
+
         let mut state = VNodeState {
+            id: id,
             num: num,
             status: status,
             last_status_change: Instant::now(),
@@ -975,6 +995,7 @@ impl VNodeState {
 
     pub fn save(&self, db: &Database, shutdown: bool) {
         let saved_state = SavedVNodeState {
+            id: self.id,
             clocks: self.clocks.clone(),
             clean_shutdown: shutdown,
         };
@@ -999,7 +1020,7 @@ impl VNodeState {
 
     pub fn storage_set_local<'a, I: Iterator<Item = (Version, &'a [u8], &'a Cube)>>(
         &mut self,
-        db: &Database,
+        _db: &Database,
         writes: I,
     ) -> Result<(), CommandError> {
         let mut batch = self.storage.batch_new(0);
@@ -1012,7 +1033,7 @@ impl VNodeState {
                 batch.set(key, &bytes);
             }
 
-            batch.log_set((db.dht.node(), version), key);
+            batch.log_set((self.id, version), key);
         }
         self.storage
             .batch_write(batch)

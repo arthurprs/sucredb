@@ -699,6 +699,15 @@ mod tests {
             ));
             self.handler_cmd(context)
         }
+
+        fn dump_logs(&self) -> HashMap<VNodeNo, Vec<((NodeId, Version), Vec<u8>)>> {
+            self.vnodes
+                .read()
+                .unwrap()
+                .iter()
+                .map(|(vn_no, vn)| (*vn_no, vn.lock().unwrap()._dump_log()))
+                .collect()
+        }
     }
 
     impl ops::Deref for TestDatabase {
@@ -750,6 +759,8 @@ mod tests {
         db.do_cmd(1, &[b"GET", b"test", One]);
         assert_eq!(db.response_values(1).0, [b"value1"]);
 
+        let prev_logs = db.dump_logs();
+
         db.save(shutdown);
         drop(db);
         db = TestDatabase::new("127.0.0.1:9000".parse().unwrap(), "t/db", false);
@@ -763,15 +774,7 @@ mod tests {
             assert_ne!(db.dht.node(), prev_node);
         }
 
-        assert_eq!(
-            1,
-            db.vnodes
-                .read()
-                .unwrap()
-                .values()
-                .map(|vn| vn.lock().unwrap()._log_len(prev_node))
-                .sum::<usize>()
-        );
+        assert_eq!(prev_logs, db.dump_logs(),);
     }
 
     #[test]

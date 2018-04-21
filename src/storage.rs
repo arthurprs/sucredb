@@ -69,20 +69,17 @@ pub struct StorageBatch<'a> {
     wb: rocksdb::WriteBatch,
 }
 
-pub struct StorageIterator {
-    db: Arc<rocksdb::DB>,
-    iterator: rocksdb::rocksdb::DBIterator<Arc<rocksdb::DB>>,
-    first: bool,
-    num: u16,
-}
-
-pub struct LogStorageIterator {
+struct GenericIterator {
     db: Arc<rocksdb::DB>,
     iterator: rocksdb::rocksdb::DBIterator<Arc<rocksdb::DB>>,
     first: bool,
 }
 
-unsafe impl Send for StorageIterator {}
+pub struct StorageIterator(GenericIterator);
+
+pub struct LogStorageIterator(GenericIterator);
+
+unsafe impl Send for GenericIterator {}
 
 impl StorageManager {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<StorageManager, GenericError> {
@@ -180,12 +177,27 @@ impl Storage {
         ro.set_prefix_same_as_start(true);
         let mut iterator = rocksdb::DBIterator::new_cf(self.db.clone(), self.cf, ro);
         iterator.seek(rocksdb::SeekKey::Key(&key_prefix[..]));
-        StorageIterator {
+        StorageIterator(GenericIterator {
             db: self.db.clone(),
             iterator: iterator,
             first: true,
-            num: self.num,
-        }
+        })
+    }
+
+    pub fn log_iterator_all(&self) -> LogStorageIterator {
+        let mut key_prefix = [0u8; 2];
+        build_key(&mut key_prefix, self.num, b"");
+        let mut end_prefix = [0u8; 2];
+        build_key(&mut end_prefix, self.num + 1, b"");
+        let mut ro = rocksdb::ReadOptions::new();
+        ro.set_iterate_upper_bound(&end_prefix[..]);
+        let mut iterator = rocksdb::DBIterator::new_cf(self.db.clone(), self.log_cf, ro);
+        iterator.seek(rocksdb::SeekKey::Key(&key_prefix[..]));
+        LogStorageIterator(GenericIterator {
+            db: self.db.clone(),
+            iterator: iterator,
+            first: true,
+        })
     }
 
     pub fn log_iterator(&self, prefix: u64, start: u64) -> LogStorageIterator {
@@ -197,11 +209,11 @@ impl Storage {
         ro.set_iterate_upper_bound(&end_prefix[..]);
         let mut iterator = rocksdb::DBIterator::new_cf(self.db.clone(), self.log_cf, ro);
         iterator.seek(rocksdb::SeekKey::Key(&start_key[..]));
-        LogStorageIterator {
+        LogStorageIterator(GenericIterator {
             db: self.db.clone(),
             iterator: iterator,
             first: true,
-        }
+        })
     }
 
     pub fn get<R, F: FnOnce(&[u8]) -> R>(
@@ -324,18 +336,18 @@ impl<'a> StorageBatch<'a> {
     }
 }
 
-impl StorageIterator {
-    pub fn iter<'a>(&'a mut self) -> StorageIter<'a> {
-        StorageIter { it: self }
+impl GenericIterator {
+    pub fn iter<'a>(&'a mut self) -> GenericIteratorIter<'a> {
+        GenericIteratorIter { it: self }
     }
 }
 
-pub struct StorageIter<'a> {
-    it: &'a mut StorageIterator,
+pub struct GenericIteratorIter<'a> {
+    it: &'a mut GenericIterator,
 }
 
-impl<'a> Iterator for StorageIter<'a> {
-    type Item = (&'a [u8], &'a [u8]);
+impl<'a> Iterator for GenericIteratorIter<'a> {
+    type Item = (u16, &'a [u8], &'a [u8]);
     fn next(&mut self) -> Option<Self::Item> {
         if self.it.first {
             self.it.first = false;
@@ -348,10 +360,13 @@ impl<'a> Iterator for StorageIter<'a> {
         }
         if self.it.iterator.valid() {
             unsafe {
+                let key = self.it.iterator.key();
+                let value = self.it.iterator.value();
                 // safe as slices are valid until the next call to next
                 Some((
-                    mem::transmute(&self.it.iterator.key()[2..]),
-                    mem::transmute(self.it.iterator.value()),
+                    (&key[..2]).read_u16::<BigEndian>().unwrap(),
+                    mem::transmute(&key[2..]),
+                    mem::transmute(value),
                 ))
             }
         } else {
@@ -360,44 +375,37 @@ impl<'a> Iterator for StorageIter<'a> {
     }
 }
 
-impl LogStorageIterator {
-    pub fn iter<'a>(&'a mut self) -> LogStorageIter<'a> {
-        LogStorageIter { it: self }
+pub struct StorageIteratorIter<'a>(GenericIteratorIter<'a>);
+
+impl StorageIterator {
+    pub fn iter<'a>(&'a mut self) -> StorageIteratorIter<'a> {
+        StorageIteratorIter(self.0.iter())
     }
 }
 
-pub struct LogStorageIter<'a> {
-    it: &'a mut LogStorageIterator,
+impl<'a> Iterator for StorageIteratorIter<'a> {
+    type Item = (&'a [u8], &'a [u8]);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|(_x, y, z)| (y, z))
+    }
 }
 
-impl<'a> Iterator for LogStorageIter<'a> {
+pub struct LogStorageIteratorIter<'a>(GenericIteratorIter<'a>);
+
+impl<'a> Iterator for LogStorageIteratorIter<'a> {
     type Item = ((u64, u64), &'a [u8]);
     fn next(&mut self) -> Option<Self::Item> {
-        if self.it.first {
-            self.it.first = false;
-        } else {
-            // this iterator isn't fused so we need to check for valid here too
-            if !self.it.iterator.valid() {
-                return None;
-            }
-            self.it.iterator.next();
-        }
-        if self.it.iterator.valid() {
-            let key = self.it.iterator.key();
-            assert!(key.len() == 2 + 8 + 8);
-            let first = (&self.it.iterator.key()[2..2 + 8])
-                .read_u64::<BigEndian>()
-                .unwrap();
-            let second = (&self.it.iterator.key()[2 + 8..2 + 8 + 8])
-                .read_u64::<BigEndian>()
-                .unwrap();
-            unsafe {
-                // safe as slices are valid until the next call to next
-                Some(((first, second), mem::transmute(self.it.iterator.value())))
-            }
-        } else {
-            None
-        }
+        self.0.next().map(|(_, key, value)| {
+            let first = (&key[..8]).read_u64::<BigEndian>().unwrap();
+            let second = (&key[8..8 + 8]).read_u64::<BigEndian>().unwrap();
+            ((first, second), value)
+        })
+    }
+}
+
+impl LogStorageIterator {
+    pub fn iter<'a>(&'a mut self) -> LogStorageIteratorIter<'a> {
+        LogStorageIteratorIter(self.0.iter())
     }
 }
 
@@ -483,6 +491,7 @@ mod tests {
                 ]
             );
             assert_eq!(storage.log_iterator(i, i).iter().count(), 3);
+            assert_eq!(storage.log_iterator_all().iter().count(), 4);
         }
     }
 
