@@ -5,12 +5,12 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use bytes::{BufMut, BytesMut};
-use database::{Context as DbContext, Database, Token};
+use database::{Context as DbContext, Database, Token, WorkerMsg};
 use futures::sync::mpsc as fmpsc;
 use futures::{Future, Sink, Stream};
 use tokio_core as tokio;
 use tokio_io::{codec, AsyncRead};
-use workers::{WorkerMsg, WorkerSender};
+use workers::WorkerSender;
 
 use config::Config;
 use metrics::{self, Gauge};
@@ -59,7 +59,7 @@ struct Context {
 
 struct SharedContext {
     database: Arc<Database>,
-    db_sender: RefCell<WorkerSender>,
+    db_sender: RefCell<WorkerSender<WorkerMsg>>,
     token_chans: Arc<Mutex<IdHashMap<Token, fmpsc::UnboundedSender<DbContext>>>>,
 }
 

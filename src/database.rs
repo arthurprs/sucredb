@@ -12,7 +12,7 @@ use std::{net, time};
 use storage::{Storage, StorageManager};
 pub use types::*;
 use utils::LoggerExt;
-use utils::{assume_str, is_dir_empty_or_absent, join_u64, replace_default, split_u64, IdHashMap};
+use utils::{assume_str, is_dir_empty_or_absent, join_u64, replace_default, split_u64};
 use version_vector::Version;
 use vnode::*;
 use vnode_sync::SyncDirection;
@@ -20,6 +20,28 @@ use workers::*;
 
 // require sync as it can be called from any worker thread
 pub type DatabaseResponseFn = Box<Fn(Context) + Send + Sync>;
+
+pub enum WorkerMsg {
+    Fabric(NodeId, FabricMsg),
+    Command(Context),
+    Tick(time::Instant),
+    DHTFabric(NodeId, FabricMsg),
+    DHTChange,
+    Exit,
+}
+
+impl ExitMsg for WorkerMsg {
+    fn exit_msg() -> Self {
+        WorkerMsg::Exit
+    }
+    fn is_exit(&self) -> bool {
+        if let WorkerMsg::Exit = self {
+            true
+        } else {
+            false
+        }
+    }
+}
 
 #[derive(Default)]
 struct Stats {
@@ -112,8 +134,8 @@ pub struct Database {
     pub response_fn: DatabaseResponseFn,
     pub config: Config,
     stats: Mutex<Stats>,
-    vnodes: RwLock<IdHashMap<VNodeNo, Mutex<VNode>>>,
-    workers: Mutex<WorkerManager>,
+    vnodes: RwLock<Vec<Mutex<VNode>>>,
+    workers: Mutex<WorkerManager<WorkerMsg>>,
 }
 
 macro_rules! fabric_send_error {
@@ -142,7 +164,7 @@ macro_rules! fabric_send_error {
 macro_rules! vnode {
     ($s:expr, $k:expr, $ok:expr) => {{
         let vnodes = $s.vnodes.read().unwrap();
-        let mut locked_vnode = vnodes[&$k].lock().unwrap();
+        let mut locked_vnode = vnodes[$k as usize].lock().unwrap();
         Some(&mut *locked_vnode).map($ok).unwrap()
     }};
 }
@@ -242,11 +264,7 @@ impl Database {
             .expect("Can't save ring");
         meta_storage.sync().expect("Can't sync storage");
 
-        let workers = WorkerManager::new(
-            node,
-            config.worker_count as _,
-            time::Duration::from_millis(config.worker_timer as _),
-        );
+        let workers = WorkerManager::new(node.to_string(), config.worker_count as _);
 
         let db = Arc::new(Database {
             fabric: fabric,
@@ -262,24 +280,26 @@ impl Database {
 
         db.workers.lock().unwrap().start(|| {
             let cdb = Arc::downgrade(&db);
-            Box::new(move |chan| {
-                for wm in chan {
-                    let db = if let Some(db) = cdb.upgrade() {
-                        db
-                    } else {
-                        break;
-                    };
+            Box::new(move |wm| {
+                if let Some(db) = cdb.upgrade() {
                     match wm {
                         WorkerMsg::Fabric(from, m) => db.handler_fabric_msg(from, m),
                         WorkerMsg::Command(context) => db.handler_cmd(context),
                         WorkerMsg::Tick(time) => db.handler_tick(time),
                         WorkerMsg::DHTFabric(from, m) => db.dht.handler_fabric_msg(from, m),
                         WorkerMsg::DHTChange => db.handler_dht_change(),
-                        WorkerMsg::Exit => break,
+                        WorkerMsg::Exit => (),
                     }
                 }
             })
         });
+
+        let mut sender = db.sender();
+        timer_fn(
+            node.to_string(),
+            time::Duration::from_millis(config.worker_timer as _),
+            move |now| sender.try_send(WorkerMsg::Tick(now)).is_ok(),
+        );
 
         // register dht nodes into fabric
         db.fabric.set_nodes(db.dht.members().into_iter());
@@ -322,7 +342,7 @@ impl Database {
                     } else {
                         VNode::new(&db, i, VNodeStatus::Absent)
                     };
-                    (i, Mutex::new(vn))
+                    Mutex::new(vn)
                 })
                 .collect();
         }
@@ -331,7 +351,7 @@ impl Database {
     }
 
     pub fn save(&self, shutdown: bool) {
-        for vn in self.vnodes.read().unwrap().values() {
+        for vn in self.vnodes.read().unwrap().iter() {
             vn.lock().unwrap().save(self, shutdown);
         }
         if shutdown {
@@ -343,7 +363,7 @@ impl Database {
     }
 
     // Gets a Sender handle that allows sending work to the database worker pool
-    pub fn sender(&self) -> WorkerSender {
+    pub fn sender(&self) -> WorkerSender<WorkerMsg> {
         self.workers.lock().unwrap().sender()
     }
 
@@ -356,9 +376,9 @@ impl Database {
         // register nodes
         self.fabric.set_nodes(self.dht.members().into_iter());
 
-        for (&i, vn) in self.vnodes.read().unwrap().iter() {
+        for (i, vn) in self.vnodes.read().unwrap().iter().enumerate() {
             let final_status = if self.dht
-                .nodes_for_vnode(i, true, true)
+                .nodes_for_vnode(i as VNodeNo, true, true)
                 .contains(&self.dht.node())
             {
                 VNodeStatus::Ready
@@ -374,18 +394,20 @@ impl Database {
 
         let mut incomming_syncs = 0usize;
         let vnodes = self.vnodes.read().unwrap();
-        for vn in vnodes.values() {
+        for vn in vnodes.iter() {
             let mut vn = vn.lock().unwrap();
             vn.handler_tick(self, time);
             incomming_syncs += vn.syncs_inflight().0;
         }
         // auto start sync in random vnodes
         if self.config.sync_auto && incomming_syncs < self.config.sync_incomming_max as usize {
-            let vnodes_len = vnodes.len() as u16;
-            let rnd = thread_rng().gen::<u16>() % vnodes_len;
-            for vnode in (0..vnodes_len).map(|i| vnodes.get(&((i + rnd) % vnodes_len))) {
-                incomming_syncs +=
-                    vnode.unwrap().lock().unwrap().start_sync_if_ready(self) as usize;
+            for vn in vnodes
+                .iter()
+                .cycle()
+                .skip(thread_rng().gen::<usize>() % vnodes.len())
+                .take(vnodes.len())
+            {
+                incomming_syncs += vn.lock().unwrap().start_sync_if_ready(self) as usize;
                 if incomming_syncs >= self.config.sync_incomming_max as usize {
                     break;
                 }
@@ -427,7 +449,7 @@ impl Database {
         self.vnodes
             .read()
             .unwrap()
-            .values()
+            .iter()
             .map(|vn| {
                 let inf = vn.lock().unwrap().syncs_inflight();
                 inf.0 + inf.1
@@ -438,7 +460,7 @@ impl Database {
     #[cfg(test)]
     fn _start_sync(&self, vnode: VNodeNo) -> bool {
         let vnodes = self.vnodes.read().unwrap();
-        let mut vnode = vnodes.get(&vnode).unwrap().lock().unwrap();
+        let mut vnode = vnodes.get(vnode as usize).unwrap().lock().unwrap();
         vnode._start_sync(self)
     }
 
@@ -705,7 +727,8 @@ mod tests {
                 .read()
                 .unwrap()
                 .iter()
-                .map(|(vn_no, vn)| (*vn_no, vn.lock().unwrap()._dump_log()))
+                .enumerate()
+                .map(|(vn_no, vn)| (vn_no as VNodeNo, vn.lock().unwrap()._dump_log()))
                 .collect()
         }
     }

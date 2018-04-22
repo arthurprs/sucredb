@@ -1,91 +1,66 @@
-use database::{Context, NodeId};
-use fabric::FabricMsg;
 use rand::{thread_rng, Rng};
 use std::sync::mpsc;
 use std::{thread, time};
 
-pub enum WorkerMsg {
-    Fabric(NodeId, FabricMsg),
-    Command(Context),
-    Tick(time::Instant),
-    DHTFabric(NodeId, FabricMsg),
-    DHTChange,
-    Exit,
+pub trait ExitMsg {
+    fn exit_msg() -> Self;
+    fn is_exit(&self) -> bool;
 }
 
 /// A Sender attached to a WorkerManager
 /// messages are distributed to threads in a Round-Robin manner.
-pub struct WorkerSender {
+pub struct WorkerSender<T: Send + 'static> {
     cursor: usize,
-    channels: Vec<mpsc::Sender<WorkerMsg>>,
+    channels: Vec<mpsc::Sender<T>>,
 }
 
 /// A thread pool containing threads prepared to receive WorkerMsg's
-pub struct WorkerManager {
-    ticker_interval: time::Duration,
-    ticker_thread: Option<thread::JoinHandle<()>>,
-    ticker_chan: Option<mpsc::Sender<()>>,
+pub struct WorkerManager<T: ExitMsg + Send + 'static> {
     thread_count: usize,
     threads: Vec<thread::JoinHandle<()>>,
-    channels: Vec<mpsc::Sender<WorkerMsg>>,
-    node: NodeId,
+    channels: Vec<mpsc::Sender<T>>,
+    name: String,
 }
 
-impl WorkerManager {
-    pub fn new(node: NodeId, thread_count: usize, ticker_interval: time::Duration) -> Self {
+impl<T: ExitMsg + Send + 'static> WorkerManager<T> {
+    pub fn new(name: String, thread_count: usize) -> Self {
         assert!(thread_count > 0);
         WorkerManager {
-            ticker_interval: ticker_interval,
-            ticker_thread: None,
-            ticker_chan: None,
             thread_count: thread_count,
             threads: Default::default(),
             channels: Default::default(),
-            node: node,
+            name: name,
         }
     }
 
     pub fn start<F>(&mut self, mut worker_fn_gen: F)
     where
-        F: FnMut() -> Box<FnMut(mpsc::Receiver<WorkerMsg>) + Send>,
+        F: FnMut() -> Box<FnMut(T) + Send>,
     {
         assert!(self.channels.is_empty());
         for i in 0..self.thread_count {
             // since neither closure cloning or Box<FnOnce> are stable use Box<FnMut>
             let mut worker_fn = worker_fn_gen();
             let (tx, rx) = mpsc::channel();
+            self.channels.push(tx);
             self.threads.push(
                 thread::Builder::new()
-                    .name(format!("Worker:{}:{}", i, self.node))
+                    .name(format!("Worker:{}:{}", i, self.name))
                     .spawn(move || {
-                        worker_fn(rx);
+                        for m in rx {
+                            if m.is_exit() {
+                                break;
+                            }
+                            worker_fn(m);
+                        }
                         info!("Exiting worker");
                     })
                     .unwrap(),
             );
-            self.channels.push(tx);
         }
-
-        let (ticker_tx, ticker_rx) = mpsc::channel();
-        self.ticker_chan = Some(ticker_tx);
-        let ticker_interval = self.ticker_interval;
-        let mut sender = self.sender();
-        self.ticker_thread = Some(
-            thread::Builder::new()
-                .name(format!("WorkerTicker:{}", self.node))
-                .spawn(move || loop {
-                    thread::sleep(ticker_interval);
-                    match ticker_rx.try_recv() {
-                        Err(mpsc::TryRecvError::Empty) => (),
-                        _ => break,
-                    }
-                    let _ = sender.try_send(WorkerMsg::Tick(time::Instant::now()));
-                })
-                .unwrap(),
-        );
     }
 
-    pub fn sender(&self) -> WorkerSender {
+    pub fn sender(&self) -> WorkerSender<T> {
         assert!(!self.channels.is_empty());
         WorkerSender {
             cursor: thread_rng().gen(),
@@ -94,30 +69,43 @@ impl WorkerManager {
     }
 }
 
-impl WorkerSender {
-    pub fn send(&mut self, msg: WorkerMsg) {
+impl<T: Send + 'static> WorkerSender<T> {
+    pub fn send(&mut self, msg: T) {
         // right now only possible error is disconected, so no need to do anything
         let _ = self.try_send(msg);
     }
-    pub fn try_send(&mut self, msg: WorkerMsg) -> Result<(), mpsc::SendError<WorkerMsg>> {
+    pub fn try_send(&mut self, msg: T) -> Result<(), mpsc::SendError<T>> {
         self.cursor = self.cursor.wrapping_add(1);
         self.channels[self.cursor % self.channels.len()].send(msg)
     }
 }
 
-impl Drop for WorkerManager {
+impl<T: ExitMsg + Send + 'static> Drop for WorkerManager<T> {
     fn drop(&mut self) {
         for c in &*self.channels {
-            let _ = c.send(WorkerMsg::Exit);
-        }
-        if let Some(c) = self.ticker_chan.take() {
-            let _ = c.send(());
-        }
-        if let Some(t) = self.ticker_thread.take() {
-            let _ = t.join();
+            let _ = c.send(T::exit_msg());
         }
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
     }
+}
+
+pub fn timer_fn<F>(
+    name: String,
+    interval: time::Duration,
+    mut callback: F,
+) -> thread::JoinHandle<()>
+where
+    F: FnMut(time::Instant) -> bool + Send + 'static,
+{
+    thread::Builder::new()
+        .name(format!("Timer:{}", name))
+        .spawn(move || loop {
+            thread::sleep(interval);
+            if !callback(time::Instant::now()) {
+                break;
+            }
+        })
+        .expect("Can't start timer")
 }

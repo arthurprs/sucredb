@@ -334,7 +334,7 @@ impl Fabric {
 
         let ctx_tx = WriterContext::new(context, peer, chan_tx);
         let fut_tx = socket_tx
-            .send_all(chan_rx.map_err(|_| -> io::Error { io::ErrorKind::Other.into() }))
+            .send_all(chan_rx.map_err(|_| io::Error::from(io::ErrorKind::Other)))
             .then(move |r| {
                 // hold onto ctx_tx until the stream is done
                 drop(ctx_tx);

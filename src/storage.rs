@@ -362,7 +362,7 @@ impl<'a> Iterator for GenericIteratorIter<'a> {
             unsafe {
                 let key = self.it.iterator.key();
                 let value = self.it.iterator.value();
-                // safe as slices are valid until the next call to next
+                // FIXME: bogus lifetime as slices are only valid until the next call to next()
                 Some((
                     (&key[..2]).read_u16::<BigEndian>().unwrap(),
                     mem::transmute(&key[2..]),
@@ -386,7 +386,7 @@ impl StorageIterator {
 impl<'a> Iterator for StorageIteratorIter<'a> {
     type Item = (&'a [u8], &'a [u8]);
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|(_x, y, z)| (y, z))
+        self.0.next().map(|(_, k, v)| (k, v))
     }
 }
 
