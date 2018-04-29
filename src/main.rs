@@ -34,6 +34,7 @@ extern crate serde_derive;
 extern crate serde_yaml;
 extern crate tokio_core;
 extern crate tokio_io;
+extern crate crossbeam_channel;
 
 #[cfg(test)]
 extern crate env_logger;

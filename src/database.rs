@@ -273,7 +273,7 @@ impl Database {
             meta_storage: meta_storage,
             response_fn: response_fn,
             vnodes: Default::default(),
-            workers: Mutex::new(workers),
+            workers: workers.into(),
             config: config.clone(),
             stats: Default::default(),
         });
@@ -294,7 +294,7 @@ impl Database {
             })
         });
 
-        let mut sender = db.sender();
+        let sender = db.sender();
         timer_fn(
             node.to_string(),
             time::Duration::from_millis(config.worker_timer as _),
@@ -304,7 +304,7 @@ impl Database {
         // register dht nodes into fabric
         db.fabric.set_nodes(db.dht.members().into_iter());
         // fabric dht messages
-        let mut sender = db.sender();
+        let sender = db.sender();
         let callback = move |f, m| {
             sender.send(WorkerMsg::DHTFabric(f, m));
         };
@@ -312,15 +312,15 @@ impl Database {
             .register_msg_handler(FabricMsgType::DHT, Box::new(callback));
 
         // setup dht change callback
-        let sender = Mutex::new(db.sender());
+        let sender = db.sender();
         let callback = move || {
-            sender.lock().unwrap().send(WorkerMsg::DHTChange);
+            sender.send(WorkerMsg::DHTChange);
         };
         db.dht.set_callback(Box::new(callback));
 
         // other types of fabric msgs
         for &msg_type in &[FabricMsgType::Crud, FabricMsgType::Synch] {
-            let mut sender = db.sender();
+            let sender = db.sender();
             let callback = move |f, m| {
                 sender.send(WorkerMsg::Fabric(f, m));
             };

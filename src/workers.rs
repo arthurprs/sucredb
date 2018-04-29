@@ -1,6 +1,6 @@
-use rand::{thread_rng, Rng};
-use std::sync::mpsc;
+use crossbeam_channel as chan;
 use std::{thread, time};
+use std::sync::atomic::{Ordering, AtomicUsize};
 
 pub trait ExitMsg {
     fn exit_msg() -> Self;
@@ -9,17 +9,26 @@ pub trait ExitMsg {
 
 /// A Sender attached to a WorkerManager
 /// messages are distributed to threads in a Round-Robin manner.
-pub struct WorkerSender<T: Send + 'static> {
-    cursor: usize,
-    channels: Vec<mpsc::Sender<T>>,
+pub struct WorkerSender<T: ExitMsg + Send + 'static> {
+    cursor: AtomicUsize,
+    channels: Vec<chan::Sender<T>>,
+}
+
+impl<T: ExitMsg + Send + 'static> Clone for WorkerSender<T> {
+    fn clone(&self) -> Self {
+        WorkerSender {
+            cursor: Default::default(),
+            channels: self.channels.clone(),
+        }
+    }
 }
 
 /// A thread pool containing threads prepared to receive WorkerMsg's
 pub struct WorkerManager<T: ExitMsg + Send + 'static> {
     thread_count: usize,
     threads: Vec<thread::JoinHandle<()>>,
-    channels: Vec<mpsc::Sender<T>>,
     name: String,
+    channels: Vec<chan::Sender<T>>,
 }
 
 impl<T: ExitMsg + Send + 'static> WorkerManager<T> {
@@ -28,8 +37,8 @@ impl<T: ExitMsg + Send + 'static> WorkerManager<T> {
         WorkerManager {
             thread_count: thread_count,
             threads: Default::default(),
-            channels: Default::default(),
             name: name,
+            channels: Default::default(),
         }
     }
 
@@ -41,7 +50,7 @@ impl<T: ExitMsg + Send + 'static> WorkerManager<T> {
         for i in 0..self.thread_count {
             // since neither closure cloning or Box<FnOnce> are stable use Box<FnMut>
             let mut worker_fn = worker_fn_gen();
-            let (tx, rx) = mpsc::channel();
+            let (tx, rx) = chan::unbounded();
             self.channels.push(tx);
             self.threads.push(
                 thread::Builder::new()
@@ -63,20 +72,25 @@ impl<T: ExitMsg + Send + 'static> WorkerManager<T> {
     pub fn sender(&self) -> WorkerSender<T> {
         assert!(!self.channels.is_empty());
         WorkerSender {
-            cursor: thread_rng().gen(),
+            cursor: Default::default(),
             channels: self.channels.clone(),
         }
     }
 }
 
-impl<T: Send + 'static> WorkerSender<T> {
-    pub fn send(&mut self, msg: T) {
+impl<T: ExitMsg + Send + 'static> WorkerSender<T> {
+    pub fn send(&self, msg: T) {
         // right now only possible error is disconected, so no need to do anything
         let _ = self.try_send(msg);
     }
-    pub fn try_send(&mut self, msg: T) -> Result<(), mpsc::SendError<T>> {
-        self.cursor = self.cursor.wrapping_add(1);
-        self.channels[self.cursor % self.channels.len()].send(msg)
+
+    pub fn try_send(&self, msg: T) -> Result<(), chan::SendError<T>> {
+        let cursor = self.cursor.fetch_add(1, Ordering::Relaxed);
+        self.try_send_to(cursor, msg)
+    }
+
+    pub fn try_send_to(&self, seed: usize, msg: T) -> Result<(), chan::SendError<T>> {
+        self.channels[seed % self.channels.len()].send(msg)
     }
 }
 
