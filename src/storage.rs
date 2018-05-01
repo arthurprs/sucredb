@@ -1,7 +1,7 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use rocksdb::{self, Writable};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::{mem, str};
 use utils::*;
@@ -13,13 +13,12 @@ impl rocksdb::SliceTransform for U16BeSuffixTransform {
         &key[..2]
     }
 
-    fn in_domain(&mut self, key: &[u8]) -> bool {
-        key.len() >= 2
+    fn in_domain(&mut self, _key: &[u8]) -> bool {
+        true
     }
 }
 
 pub struct StorageManager {
-    path: PathBuf,
     db: Arc<rocksdb::DB>,
 }
 
@@ -67,6 +66,14 @@ unsafe impl Send for Storage {}
 pub struct StorageBatch<'a> {
     storage: &'a Storage,
     wb: rocksdb::WriteBatch,
+}
+
+pub struct SendableStorageBatch(rocksdb::WriteBatch);
+
+impl<'a> From<StorageBatch<'a>> for SendableStorageBatch {
+    fn from(sb: StorageBatch<'a>) -> Self {
+        SendableStorageBatch(sb.wb)
+    }
 }
 
 struct GenericIterator {
@@ -144,7 +151,6 @@ impl StorageManager {
         })?;
 
         Ok(StorageManager {
-            path: path.as_ref().into(),
             db: Arc::new(db),
         })
     }
@@ -156,6 +162,10 @@ impl StorageManager {
             log_cf: unsafe { mem::transmute(self.db.cf_handle("log").unwrap()) },
             num: db_num,
         })
+    }
+
+    pub fn batch_write(&self, batch: SendableStorageBatch) -> Result<(), GenericError> {
+        Ok(self.db.write(batch.0)?)
     }
 }
 

@@ -1,6 +1,6 @@
 use crossbeam_channel as chan;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{thread, time};
-use std::sync::atomic::{Ordering, AtomicUsize};
 
 pub trait ExitMsg {
     fn exit_msg() -> Self;

@@ -431,8 +431,8 @@ Problem:
 VV from Voids pollutes the vv of new writes.
 
 Solution:
-For the MultiRegister the DotMap with optional values works as it's own dot tracker,
-even if it can have more than 1 version per actor the number s should stay low.
+For the MultiRegister the DotMap with optional values works as its own dot tracker,
+even if it could have more than 1 version per actor the number should stay low.
 Counters are similar to the MultiRegister case.
 Sets/Maps carry an additional VV to track the dots.
 Voids don't need any dot, their state is empty and they history is contained in the node clock (previous dots).
@@ -440,7 +440,7 @@ Voids don't need any dot, their state is empty and they history is contained in 
 */
 
 /*
-Optimized bootstrap dones't work?
+Optimized bootstrap doesn't work?
 
 Given n1 with lots of data churn and the only kv left is k => [n1-100 v][n1 100]
 node clock says [n1 1000] and logs have all the expected entries

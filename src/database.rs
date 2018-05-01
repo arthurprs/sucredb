@@ -1063,7 +1063,7 @@ mod tests {
         // sim partition heal
         warn!("bringing back db2");
         db2 = TestDatabase::new("127.0.0.1:9001".parse().unwrap(), "t/db2", false);
-        sleep_ms(200); // wait for fabric to reconnect
+        sleep_ms(500); // wait for fabric to reconnect
 
         warn!("will check before sync");
         for i in 0..TEST_JOIN_SIZE {
@@ -1098,7 +1098,7 @@ mod tests {
         // sim partition heal
         warn!("bringing back db3");
         db3 = TestDatabase::new("127.0.0.1:9002".parse().unwrap(), "t/db3", false);
-        sleep_ms(200); // wait for fabric to reconnect
+        sleep_ms(500); // wait for fabric to reconnect
 
         // force some syncs
         warn!("starting syncs");

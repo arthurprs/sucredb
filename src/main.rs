@@ -31,10 +31,10 @@ extern crate rocksdb;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
+extern crate crossbeam_channel;
 extern crate serde_yaml;
 extern crate tokio_core;
 extern crate tokio_io;
-extern crate crossbeam_channel;
 
 #[cfg(test)]
 extern crate env_logger;
