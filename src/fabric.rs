@@ -1,7 +1,7 @@
 use std::collections::hash_map::Entry as HMEntry;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, RwLock};
 use std::time::Duration;
 use std::{io, thread};
 
@@ -73,9 +73,8 @@ impl codec::Encoder for FramedBincodeCodec {
     }
 }
 
-// callbacks are called from a single network thread
-pub type FabricMsgFn = Box<FnMut(NodeId, FabricMsg) + Send>;
-pub type FabricConFn = Box<FnMut(NodeId) + Send>;
+pub type FabricMsgFn = Box<Fn(NodeId, FabricMsg) + Sync + Send>;
+pub type FabricConFn = Box<Fn(NodeId) + Sync + Send>;
 
 type SenderChan = fmpsc::UnboundedSender<Bytes>;
 type InitType = io::Result<(Arc<SharedContext>, foneshot::Sender<()>)>;
@@ -114,12 +113,8 @@ struct SharedContext {
     node: NodeId,
     addr: SocketAddr,
     loop_remote: tokio::reactor::Remote,
-    // FIXME: the callbacks should only called from the network thread (so Send only)
-    // SharedContext is potentially exposed to the world though and it needs to be Send + Sync
-    // the easiest way to marry the requirements is to wrap the callbacks with a mutex
-    // the overhead should be small (0 contention), but this should be improved in the future
-    msg_handlers: Mutex<LinearMap<u8, FabricMsgFn>>,
-    con_handlers: Mutex<Vec<FabricConFn>>,
+    msg_handlers: RwLock<LinearMap<u8, FabricMsgFn>>,
+    con_handlers: RwLock<Vec<FabricConFn>>,
     // TODO: unify nodes_addr and connections maps
     nodes_addr: RwLock<IdHashMap<NodeId, SocketAddr>>,
     connections: RwLock<IdHashMap<NodeId, Vec<(usize, SenderChan)>>>,
@@ -149,7 +144,7 @@ impl SharedContext {
             is_new
         };
         if is_new {
-            for handler in &mut *self.con_handlers.lock().unwrap() {
+            for handler in &*self.con_handlers.read().unwrap() {
                 handler(peer);
             }
         }
@@ -187,9 +182,9 @@ impl ReaderContext {
         let msg_type = msg.get_type();
         if let Some(handler) = self.context
             .msg_handlers
-            .lock()
+            .read()
             .unwrap()
-            .get_mut(&(msg_type as u8))
+            .get(&(msg_type as u8))
         {
             trace!("recv from {:?} {:?}", self.peer, msg);
             handler(self.peer, msg);
@@ -396,13 +391,13 @@ impl Fabric {
     pub fn register_msg_handler(&self, msg_type: FabricMsgType, handler: FabricMsgFn) {
         self.context
             .msg_handlers
-            .lock()
+            .write()
             .unwrap()
             .insert(msg_type as u8, handler);
     }
 
     pub fn register_con_handler(&self, handler: FabricConFn) {
-        self.context.con_handlers.lock().unwrap().push(handler);
+        self.context.con_handlers.write().unwrap().push(handler);
     }
 
     pub fn register_seed(&self, addr: SocketAddr) {
