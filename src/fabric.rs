@@ -56,7 +56,7 @@ impl FramedBincodeCodec {
     fn serialize(item: FabricMsgRef) -> Bytes {
         let item_size = bincode::serialized_size(&item).unwrap();
         let mut dst = BytesMut::with_capacity(item_size as usize + 4);
-        dst.put_u32::<LittleEndian>(item_size as u32);
+        dst.put_u32_le(item_size as u32);
         bincode::serialize_into(&mut (&mut dst).writer(), &item).unwrap();
         dst.into()
     }
