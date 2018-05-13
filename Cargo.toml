@@ -29,7 +29,7 @@ features = ["all_components", "file", "yaml_format"]
 
 [dependencies.rocksdb]
 git = "https://github.com/pingcap/rust-rocksdb.git"
-rev = "50e370f10c47b6dcf848d39945a0e419aa21f67b"
+rev = "b011ecb17759d052ae39e2c86addc7b1c7e6c178"
 features = ["portable", "sse"]
 
 [dependencies.linear-map]

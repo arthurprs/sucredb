@@ -44,6 +44,7 @@ pub struct VNodeState {
     status: VNodeStatus,
     last_status_change: Instant,
     pub clocks: BitmappedVersionVector,
+    pub log_clocks: BitmappedVersionVector,
     pub storage: Storage,
     // state for syncs
     pub pending_bootstrap: bool,
@@ -54,6 +55,7 @@ pub struct VNodeState {
 struct SavedVNodeState {
     id: NodeId,
     clocks: BitmappedVersionVector,
+    log_clocks: BitmappedVersionVector,
     clean_shutdown: bool,
 }
 
@@ -406,6 +408,7 @@ impl VNode {
             };
 
             write.version = self.state.clocks.event(self.state.id);
+            self.state.log_clocks.add(self.state.id, write.version);
             let mutator = write.mutator_fn.take().expect("No MutatorFn");
             match mutator(self.state.id, write.version, old_cube) {
                 Ok((cube, opt_resp)) => {
@@ -933,7 +936,8 @@ impl VNodeState {
             num: num,
             status: status,
             last_status_change: Instant::now(),
-            clocks: BitmappedVersionVector::new(),
+            clocks: Default::default(),
+            log_clocks: Default::default(),
             storage: storage,
             pending_bootstrap: false,
             sync_nodes: Default::default(),
@@ -957,6 +961,7 @@ impl VNodeState {
         let SavedVNodeState {
             mut id,
             clocks,
+            log_clocks,
             clean_shutdown,
         } = saved_state_opt.unwrap();
 
@@ -972,6 +977,7 @@ impl VNodeState {
             status: status,
             last_status_change: Instant::now(),
             clocks: clocks,
+            log_clocks: log_clocks,
             storage: storage,
             sync_nodes: Default::default(),
             pending_bootstrap: false,
@@ -997,6 +1003,7 @@ impl VNodeState {
         let saved_state = SavedVNodeState {
             id: self.id,
             clocks: self.clocks.clone(),
+            log_clocks: self.log_clocks.clone(),
             clean_shutdown: shutdown,
         };
         debug!("Saving state for vnode {:?} {:?}", self.num, saved_state);
@@ -1057,8 +1064,11 @@ impl VNodeState {
             let mut empty = true;
             {
                 let clocks = &mut self.clocks;
+                let log_clocks = &mut self.log_clocks;
                 proposed.for_each_dot(|i, v| {
-                    if clocks.add(i, v) {
+                    // note that clocks is a superset of log_clocks
+                    if log_clocks.add(i, v) {
+                        clocks.add(i, v);
                         empty = false;
                         batch.log_set((i, v), &key);
                     }

@@ -150,9 +150,7 @@ impl StorageManager {
             Ok(db)
         })?;
 
-        Ok(StorageManager {
-            db: Arc::new(db),
-        })
+        Ok(StorageManager { db: Arc::new(db) })
     }
 
     pub fn open(&self, db_num: u16) -> Result<Storage, GenericError> {

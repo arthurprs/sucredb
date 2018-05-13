@@ -7,7 +7,7 @@ use inflightmap::InFlightMap;
 use metrics::{self, Meter};
 use std::collections::{hash_set, HashSet};
 use std::time::{Duration, Instant};
-use utils::{split_u64, IdHasherBuilder};
+use utils::IdHasherBuilder;
 use version_vector::*;
 use vnode::VNodeState;
 
@@ -229,13 +229,13 @@ impl Synchronization {
         } = msg;
         assert_eq!(target, Some(db.dht.node()));
 
+        let clocks_snapshot = state.log_clocks.clone();
+        let dots_delta = clocks_snapshot.delta(&clocks_in_peer);
+
         debug!(
             "Creating SyncSender {:?} from {:?} to {:?}",
-            cookie, state.clocks, clocks_in_peer
+            cookie, clocks_snapshot, clocks_in_peer
         );
-
-        let dots_delta = state.clocks.delta(&clocks_in_peer);
-        debug!("Delta from {:?} to {:?}", state.clocks, clocks_in_peer);
 
         let mut sync_keys = SyncKeysIterator::new(dots_delta);
         let iterator_fn: IteratorFn = Box::new(move |state| {
@@ -246,12 +246,6 @@ impl Synchronization {
                 Ok(None)
             }
         });
-
-        // Only send the part of the bvv corresponding to things that this node coordinated.
-        // Even if the dots are registered in the bvv,
-        // there's no guarantee that the dot->key log had the dot.
-        let physical_id = split_u64(db.dht.node()).0;
-        let clocks_snapshot = state.clocks.clone_if(|i| split_u64(i).0 == physical_id);
 
         SyncSender {
             clocks_in_peer: clocks_in_peer,

@@ -351,16 +351,6 @@ impl BitmappedVersionVector {
         self.0.iter()
     }
 
-    pub fn clone_if<F: FnMut(Id) -> bool>(&self, mut cond: F) -> Self {
-        let mut result = Self::default();
-        for (&id, bv) in self.0.iter() {
-            if cond(id) {
-                result.add_bv(id, bv);
-            }
-        }
-        result
-    }
-
     pub fn delta(&self, other: &Self) -> BitmappedVersionVectorDelta {
         let min_versions: Vec<_> = self.0
             .iter()
