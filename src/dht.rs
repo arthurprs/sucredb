@@ -688,13 +688,13 @@ impl<T: Metadata> DHT<T> {
         }
 
         info!("Connecting to seeds");
-        let mut connections = Vec::new();
+        let mut connections = fabric.connections();
         for _ in 0..10 {
-            thread::sleep(Duration::from_millis(500));
-            connections = fabric.connections();
-            if connections.len() >= seeds.len() / 2 + 1 {
+            if !connections.is_empty() {
                 break;
             }
+            thread::sleep(Duration::from_millis(500));
+            connections = fabric.connections();
         }
         if connections.is_empty() {
             return Err("Cannot contact seed nodes".into());

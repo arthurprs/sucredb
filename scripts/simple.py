@@ -4,6 +4,7 @@
 import time
 
 # 3rd party imports
+import funcy
 from docopt import docopt
 from redis._compat import xrange
 
@@ -14,6 +15,7 @@ def resp(aa):
     if len(aa) == 2:
         return aa[0], aa[1]
     raise Exception("multiple values returned ~ " + str(aa))
+
 
 def loop(rc, reset_last_key=None):
     """
@@ -57,7 +59,8 @@ def timeit(rc, itterations=50000):
         rc.get(s)
 
     t1 = time.time() - t0
-    print("{0}k SET/GET operations took: {1} seconds... {2} operations per second".format((itterations / 1000) * 2, t1, (itterations / t1) * 2))
+    print("{0}k SET/GET operations took: {1} seconds... {2} operations per second".format(
+        (itterations / 1000) * 2, t1, (itterations / t1) * 2))
 
 
 def timeit_pipeline(rc, itterations=50000):
@@ -102,12 +105,12 @@ Options:
     if not args["--nocluster"]:
         from rediscluster import StrictRedisCluster
         rc = StrictRedisCluster(startup_nodes=startup_nodes,
-            max_connections=32, socket_timeout=0.5,
-            decode_responses=False, skip_full_coverage_check=True)
+                                max_connections=32, socket_timeout=0.5,
+                                decode_responses=False, skip_full_coverage_check=True)
     else:
         from redis import StrictRedis
         rc = StrictRedis(host=args["--host"], port=args["--port"],
-            socket_timeout=0.5, decode_responses=False)
+                         socket_timeout=0.5, decode_responses=False)
 
     if args["--timeit"]:
         test_itterstions = [

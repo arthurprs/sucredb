@@ -116,7 +116,8 @@ fn configure() -> config::Config {
                 .short("s")
                 .long("seeds")
                 .multiple(true)
-                .takes_value(true),
+                .takes_value(true)
+                .require_delimiter(true),
         )
         .subcommand(
             SubCommand::with_name("init")
