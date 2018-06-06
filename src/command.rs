@@ -156,6 +156,7 @@ impl Database {
                 b"MULTI" | b"multi" => self.cmd_multi(context, args),
                 b"EXEC" | b"exec" => self.cmd_exec(context, args),
                 b"ECHO" | b"echo" => Ok(self.respond_resp(context, cmd.clone())),
+                b"PING" | b"ping" => Ok(self.respond_resp(context, RespValue::Data("PONG".into()))),
                 b"ASKING" | b"asking" | b"READONLY" | b"readonly" | b"READWRITE" | b"readwrite" => {
                     check_arg_count(args.len(), 0, 0).and_then(|_| Ok(self.respond_ok(context)))
                 }
@@ -471,6 +472,11 @@ impl Database {
     fn cmd_cluster(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
         check_arg_count(args.len(), 1, 1)?;
         match args[0].as_ref() {
+            b"CONNECTIONS" | b"connections" => {
+                let conns = self.fabric.connections();
+                let resp_conns = conns.into_iter().map(|x| RespValue::Int(x as _)).collect();
+                Ok(self.respond_resp(context, RespValue::Array(resp_conns)))
+            },
             b"REBALANCE" | b"rebalance" => {
                 self.dht.rebalance().unwrap();
                 Ok(self.respond_ok(context))
