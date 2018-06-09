@@ -705,6 +705,8 @@ mod tests {
                 //warn!("waiting for syncs to finish");
                 sleep_ms(100);
             }
+            // wait a bit more so dht sync is ran
+            sleep_ms(200);
         }
 
         fn response_resp(&self, token: Token) -> RespValue {

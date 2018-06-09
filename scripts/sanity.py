@@ -9,6 +9,8 @@ from funcy import retry
 from collections import defaultdict
 import shutil
 
+VERBOSE = False
+
 
 class Instance(object):
     BIND = "127.0.0.1"
@@ -59,9 +61,9 @@ class Instance(object):
                 if i != self.i
             ))
             + list(args),
-            stdin=sys.stdin,
-            stdout=sys.stdout,
-            stderr=sys.stderr,
+            stdin=sys.stdin if VERBOSE else None,
+            stdout=sys.stdout if VERBOSE else None,
+            stderr=sys.stderr if VERBOSE else None,
             )
         self.wait_ready()
 
@@ -88,6 +90,9 @@ class Instance(object):
 
 
 def main():
+    global VERBOSE
+    VERBOSE = "verbose" in sys.argv[1:]
+    subprocess.check_call(["cargo", "build"])
     cluster_sz = 3
     cluster = [Instance(i, cluster_sz) for i in range(cluster_sz)]
     cluster[0].cluster_init()

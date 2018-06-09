@@ -13,6 +13,10 @@ env:
 cache:
   - cargo
 
+install:
+  - pip install --user redis redis-py-cluster funcy
+
 script:
   - travis_wait sleep 1000000000 &
   - cargo test --verbose
+  - python scripts/sanity.py verbose 2>&1 | tail -n 100
