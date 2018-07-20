@@ -377,7 +377,8 @@ impl Database {
         self.fabric.set_nodes(self.dht.members().into_iter());
 
         for (i, vn) in self.vnodes.read().unwrap().iter().enumerate() {
-            let final_status = if self.dht
+            let final_status = if self
+                .dht
                 .nodes_for_vnode(i as VNodeNo, true, true)
                 .contains(&self.dht.node())
             {

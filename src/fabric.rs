@@ -155,7 +155,8 @@ impl SharedContext {
         debug!("Remove_connection peer: {}, id: {:?}", peer, connection_id);
         let mut locked = self.connections.write().unwrap();
         if let HMEntry::Occupied(mut o) = locked.entry(peer) {
-            let p = o.get()
+            let p = o
+                .get()
                 .iter()
                 .position(|x| x.0 == connection_id)
                 .expect("connection_id not found");
@@ -180,7 +181,8 @@ impl ReaderContext {
 
     fn dispatch(&self, msg: FabricMsg) {
         let msg_type = msg.get_type();
-        if let Some(handler) = self.context
+        if let Some(handler) = self
+            .context
             .msg_handlers
             .read()
             .unwrap()

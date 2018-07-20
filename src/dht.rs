@@ -32,8 +32,7 @@ pub trait Metadata:
 
 impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + fmt::Debug + 'static>
     Metadata for T
-{
-}
+{}
 
 // *pseudo* interval used to calculate aae msg rate
 const DHT_AAE_INTERVAL_MS: u64 = 1_000;
@@ -499,7 +498,8 @@ impl<T: Metadata> Ring<T> {
                 }
                 // try to find candidate that was retiring from that vnode
                 // only consider nodes in node_map (others could be leaving/invalid)
-                if let Some((_, node)) = vn.owners
+                if let Some((_, node)) = vn
+                    .owners
                     .iter()
                     .filter_map(|(&n, &s)| {
                         if s == Retiring {
@@ -523,7 +523,8 @@ impl<T: Metadata> Ring<T> {
 
         // 2. robin-hood
         for (vn_no, vn) in self.vnodes.iter_mut().enumerate() {
-            let doing_much: IdHashSet<_> = vn.owners
+            let doing_much: IdHashSet<_> = vn
+                .owners
                 .iter()
                 .filter(|&(n, &s)| s != Retiring && node_map.get(n).unwrap().len() > vnpn)
                 .map(|(n, _)| *n)
@@ -549,7 +550,8 @@ impl<T: Metadata> Ring<T> {
         self.is_valid().unwrap();
         self.version.event(this);
         for vn in self.vnodes.iter_mut() {
-            vn.owners = vn.owners
+            vn.owners = vn
+                .owners
                 .iter()
                 .filter_map(|(&n, &s)| {
                     if s == Retiring {
@@ -573,12 +575,14 @@ impl<T: Metadata> Ring<T> {
         node_map.reserve(valid_nodes_count);
 
         for (vn_no, vn) in self.vnodes.iter().enumerate() {
-            let owners: Vec<_> = vn.owners
+            let owners: Vec<_> = vn
+                .owners
                 .iter()
                 .filter(|&(_, &s)| s == Owner)
                 .map(|(&n, _)| n)
                 .collect();
-            let pending: Vec<_> = vn.owners
+            let pending: Vec<_> = vn
+                .owners
                 .iter()
                 .filter(|&(_, &s)| s == Pending)
                 .map(|(&n, _)| n)

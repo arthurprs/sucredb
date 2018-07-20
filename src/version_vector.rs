@@ -15,7 +15,10 @@ pub type Version = u64;
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BitmappedVersion {
     base: Version,
-    #[serde(serialize_with = "serialize_bitmap", deserialize_with = "deserialize_bitmap")]
+    #[serde(
+        serialize_with = "serialize_bitmap",
+        deserialize_with = "deserialize_bitmap"
+    )]
     bitmap: RoaringTreemap,
 }
 
@@ -352,7 +355,8 @@ impl BitmappedVersionVector {
     }
 
     pub fn delta(&self, other: &Self) -> BitmappedVersionVectorDelta {
-        let min_versions: Vec<_> = self.0
+        let min_versions: Vec<_> = self
+            .0
             .iter()
             .filter_map(|(&id, bv)| {
                 if let Some(other_bv) = other.get(id) {

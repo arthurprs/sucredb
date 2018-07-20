@@ -201,7 +201,8 @@ impl VNode {
                 {
                     // cancel incomming syncs
                     let state = &mut self.state;
-                    let canceled = self.syncs
+                    let canceled = self
+                        .syncs
                         .iter_mut()
                         .filter_map(|(&cookie, m)| {
                             if let SyncDirection::Incomming = m.direction() {
@@ -284,7 +285,8 @@ impl VNode {
         if self.state.pending_bootstrap {
             // check if there's a pending bootstrap we need to start
             self.start_bootstrap(db);
-        } else if self.status() == VNodeStatus::Zombie && self.requests.is_empty()
+        } else if self.status() == VNodeStatus::Zombie
+            && self.requests.is_empty()
             && self.syncs.is_empty()
             && self.state.last_status_change.elapsed() > Duration::from_millis(ZOMBIE_TIMEOUT_MS)
         {
@@ -396,7 +398,8 @@ impl VNode {
 
         let mut error = None;
         for write in &mut context.writes {
-            let old_cube = match self.state
+            let old_cube = match self
+                .state
                 .storage_get(&write.key)
                 .map_err(|_| CommandError::StorageError)
             {
@@ -589,7 +592,8 @@ impl VNode {
         );
         let mut result = Vec::with_capacity(msg.keys.len());
         for key in &msg.keys {
-            let value = self.state
+            let value = self
+                .state
                 .storage_get(&key)
                 .map_err(|_| FabricError::StorageError)
                 .unwrap();
@@ -634,7 +638,8 @@ impl VNode {
         //         },
         //     );
         // }
-        let result = self.state
+        let result = self
+            .state
             .storage_set_remote(db, writes)
             .map_err(|_| FabricError::StorageError);
         if
@@ -946,7 +951,8 @@ impl VNodeState {
 
     fn load(num: u16, db: &Database, status: VNodeStatus) -> Self {
         info!("Loading vnode {} state", num);
-        let saved_state_opt = db.meta_storage
+        let saved_state_opt = db
+            .meta_storage
             .get(num.to_string().as_bytes(), |bytes| {
                 bincode::deserialize(bytes).expect("Can't deserialize vnode state")
             })

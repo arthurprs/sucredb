@@ -476,7 +476,7 @@ impl Database {
                 let conns = self.fabric.connections();
                 let resp_conns = conns.into_iter().map(|x| RespValue::Int(x as _)).collect();
                 Ok(self.respond_resp(context, RespValue::Array(resp_conns)))
-            },
+            }
             b"REBALANCE" | b"rebalance" => {
                 self.dht.rebalance().unwrap();
                 Ok(self.respond_ok(context))

@@ -88,7 +88,8 @@ pub struct InitCommand {
 }
 
 fn split_number_suffix(s: &str) -> Result<(i64, &str), GenericError> {
-    let digits_end = s.trim()
+    let digits_end = s
+        .trim()
         .chars()
         .position(|c| !c.is_digit(10))
         .unwrap_or(s.len());
@@ -123,16 +124,19 @@ pub fn parse_size(size_text: &str) -> Result<i64, GenericError> {
 macro_rules! cfg {
     ($yaml:ident, $target:ident, $string:ident, $method:ident) => {
         if let Some(v) = $yaml.get(stringify!($string)) {
-            let v = v.$method()
+            let v = v
+                .$method()
                 .expect(concat!("Can't access field with", stringify!($method)));
             $target.$string = v.into();
         }
     };
     ($yaml:ident, $target:ident, $string:ident, $method:ident,try_into) => {
         if let Some(v) = $yaml.get(stringify!($string)) {
-            let v = v.$method()
+            let v = v
+                .$method()
                 .expect(concat!("Can't access field with", stringify!($method)));
-            $target.$string = v.try_into()
+            $target.$string = v
+                .try_into()
                 .expect(concat!("Can't convert ", stringify!($string)));
         }
     };
@@ -201,7 +205,8 @@ pub fn read_config_file(path: &Path, config: &mut Config) {
     );
 
     if let Some(v) = yaml.get("seed_nodes") {
-        config.seed_nodes = v.as_sequence()
+        config.seed_nodes = v
+            .as_sequence()
             .expect("seed_nodes is not a sequence")
             .iter()
             .map(|v| {

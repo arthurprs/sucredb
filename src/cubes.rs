@@ -219,7 +219,8 @@ impl Set {
     }
 
     pub fn insert(&mut self, node: Id, version: Version, item: Bytes) -> bool {
-        let result = self.values
+        let result = self
+            .values
             .insert(item, DotSet::from_dot((node, version)))
             .is_none();
         self.vv.add(node, version);
@@ -267,7 +268,8 @@ impl Map {
     }
 
     pub fn insert(&mut self, node: Id, version: Version, key: Bytes, value: Bytes) -> bool {
-        let result = self.values
+        let result = self
+            .values
             .insert(key, MapValue::new((node, version), value))
             .is_none();
         self.vv.add(node, version);
@@ -336,7 +338,8 @@ pub fn render_value(cube: Cube) -> RespValue {
     match cube {
         Cube::Value(v) => {
             let serialized_vv = bincode::serialize(&v.vv).unwrap();
-            let mut values: Vec<_> = v.values
+            let mut values: Vec<_> = v
+                .values
                 .into_iter()
                 .filter_map(|(_, ov)| ov.map(RespValue::Data))
                 .collect();
@@ -389,7 +392,8 @@ pub fn render_map(cube: Cube) -> RespValue {
 pub fn render_set(cube: Cube) -> RespValue {
     match cube {
         Cube::Set(s) => {
-            let array = s.values
+            let array = s
+                .values
                 .into_iter()
                 .map(|(v, _)| RespValue::Data(v))
                 .collect();

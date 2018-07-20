@@ -163,7 +163,8 @@ fn configure() -> config::Config {
     }
 
     if let Some(v) = matches.values_of("seed_nodes") {
-        config.seed_nodes = v.map(|v| v.parse().expect("Can't parse seed_nodes"))
+        config.seed_nodes = v
+            .map(|v| v.parse().expect("Can't parse seed_nodes"))
             .collect();
     }
 
@@ -173,11 +174,13 @@ fn configure() -> config::Config {
 
     if let Some(sub) = matches.subcommand_matches("init") {
         config.cmd_init = Some(InitCommand {
-            partitions: sub.value_of("partitions")
+            partitions: sub
+                .value_of("partitions")
                 .unwrap()
                 .parse()
                 .expect("Can't parse partitions"),
-            replication_factor: sub.value_of("replication_factor")
+            replication_factor: sub
+                .value_of("replication_factor")
                 .unwrap()
                 .parse()
                 .expect("Can't parse replication_factor"),
