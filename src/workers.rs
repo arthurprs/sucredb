@@ -1,5 +1,6 @@
 use crossbeam_channel as chan;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::{thread, time};
 
 pub trait ExitMsg {
@@ -11,6 +12,7 @@ pub trait ExitMsg {
 /// messages are distributed to threads in a Round-Robin manner.
 pub struct WorkerSender<T: ExitMsg + Send + 'static> {
     cursor: AtomicUsize,
+    alive_threads: Arc<AtomicUsize>,
     channels: Vec<chan::Sender<T>>,
 }
 
@@ -19,6 +21,7 @@ impl<T: ExitMsg + Send + 'static> Clone for WorkerSender<T> {
         WorkerSender {
             cursor: Default::default(),
             channels: self.channels.clone(),
+            alive_threads: self.alive_threads.clone(),
         }
     }
 }
@@ -28,6 +31,7 @@ pub struct WorkerManager<T: ExitMsg + Send + 'static> {
     thread_count: usize,
     threads: Vec<thread::JoinHandle<()>>,
     name: String,
+    alive_threads: Arc<AtomicUsize>,
     channels: Vec<chan::Sender<T>>,
 }
 
@@ -38,6 +42,7 @@ impl<T: ExitMsg + Send + 'static> WorkerManager<T> {
             thread_count: thread_count,
             threads: Default::default(),
             name: name,
+            alive_threads: Default::default(),
             channels: Default::default(),
         }
     }
@@ -51,17 +56,20 @@ impl<T: ExitMsg + Send + 'static> WorkerManager<T> {
             // since neither closure cloning or Box<FnOnce> are stable use Box<FnMut>
             let mut worker_fn = worker_fn_gen();
             let (tx, rx) = chan::unbounded();
+            let alive_handle = self.alive_threads.clone();
             self.channels.push(tx);
             self.threads.push(
                 thread::Builder::new()
                     .name(format!("Worker:{}:{}", i, self.name))
                     .spawn(move || {
+                        alive_handle.fetch_add(1, Ordering::SeqCst);
                         for m in rx {
                             if m.is_exit() {
                                 break;
                             }
                             worker_fn(m);
                         }
+                        alive_handle.fetch_sub(1, Ordering::SeqCst);
                         info!("Exiting worker");
                     })
                     .unwrap(),
@@ -74,23 +82,20 @@ impl<T: ExitMsg + Send + 'static> WorkerManager<T> {
         WorkerSender {
             cursor: Default::default(),
             channels: self.channels.clone(),
+            alive_threads: self.alive_threads.clone(),
         }
     }
 }
 
 impl<T: ExitMsg + Send + 'static> WorkerSender<T> {
-    pub fn send(&self, msg: T) {
-        // right now only possible error is disconected, so no need to do anything
-        let _ = self.try_send(msg);
-    }
-
-    pub fn try_send(&self, msg: T) -> Result<(), chan::SendError<T>> {
+    pub fn send(&self, msg: T) -> bool {
         let cursor = self.cursor.fetch_add(1, Ordering::Relaxed);
-        self.try_send_to(cursor, msg)
+        self.send_to(cursor, msg)
     }
 
-    pub fn try_send_to(&self, seed: usize, msg: T) -> Result<(), chan::SendError<T>> {
-        self.channels[seed % self.channels.len()].send(msg)
+    pub fn send_to(&self, seed: usize, msg: T) -> bool {
+        self.channels[seed % self.channels.len()].send(msg);
+        self.alive_threads.load(Ordering::SeqCst) > 0
     }
 }
 

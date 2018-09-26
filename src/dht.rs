@@ -824,7 +824,7 @@ impl<T: Metadata> DHT<T> {
             if node_id == inner.node || node.status != NodeStatus::Valid {
                 continue;
             }
-            if rng.next_f32() < chance {
+            if rng.gen_range(0f32, 1f32) < chance {
                 let _ = inner
                     .fabric
                     .send_msg(node_id, FabricMsgRef::DHTAE(&inner.ring.version));

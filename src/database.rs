@@ -298,7 +298,7 @@ impl Database {
         timer_fn(
             node.to_string(),
             time::Duration::from_millis(config.worker_timer as _),
-            move |now| sender.try_send(WorkerMsg::Tick(now)).is_ok(),
+            move |now| sender.send(WorkerMsg::Tick(now)),
         );
 
         // register dht nodes into fabric

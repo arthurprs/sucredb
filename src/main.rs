@@ -1,6 +1,6 @@
 #![feature(fnbox, try_from)]
 #![allow(dead_code)]
-#![cfg_attr(feature = "cargo-clippy", allow(cast_lossless))]
+// #![cfg_attr(feature = "cargo-clippy", allow(cast_lossless))]
 
 // #![feature(alloc_system, global_allocator, allocator_api)]
 //
@@ -35,6 +35,7 @@ extern crate crossbeam_channel;
 extern crate serde_yaml;
 extern crate tokio_core;
 extern crate tokio_io;
+extern crate tokio_codec;
 
 #[cfg(test)]
 extern crate env_logger;

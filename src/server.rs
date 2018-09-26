@@ -9,7 +9,8 @@ use database::{Context as DbContext, Database, Token, WorkerMsg};
 use futures::sync::mpsc as fmpsc;
 use futures::{Future, Sink, Stream};
 use tokio_core as tokio;
-use tokio_io::{codec, AsyncRead};
+use tokio_io::AsyncRead;
+use tokio_codec as codec;
 use workers::WorkerSender;
 
 use config::Config;

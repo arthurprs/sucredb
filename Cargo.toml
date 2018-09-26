@@ -4,23 +4,24 @@ version = "0.1.0"
 authors = ["arthurprs"]
 
 [dependencies]
-rand = "0.4"
+rand = "0.5"
 serde = "1.0"
 serde_derive = "1.0"
 log = "0.4"
 byteorder="1.0"
 tokio-core = "0.1"
 tokio-io = "0.1"
+tokio-codec = "0.1"
 futures = "0.1"
 clap="2.0"
-crc16="0.3"
+crc16="0.4"
 metrics="0.2"
 lazy_static = "1.0"
-serde_yaml = "0.7"
+serde_yaml = "0.8"
 bincode="1.0"
 num_cpus="1.0"
 roaring="0.5"
-crossbeam-channel="0.1"
+crossbeam-channel="0.2"
 
 [dependencies.log4rs]
 version = "0.8"

@@ -121,7 +121,7 @@ pub fn parse_size(size_text: &str) -> Result<i64, GenericError> {
     number.checked_mul(scale).ok_or("Overflow error".into())
 }
 
-macro_rules! cfg {
+macro_rules! cfi {
     ($yaml:ident, $target:ident, $string:ident, $method:ident) => {
         if let Some(v) = $yaml.get(stringify!($string)) {
             let v = v
@@ -172,31 +172,31 @@ pub fn read_config_file(path: &Path, config: &mut Config) {
     };
     debug!("Done reading config file: {:?}", config);
 
-    cfg!(yaml, config, data_dir, as_str);
-    cfg!(yaml, config, cluster_name, as_str);
-    cfg!(yaml, config, listen_addr, as_str, SocketAddr::from_str);
-    cfg!(yaml, config, fabric_addr, as_str, SocketAddr::from_str);
+    cfi!(yaml, config, data_dir, as_str);
+    cfi!(yaml, config, cluster_name, as_str);
+    cfi!(yaml, config, listen_addr, as_str, SocketAddr::from_str);
+    cfi!(yaml, config, fabric_addr, as_str, SocketAddr::from_str);
     // pub cmd_init: Option<InitCommand>,
-    cfg!(yaml, config, worker_timer, as_str, parse_duration);
-    cfg!(yaml, config, worker_count, as_u64, try_into);
-    cfg!(yaml, config, sync_incomming_max, as_u64, try_into);
-    cfg!(yaml, config, sync_outgoing_max, as_u64, try_into);
-    cfg!(yaml, config, sync_auto, as_bool);
-    cfg!(yaml, config, sync_timeout, as_str, parse_duration);
-    cfg!(yaml, config, sync_msg_timeout, as_str, parse_duration);
-    cfg!(yaml, config, sync_msg_inflight, as_u64, try_into);
-    cfg!(yaml, config, fabric_timeout, as_str, parse_duration);
-    cfg!(yaml, config, request_timeout, as_str, parse_duration);
-    cfg!(yaml, config, client_connection_max, as_u64, try_into);
-    cfg!(yaml, config, value_version_max, as_u64, try_into);
-    cfg!(
+    cfi!(yaml, config, worker_timer, as_str, parse_duration);
+    cfi!(yaml, config, worker_count, as_u64, try_into);
+    cfi!(yaml, config, sync_incomming_max, as_u64, try_into);
+    cfi!(yaml, config, sync_outgoing_max, as_u64, try_into);
+    cfi!(yaml, config, sync_auto, as_bool);
+    cfi!(yaml, config, sync_timeout, as_str, parse_duration);
+    cfi!(yaml, config, sync_msg_timeout, as_str, parse_duration);
+    cfi!(yaml, config, sync_msg_inflight, as_u64, try_into);
+    cfi!(yaml, config, fabric_timeout, as_str, parse_duration);
+    cfi!(yaml, config, request_timeout, as_str, parse_duration);
+    cfi!(yaml, config, client_connection_max, as_u64, try_into);
+    cfi!(yaml, config, value_version_max, as_u64, try_into);
+    cfi!(
         yaml,
         config,
         consistency_read,
         as_str,
         ConsistencyLevel::from_str
     );
-    cfg!(
+    cfi!(
         yaml,
         config,
         consistency_write,

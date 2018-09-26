@@ -16,7 +16,7 @@ use futures::sync::mpsc as fmpsc;
 use futures::sync::oneshot as foneshot;
 use futures::{Future, Sink, Stream};
 use tokio_core as tokio;
-use tokio_io::codec;
+use tokio_codec as codec;
 use tokio_io::{io as tokio_io, AsyncRead};
 
 use config::Config;
