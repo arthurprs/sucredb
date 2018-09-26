@@ -38,6 +38,18 @@ pub struct VNode {
     requests: InFlightMap<Cookie, ReqState, Instant, IdHasherBuilder>,
 }
 
+// This VNodeState id is based on the upper half of the actual node id
+// but the lower half is randomized on every bootstrap though.
+// If this is not done the vnode may reuse dots (Id, Version) pairs
+// after a round of boostraps:
+// 1. SET (id1, v1)
+// 2. Absent...
+// 3. Boostrap...
+// 4. SET (id1, v1) <---- reused (id1, v1)
+//
+// log_clocks is always a subset of the clocks.
+// clocks and log_clocks differ in the sense that only dots in
+// log_clocks are trusted to be in the dot-key log.
 pub struct VNodeState {
     id: NodeId,
     num: u16,
