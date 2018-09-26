@@ -869,6 +869,7 @@ impl<T: Metadata> DHT<T> {
         (hash_slot(key) / (HASH_SLOTS / self.partitions() as VNodeNo)) as VNodeNo
     }
 
+    /// Returns tuple (vec<vnode with data>, vec<vnodes that should boostrap>)
     pub fn vnodes_for_node(&self, node: NodeId) -> (Vec<VNodeNo>, Vec<VNodeNo>) {
         let mut result = (Vec::new(), Vec::new());
         let inner = self.inner.read().unwrap();
@@ -876,8 +877,10 @@ impl<T: Metadata> DHT<T> {
             if let Some(&status) = vn.owners.get(&node) {
                 match status {
                     Owner => result.0.push(vn_no as VNodeNo),
-                    Pending => result.0.push(vn_no as VNodeNo),
-                    Retiring => (),
+                    // can't be sure the bootstrap went through
+                    Pending => result.1.push(vn_no as VNodeNo),
+                    // retiring should maintain existing data
+                    Retiring => result.0.push(vn_no as VNodeNo),
                 }
             }
         }
