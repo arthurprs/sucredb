@@ -507,8 +507,7 @@ impl<T: Metadata> Ring<T> {
                         } else {
                             None
                         }
-                    })
-                    .min()
+                    }).min()
                 {
                     assert!(node_map.get_mut(&node).unwrap().insert(vn_no));
                     assert!(vn.owners.insert(node, Owner).is_some());
@@ -559,8 +558,7 @@ impl<T: Metadata> Ring<T> {
                     } else {
                         Some((n, Owner))
                     }
-                })
-                .collect();
+                }).collect();
         }
         self.is_valid()
     }
@@ -1147,7 +1145,8 @@ mod tests {
                 [
                     (join_u64(0, 0), config1.fabric_addr),
                     (join_u64(1, 0), config2.fabric_addr),
-                ].iter()
+                ]
+                    .iter()
                     .cloned()
                     .collect()
             );
@@ -1166,7 +1165,8 @@ mod tests {
                 [
                     (join_u64(0, 0), config1.fabric_addr),
                     (join_u64(1, 0), config2.fabric_addr),
-                ].iter()
+                ]
+                    .iter()
                     .cloned()
                     .collect()
             );
@@ -1188,7 +1188,8 @@ mod tests {
                 [
                     (join_u64(0, 0), config1.fabric_addr),
                     (join_u64(1, 0), config2.fabric_addr),
-                ].iter()
+                ]
+                    .iter()
                     .cloned()
                     .collect()
             );

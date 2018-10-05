@@ -33,9 +33,9 @@ extern crate serde;
 extern crate serde_derive;
 extern crate crossbeam_channel;
 extern crate serde_yaml;
+extern crate tokio_codec;
 extern crate tokio_core;
 extern crate tokio_io;
-extern crate tokio_codec;
 
 #[cfg(test)]
 extern crate env_logger;
@@ -81,46 +81,39 @@ fn configure() -> config::Config {
                     "Path to the .yaml config file. Note that configuration \
                      set through the command line will take precedence \
                      over the config file.",
-                )
-                .display_order(0),
-        )
-        .arg(
+                ).display_order(0),
+        ).arg(
             Arg::with_name("data_dir")
                 .short("d")
                 .long("data")
                 .takes_value(true)
                 .help("Data directory"),
-        )
-        .arg(
+        ).arg(
             Arg::with_name("cluster_name")
                 .short("n")
                 .long("cluster")
                 .help("The cluster name")
                 .takes_value(true),
-        )
-        .arg(
+        ).arg(
             Arg::with_name("listen_addr")
                 .short("l")
                 .long("listen")
                 .help("Listen addr")
                 .takes_value(true),
-        )
-        .arg(
+        ).arg(
             Arg::with_name("fabric_addr")
                 .short("f")
                 .long("fabric")
                 .help("Fabric listen addr")
                 .takes_value(true),
-        )
-        .arg(
+        ).arg(
             Arg::with_name("seed_nodes")
                 .short("s")
                 .long("seeds")
                 .multiple(true)
                 .takes_value(true)
                 .require_delimiter(true),
-        )
-        .subcommand(
+        ).subcommand(
             SubCommand::with_name("init")
                 .about("Init and configure the cluster")
                 .arg(
@@ -128,20 +121,16 @@ fn configure() -> config::Config {
                         .short("r")
                         .help("Number of replicas")
                         .default_value(DEFAULT_REPLICATION_FACTOR),
-                )
-                .arg(
+                ).arg(
                     Arg::with_name("partitions")
                         .short("p")
                         .help("Number of partitions")
                         .long_help(
                             "Number of partitions, the recommended value is \
                              `expected node count * 10` rounded up to the next power of 2.",
-                        )
-                        .default_value(DEFAULT_PARTITIONS),
-                )
-                .display_order(0),
-        )
-        .get_matches();
+                        ).default_value(DEFAULT_PARTITIONS),
+                ).display_order(0),
+        ).get_matches();
 
     let mut config = Default::default();
 

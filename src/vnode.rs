@@ -223,8 +223,7 @@ impl VNode {
                             } else {
                                 None
                             }
-                        })
-                        .collect::<Vec<_>>();
+                        }).collect::<Vec<_>>();
                     for cookie in canceled {
                         self.syncs.remove(&cookie).unwrap().on_remove(db, state);
                     }
@@ -271,8 +270,7 @@ impl VNode {
                 .filter_map(|(&cookie, s)| match s.on_tick(db, state) {
                     SyncResult::Continue => None,
                     result => Some((cookie, result)),
-                })
-                .collect::<Vec<_>>()
+                }).collect::<Vec<_>>()
         };
         for (cookie, result) in terminated_syncs {
             self.syncs
@@ -967,8 +965,7 @@ impl VNodeState {
             .meta_storage
             .get(num.to_string().as_bytes(), |bytes| {
                 bincode::deserialize(bytes).expect("Can't deserialize vnode state")
-            })
-            .expect("Can't read saved vnode state");
+            }).expect("Can't read saved vnode state");
 
         if status == VNodeStatus::Absent || saved_state_opt.is_none() {
             info!("No saved state");

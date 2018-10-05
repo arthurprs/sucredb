@@ -8,9 +8,9 @@ use bytes::{BufMut, BytesMut};
 use database::{Context as DbContext, Database, Token, WorkerMsg};
 use futures::sync::mpsc as fmpsc;
 use futures::{Future, Sink, Stream};
+use tokio_codec as codec;
 use tokio_core as tokio;
 use tokio_io::AsyncRead;
-use tokio_codec as codec;
 use workers::WorkerSender;
 
 use config::Config;
@@ -29,8 +29,7 @@ impl codec::Decoder for RespCodec {
             .and_then(|mut p| match p.parse() {
                 Ok(v) => Ok((p.consumed(), Ok(Some(v)))),
                 Err(e) => Err(e),
-            })
-            .unwrap_or_else(|e| match e {
+            }).unwrap_or_else(|e| match e {
                 resp::RespError::Incomplete => (0, Ok(None)),
                 _ => (0, Err(io::ErrorKind::InvalidData.into())),
             });
@@ -153,10 +152,8 @@ impl Server {
                         let response = context.take_response();
                         ctx_tx.borrow_mut().dispatch_next(context);
                         response
-                    })
-                    .map_err(|_| io::Error::from(io::ErrorKind::Other)),
-            )
-            .map(|_| ());
+                    }).map_err(|_| io::Error::from(io::ErrorKind::Other)),
+            ).map(|_| ());
 
         Box::new(fut_rx.select(fut_tx).map(|_| ()).map_err(|(e, _)| e))
     }

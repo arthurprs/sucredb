@@ -347,7 +347,8 @@ impl Database {
             return Err(CommandError::InvalidCommand);
         }
         let keys = &args[1..1 + key_count];
-        let consistency = self.parse_consistency(args.len() > 1 + key_count, args, 1 + key_count)?;
+        let consistency =
+            self.parse_consistency(args.len() > 1 + key_count, args, 1 + key_count)?;
         for key in keys {
             check_key_len(key.len())?;
         }

@@ -154,8 +154,7 @@ macro_rules! cfi {
                     stringify!($string),
                     " with ",
                     stringify!($convert)
-                ))
-                .try_into()
+                )).try_into()
                 .expect(concat!("Can't convert ", stringify!($string)));
         }
     };
@@ -214,8 +213,7 @@ pub fn read_config_file(path: &Path, config: &mut Config) {
                     .expect("seed_nodes element is not a string")
                     .parse()
                     .expect("seed_nodes element can't be parsed")
-            })
-            .collect();
+            }).collect();
     }
 
     if let Some(config_value) = yaml.get("logging") {
@@ -255,13 +253,11 @@ pub fn setup_default_logging() {
                         .build(),
                 ),
             ),
-        )
-        .logger(
+        ).logger(
             log4rs::config::Logger::builder()
                 .appender("console")
                 .build("sucredb", log::LevelFilter::Info),
-        )
-        .build(log4rs::config::Root::builder().build(log::LevelFilter::Off))
+        ).build(log4rs::config::Root::builder().build(log::LevelFilter::Off))
         .expect("failed to setup default logging");
 
     log4rs::init_config(config).expect("failed to init logging");

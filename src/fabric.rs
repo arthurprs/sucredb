@@ -15,8 +15,8 @@ use futures::future::Either;
 use futures::sync::mpsc as fmpsc;
 use futures::sync::oneshot as foneshot;
 use futures::{Future, Sink, Stream};
-use tokio_core as tokio;
 use tokio_codec as codec;
+use tokio_core as tokio;
 use tokio_io::{io as tokio_io, AsyncRead};
 
 use config::Config;
@@ -230,12 +230,10 @@ impl Fabric {
                     Self::handshake(socket, context_cloned)
                         .and_then(move |(s, peer_id, context)| {
                             Self::steady_connection(s, peer_id, context)
-                        })
-                        .then(|_| Ok(())),
+                        }).then(|_| Ok(())),
                 );
                 Ok(())
-            })
-            .map_err(|_| ());
+            }).map_err(|_| ());
         Box::new(fut)
     }
 
@@ -256,21 +254,18 @@ impl Fabric {
                     Duration::from_millis(FABRIC_RECONNECT_INTERVAL_MS),
                     &handle,
                 ).expect("Can't create connect timeout"),
-            )
-            .then(|r| match r {
+            ).then(|r| match r {
                 Ok(Either::A((s, _))) => Ok(s),
                 Ok(Either::B(_)) => Err(io::ErrorKind::TimedOut.into()),
                 Err(either) => Err(either.split().0),
-            })
-            .and_then(move |s| Self::handshake(s, context))
+            }).and_then(move |s| Self::handshake(s, context))
             .and_then(move |(s, peer_id, context)| Self::steady_connection(s, peer_id, context))
             .then(move |_| {
                 tokio::reactor::Timeout::new(
                     Duration::from_millis(FABRIC_RECONNECT_INTERVAL_MS),
                     &handle1,
                 ).expect("Can't create reconnect timeout")
-            })
-            .and_then(move |_| {
+            }).and_then(move |_| {
                 let node = expected_node.ok_or(io::ErrorKind::NotFound)?;
                 let addr_opt = {
                     let locked = context1.nodes_addr.read().unwrap();
@@ -381,8 +376,7 @@ impl Fabric {
                 let (completer_tx, completer_rx) = foneshot::channel();
                 init_tx.send(Self::init(node, config, core.handle()).map(|c| (c, completer_tx)))?;
                 core.run(completer_rx).map_err(From::from)
-            })
-            .unwrap();
+            }).unwrap();
         let (context, completer) = init_rx.recv()??;
         Ok(Fabric {
             context: context,
@@ -554,8 +548,7 @@ mod tests {
                         vnode: Default::default(),
                         result: Ok(Vec::new()),
                     },
-                )
-                .unwrap();
+                ).unwrap();
         }
         thread::sleep(Duration::from_millis(10));
         assert_eq!(counter.load(atomic::Ordering::Relaxed), 3);

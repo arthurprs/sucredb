@@ -364,8 +364,7 @@ impl BitmappedVersionVector {
                 } else {
                     Some((id, 1)) // start from 1 if the other bvv don't have this node
                 }
-            })
-            .collect();
+            }).collect();
         let empty_bv = BitmappedVersion::new(0, 0);
         let other = other.clone();
         let iter = self.0.clone().into_iter().flat_map(move |(id, bv)| {

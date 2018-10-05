@@ -71,8 +71,7 @@ impl<T: ExitMsg + Send + 'static> WorkerManager<T> {
                         }
                         alive_handle.fetch_sub(1, Ordering::SeqCst);
                         info!("Exiting worker");
-                    })
-                    .unwrap(),
+                    }).unwrap(),
             );
         }
     }
@@ -125,6 +124,5 @@ where
             if !callback(time::Instant::now()) {
                 break;
             }
-        })
-        .expect("Can't start timer")
+        }).expect("Can't start timer")
 }

@@ -177,8 +177,7 @@ impl Synchronization {
                 .map(|(k, v)| {
                     let cube = bincode::deserialize::<Cube>(v).map_err(|_| ())?;
                     Ok((Bytes::from(k), cube))
-                })
-                .next();
+                }).next();
 
             match next {
                 Some(Ok(r)) => Ok(Some(r)),
@@ -295,8 +294,7 @@ impl Synchronization {
                     clocks_in_peer: clocks_in_peer,
                     target: target,
                 },
-            )
-            .into()
+            ).into()
     }
 
     // Sending Errors always result in Error
@@ -372,8 +370,7 @@ impl Synchronization {
                             vnode: state.num(),
                             result: Ok(clocks_snapshot.clone()),
                         },
-                    )
-                    .into()
+                    ).into()
             }
             _ => unreachable!(),
         }

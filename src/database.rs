@@ -343,8 +343,7 @@ impl Database {
                         VNode::new(&db, i, VNodeStatus::Absent)
                     };
                     Mutex::new(vn)
-                })
-                .collect();
+                }).collect();
         }
 
         db
@@ -454,8 +453,7 @@ impl Database {
             .map(|vn| {
                 let inf = vn.lock().unwrap().syncs_inflight();
                 inf.0 + inf.1
-            })
-            .sum()
+            }).sum()
     }
 
     #[cfg(test)]
@@ -715,8 +713,7 @@ mod tests {
                 .filter_map(|_| {
                     sleep_ms(1);
                     self.responses.lock().unwrap().remove(&token)
-                })
-                .next()
+                }).next()
                 .unwrap()
         }
 
@@ -760,8 +757,7 @@ mod tests {
                     } else {
                         panic!("cant decode values from {:?}", value);
                     }
-                })
-                .collect();
+                }).collect();
             // sort so we have a deterministic sibling order for tests
             values.sort();
             let vv = if let RespValue::Data(ref d) = arr[arr.len() - 1] {
