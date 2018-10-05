@@ -111,7 +111,7 @@ impl Database {
         let arg0 = args[0];
         let args = &args[1..];
 
-        if context.is_exec {
+        if context.is_exec_cmd {
             match arg0.as_ref() {
                 b"CSET" | b"cset" => self.cmd_cset(context, args),
                 b"INCRBY" | b"incrby" => self.cmd_incrby(context, args),
@@ -127,11 +127,12 @@ impl Database {
                     Err(CommandError::InvalidMultiCommand)
                 }
             }
-        } else if context.is_multi {
+        } else if context.is_multi_cmd {
             match arg0.as_ref() {
                 b"EXEC" | b"exec" => self.cmd_exec(context, args),
                 _ => {
-                    context.commands.push(cmd.clone());
+                    // Enqueue command for later exec
+                    context.commands.push(cmd);
                     Ok(self.respond_resp(context, RespValue::Status("QUEUED".into())))
                 }
             }
@@ -155,9 +156,9 @@ impl Database {
                 b"TYPE" | b"type" => self.cmd_type(context, args),
                 b"MULTI" | b"multi" => self.cmd_multi(context, args),
                 b"EXEC" | b"exec" => self.cmd_exec(context, args),
-                b"ECHO" | b"echo" => Ok(self.respond_resp(context, cmd.clone())),
+                b"ECHO" | b"echo" => Ok(self.respond_resp(context, cmd)),
                 b"PING" | b"ping" => Ok(self.respond_resp(context, RespValue::Data("PONG".into()))),
-                b"ASKING" | b"asking" | b"READONLY" | b"readonly" | b"READWRITE" | b"readwrite" => {
+                b"ASKING" | b"asking" | b"READWRITE" | b"readwrite" => {
                     check_arg_count(args.len(), 0, 0).and_then(|_| Ok(self.respond_ok(context)))
                 }
                 b"CONFIG" | b"config" => self.cmd_config(context, args),
@@ -199,20 +200,20 @@ impl Database {
     }
 
     fn cmd_multi(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
-        assert!(!context.is_multi);
-        context.is_multi = true;
+        assert!(!context.is_multi_cmd);
+        context.is_multi_cmd = true;
         check_arg_count(args.len(), 0, 0)?;
         Ok(self.respond_ok(context))
     }
 
     fn cmd_exec(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
-        if !context.is_multi {
+        if !context.is_multi_cmd {
             return Err(CommandError::InvalidExec);
         }
         check_arg_count(args.len(), 0, 1)?;
         let consistency = self.parse_consistency(args.len() > 0, args, 0)?;
-        assert!(!context.is_exec);
-        context.is_exec = true;
+        assert!(!context.is_exec_cmd);
+        context.is_exec_cmd = true;
         let mut cmds = replace_default(&mut context.commands);
         for cmd in cmds.drain(..) {
             debug!("token:{} exec: {:?}", context.token, cmd);
@@ -337,9 +338,7 @@ impl Database {
     }
 
     fn cmd_mget(&self, context: &mut Context, args: &[&Bytes]) -> Result<(), CommandError> {
-        assert!(!context.is_multi && !context.is_exec);
-        context.is_multi = true;
-        context.is_exec = true;
+        context.is_multi_cmd = true;
         metrics::REQUEST_GET.mark(1);
         check_arg_count(args.len(), 1, 100)?;
         let key_count: usize = parse_int(args.len() > 0, args, 0)?;

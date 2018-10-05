@@ -68,8 +68,8 @@ pub struct ContextWrite {
 #[derive(Default)]
 pub struct Context {
     pub token: Token,
-    pub is_multi: bool,
-    pub is_exec: bool,
+    pub is_multi_cmd: bool,
+    pub is_exec_cmd: bool,
     // response queue
     // if not multi the first element is threated as a standalone response
     // if multi it contains an array response
@@ -86,8 +86,8 @@ impl Context {
     pub fn new(token: Token) -> Self {
         Context {
             token,
-            is_multi: false,
-            is_exec: false,
+            is_multi_cmd: false,
+            is_exec_cmd: false,
             response: Default::default(),
             commands: Default::default(),
             writes: Default::default(),
@@ -96,11 +96,10 @@ impl Context {
     }
 
     pub fn take_response(&mut self) -> RespValue {
-        if self.is_exec {
-            self.is_multi = false;
-            self.is_exec = false;
+        if self.is_multi_cmd {
             RespValue::Array(replace_default(&mut self.response))
         } else {
+            assert!(self.response.len() == 1);
             self.response.pop().unwrap()
         }
     }
@@ -110,8 +109,8 @@ impl Context {
     }
 
     pub fn clear(&mut self) {
-        self.is_multi = false;
-        self.is_exec = false;
+        self.is_multi_cmd = false;
+        self.is_exec_cmd = false;
         self.response.clear();
         self.commands.clear();
         self.reads.clear();
@@ -503,7 +502,7 @@ impl Database {
         context: &mut Context,
         consistency: ConsistencyLevel,
     ) -> Result<(), CommandError> {
-        debug_assert!(context.is_multi && context.is_exec);
+        debug_assert!(context.is_multi_cmd && context.is_exec_cmd);
         let mut multi_vnode = None;
         for (wi, w) in context.writes.iter().enumerate() {
             // vnode can't changes mid way a batch we need to error
@@ -538,7 +537,7 @@ impl Database {
         reply_result: bool,
         response_fn: Option<ResponseFn>,
     ) -> Result<(), CommandError> {
-        debug_assert!(!context.is_exec);
+        debug_assert!(!context.is_exec_cmd);
         context.writes.push(ContextWrite {
             version: 0,
             mutator_fn: Some(mutator_fn),
@@ -549,7 +548,7 @@ impl Database {
             response_fn: response_fn,
         });
 
-        if context.is_multi {
+        if context.is_multi_cmd {
             Ok(())
         } else {
             debug_assert_eq!(context.writes.len(), 1);
@@ -565,7 +564,7 @@ impl Database {
         consistency: ConsistencyLevel,
         response_fn: ResponseFn,
     ) -> Result<(), CommandError> {
-        debug_assert!(!context.is_multi && !context.is_exec);
+        debug_assert!(!context.is_multi_cmd && !context.is_exec_cmd);
         let vnode = self.dht.key_vnode(key);
         vnode!(self, vnode, |vn| vn.do_get(
             self,
@@ -583,7 +582,7 @@ impl Database {
         consistency: ConsistencyLevel,
         response_fn: ResponseFn,
     ) -> Result<(), CommandError> {
-        debug_assert!(context.is_multi && context.is_exec);
+        debug_assert!(context.is_multi_cmd && context.is_exec_cmd);
         let mut multi_vnode = None;
         for key in keys {
             let write_vnode = self.dht.key_vnode(key);

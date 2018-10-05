@@ -1,3 +1,4 @@
+#![feature(nll)]
 #![feature(fnbox, try_from)]
 #![allow(dead_code)]
 // #![cfg_attr(feature = "cargo-clippy", allow(cast_lossless))]

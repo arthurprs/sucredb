@@ -150,6 +150,7 @@ impl Server {
                 chan_rx
                     .map(move |mut context| {
                         let response = context.take_response();
+                        context.clear();
                         ctx_tx.borrow_mut().dispatch_next(context);
                         response
                     }).map_err(|_| io::Error::from(io::ErrorKind::Other)),
