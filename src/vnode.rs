@@ -859,7 +859,7 @@ impl VNode {
         nodes.retain(|x| connected_nodes.contains(x));
         thread_rng().shuffle(&mut nodes);
         for node in nodes {
-            if node == db.dht.node() {
+            if node == db.dht.node() || self.state.sync_nodes.contains(&node) {
                 continue;
             }
             if !db.signal_sync_start(SyncDirection::Incomming) {
@@ -868,7 +868,6 @@ impl VNode {
             }
 
             let cookie = self.gen_cookie();
-            self.state.sync_nodes.insert(node);
             info!("Starting sync receiver {:?} peer:{}", cookie, node);
             let sync = Synchronization::new_sync_receiver(db, &mut self.state, node, cookie);
             match self.syncs.entry(cookie) {

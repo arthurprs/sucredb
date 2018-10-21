@@ -204,6 +204,7 @@ impl Synchronization {
         peer: NodeId,
         cookie: Cookie,
     ) -> Self {
+        assert!(state.sync_nodes.insert(peer));
         SyncReceiver {
             clocks_in_peer: state.clocks.clone(),
             peer: peer,
@@ -463,7 +464,7 @@ impl Synchronization {
     pub fn on_remove(self, db: &Database, state: &mut VNodeState) {
         match self {
             SyncReceiver { peer, .. } => {
-                state.sync_nodes.remove(&peer);
+                assert!(state.sync_nodes.remove(&peer));
             }
             _ => (),
         }
