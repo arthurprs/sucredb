@@ -121,16 +121,25 @@ def main():
         check_map[k].add(v)
         if random.random() < 0.1:
             n = random.choice(cluster)
+            # restart and wait for it to connect to cluster
             n.restart()
             n.wait_ready(lambda c: c.execute_command("CLUSTER", "CONNECTIONS"))
 
+    # let the syncs settle
     time.sleep(5)
-    for k, expected in check_map.items():
-        values = set(client.get(k)[:-1])
-        assert values == expected, "%s %s %s" % (k, expected, values)
-        for c in cluster:
-            values = set(c.client.execute_command("GET", k, "1")[:-1])
+
+    @retry(2, timeout=5)
+    def test_all_nodes_complete():
+        for k, expected in check_map.items():
+            values = set(client.get(k)[:-1])
             assert values == expected, "%s %s %s" % (k, expected, values)
+            for c in cluster:
+                values = set(c.client.execute_command("GET", k, "1")[:-1])
+                assert values == expected, \
+                    "key %s expected %s got %s (diff %s)" % (
+                        k, expected, values, expected ^ values)
+
+    test_all_nodes_complete()
 
 
 if __name__ == '__main__':
